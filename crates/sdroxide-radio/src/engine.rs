@@ -51,14 +51,32 @@ const METER_INTERVAL: Duration = Duration::from_millis(33);
 /// 33 ms meter interval this is about a fifth of a second of genuinely bad SWR,
 /// which is long enough to ride out the key-up transient and short enough that
 /// the transmitter is not left into a fault.
-const SWR_TRIP_SAMPLES: u8 = 6;
+const SWR_TRIP_SAMPLES: u16 = 6;
 
 /// Meter samples to ignore after key-up before the SWR is believed at all.
 ///
 /// This is the right way to discard the key-up transient, and it replaced a
 /// forward-power floor that looked equivalent and was not. See
 /// [`SWR_MIN_FWD_W`].
-const SWR_SETTLE_SAMPLES: u8 = 6;
+const SWR_SETTLE_SAMPLES: u16 = 6;
+
+/// The same grace period during a TUNE: 150 samples ≈ 5 seconds. See
+/// [`swr_rails`] for why a tune is not an ordinary over.
+///
+/// Five seconds covers an external auto-ATU comfortably — an LDG or SGC
+/// finishes a sweep in one to four — and is short enough that a genuinely dead
+/// feeder is still caught in the same key-down. A manual tuner can easily take
+/// longer than this; that operator wants the guard turned off for the session,
+/// which is a checkbox, rather than a grace period long enough to be no
+/// protection at all.
+const SWR_TUNE_SETTLE_SAMPLES: u16 = 150;
+
+/// The limit clamp and the tune-limit derivation live in `sdroxide-types`, with
+/// [`TxState`], because the settings panel shows the operator what the tune
+/// limit works out to and a second copy of the formula would drift from this
+/// one. Only the grace periods above are the engine's own business — they are
+/// counted in meter samples, which nothing outside this file knows about.
+use sdroxide_types::{SWR_LIMIT_MAX, SWR_LIMIT_MIN, swr_tune_limit};
 
 /// Forward power below which an SWR reading is ignored, purely to reject a
 /// reading taken when the transmitter is not really producing anything.
@@ -74,6 +92,31 @@ const SWR_SETTLE_SAMPLES: u8 = 6;
 /// Discarding the transient is [`SWR_SETTLE_SAMPLES`]'s job, which is what a
 /// key-up transient actually is: a property of time, not of power.
 const SWR_MIN_FWD_W: f32 = 0.5;
+
+/// The trip limit and the grace period in force for the over now on the air.
+///
+/// Tuning is the deliberate act of transmitting into a load
+/// that is *known* to be mismatched: an external ATU has nothing to work on
+/// until the rig keys into the very mismatch the ATU exists to remove, and it
+/// needs seconds of carrier to sweep. Held to the operator's on-air limit — 2.5
+/// by default, against a starting SWR that is routinely 10:1 — the guard would
+/// abort every tune-up after a fifth of a second and then latch transmit out,
+/// on exactly the stations that own a tuner because they need one.
+///
+/// So a tune gets both rails moved: the limit is doubled ([`swr_tune_limit`],
+/// capped at the top of the scale the rigs report) and the grace period runs to
+/// about five seconds ([`SWR_TUNE_SETTLE_SAMPLES`]) instead of a fifth of one.
+/// With the default 2.5:1 that is 5:1 while tuning. What survives is the case
+/// worth keeping: a feeder that is simply not connected still reads at or near
+/// the top of the scale after the ATU has had its five seconds, and still stops
+/// the carrier.
+fn swr_rails(tuning: bool, limit: f32) -> (f32, u16) {
+    if tuning {
+        (swr_tune_limit(limit), SWR_TUNE_SETTLE_SAMPLES)
+    } else {
+        (limit, SWR_SETTLE_SAMPLES)
+    }
+}
 
 /// How often the RDS snapshot goes out. Far slower than the meters: a station
 /// name changes never, radio text every few seconds, and the only thing arriving
@@ -1219,11 +1262,20 @@ struct Engine {
     swr_guard: bool,
     swr_limit: f32,
     /// Consecutive over-limit meter samples seen so far this over.
-    swr_over: u8,
+    swr_over: u16,
     /// Meter samples since this over began, counted so the key-up transient can
     /// be ignored by TIME rather than by forward power. See [`SWR_MIN_FWD_W`]
     /// for why the power-based version of this was wrong.
-    swr_settle: u8,
+    ///
+    /// `u16` rather than `u8` because a tune's grace period is measured in
+    /// seconds, and [`SWR_TUNE_SETTLE_SAMPLES`] alone is over half of what a
+    /// byte can hold.
+    swr_settle: u16,
+    /// Whether the samples counted above were taken during a tune, so that
+    /// switching between the two sets of rails ([`swr_rails`]) inside one
+    /// key-down restarts the grace period rather than carrying a spent one
+    /// across.
+    swr_tuning: bool,
     /// Set when the guard has fired, holding the SWR that fired it. While this
     /// is `Some`, transmit is refused. Cleared only by the operator
     /// acknowledging it ([`Command::ClearSwrTrip`]), which is the "latch"
@@ -1644,7 +1696,7 @@ fn engine_thread(
     // broadcast carries the real guard settings and no client ever renders the
     // 0.0 that `TxState::default()` would give it.
     state.tx.swr_guard = engine_cfg.swr_guard;
-    state.tx.swr_limit = engine_cfg.swr_limit.clamp(1.1, 10.0);
+    state.tx.swr_limit = engine_cfg.swr_limit.clamp(SWR_LIMIT_MIN, SWR_LIMIT_MAX);
     if let Some(mode) = engine_cfg.initial_mode {
         for rx in &mut state.rx {
             *rx = RxState::with_mode(mode);
@@ -1803,9 +1855,10 @@ fn engine_thread(
         tx_center_hz: 0.0,
         tx_ham_only: engine_cfg.tx_ham_only,
         swr_guard: engine_cfg.swr_guard,
-        swr_limit: engine_cfg.swr_limit.clamp(1.1, 10.0),
+        swr_limit: engine_cfg.swr_limit.clamp(SWR_LIMIT_MIN, SWR_LIMIT_MAX),
         swr_over: 0,
         swr_settle: 0,
+        swr_tuning: false,
         swr_tripped: None,
         wide_scratch: Vec::new(),
         wide_seq: 0,
@@ -2168,10 +2221,24 @@ fn engine_thread(
                 // the engine where a fresh SWR reading and `tx_active` are both
                 // in hand; it runs before the meters are published so the trip
                 // and the reading the operator sees cannot disagree.
+                // Which rails apply is decided per sample rather than at
+                // key-up, because `tune` can be switched on and off inside one
+                // key-down and the reading in hand belongs to whatever the
+                // transmitter is doing at this instant. Switching between them
+                // restarts the grace period, so a tune begun mid-over gets the
+                // full five seconds it would have got from receive rather than
+                // inheriting a window that has already expired.
+                let tuning = engine.state.tx.tune;
+                if tuning != engine.swr_tuning {
+                    engine.swr_tuning = tuning;
+                    engine.swr_settle = 0;
+                    engine.swr_over = 0;
+                }
                 engine.swr_settle = engine.swr_settle.saturating_add(1);
+                let (swr_limit, swr_settle) = swr_rails(tuning, engine.swr_limit);
                 if engine.swr_guard
                     && engine.swr_tripped.is_none()
-                    && engine.swr_settle > SWR_SETTLE_SAMPLES
+                    && engine.swr_settle > swr_settle
                 {
                     // ⛔ FORWARD POWER IS OPTIONAL AND MUST STAY OPTIONAL. This
                     // read `(Some(swr), Some(fwd))` until 17 August 2026, on the
@@ -2184,13 +2251,13 @@ fn engine_thread(
                     // disablement.
                     match tele.swr {
                         Some(swr)
-                            if swr >= engine.swr_limit
+                            if swr >= swr_limit
                                 && tele.fwd_w.map_or(true, |f| f >= SWR_MIN_FWD_W) =>
                         {
                             engine.swr_over = engine.swr_over.saturating_add(1);
                             if engine.swr_over >= SWR_TRIP_SAMPLES {
-                                let limit = engine.swr_limit;
-                                warn!(swr, limit, "SWR guard tripped, unkeying");
+                                let limit = swr_limit;
+                                warn!(swr, limit, tuning, "SWR guard tripped, unkeying");
                                 // Latch FIRST, so the transmitter cannot be
                                 // re-keyed in the window between unkeying and
                                 // the operator seeing the warning.
@@ -2213,8 +2280,17 @@ fn engine_thread(
                                 // front of an operator who has just had a
                                 // transmission cut off, and the two things worth
                                 // reading are the figure and what to look at.
+                                // Says "tune limit" when that is the figure
+                                // being quoted, so the number in front of the
+                                // operator is never one they cannot find in
+                                // the settings — the tune limit is derived,
+                                // not typed.
+                                let (what, which) = match tuning {
+                                    true => ("Tune stopped", "tune limit"),
+                                    false => ("Transmit stopped", "limit"),
+                                };
                                 engine.notice(&format!(
-                                    "Transmit stopped. SWR {swr:.1}:1, limit {limit:.1}:1. \
+                                    "{what}. SWR {swr:.1}:1, {which} {limit:.1}:1. \
                                      Check the antenna."
                                 ));
                                 engine.emit_state();
@@ -2249,6 +2325,7 @@ fn engine_thread(
                 // acknowledged, which is the whole point of it.
                 engine.swr_over = 0;
                 engine.swr_settle = 0;
+                engine.swr_tuning = false;
                 let stereo = engine.main.as_ref().is_some_and(|c| c.stereo_locked());
                 let tone = engine.main.as_ref().and_then(|c| c.sub_tone());
                 engine.rx_signal_dbm().map(|s_dbm| Meters {
@@ -3867,7 +3944,7 @@ impl Engine {
                 // like a broken radio; and the field is `0.0` in a default
                 // `TxState`, so an early edit from a client that has not yet
                 // heard from the engine would otherwise arm exactly that.
-                let limit = limit.clamp(1.1, 10.0);
+                let limit = limit.clamp(SWR_LIMIT_MIN, SWR_LIMIT_MAX);
                 self.swr_guard = enabled;
                 self.swr_limit = limit;
                 self.state.tx.swr_guard = enabled;

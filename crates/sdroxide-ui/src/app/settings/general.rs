@@ -5,7 +5,7 @@
 //! in-band.
 
 use eframe::egui::{self, Color32, ComboBox, RichText};
-use sdroxide_types::{Command, Region, RemoteAccess};
+use sdroxide_types::{Command, Region, RemoteAccess, SWR_LIMIT_MAX, SWR_LIMIT_MIN, swr_tune_limit};
 
 use crate::app::SdroxideApp;
 use crate::app::persist::band_plan_path;
@@ -195,18 +195,14 @@ impl SdroxideApp {
     /// machine's `config.toml`, which would be a different antenna entirely.
     /// The command is sent only on an actual change, since a `DragValue` reports
     /// its value every frame it is dragged and each one would be a config write.
-    pub(in crate::app) fn settings_swr_guard(
-        &self,
-        ui: &mut egui::Ui,
-        cmds: &mut Vec<Command>,
-    ) {
+    pub(in crate::app) fn settings_swr_guard(&self, ui: &mut egui::Ui, cmds: &mut Vec<Command>) {
         ui.label(RichText::new("SWR guard").strong());
         ui.add_space(4.0);
 
         let mut enabled = self.state.tx.swr_guard;
         // The engine clamps this too; matching the range here keeps the widget
         // from offering a value that would come back changed.
-        let mut limit = self.state.tx.swr_limit.clamp(1.1, 10.0);
+        let mut limit = self.state.tx.swr_limit.clamp(SWR_LIMIT_MIN, SWR_LIMIT_MAX);
 
         ui.horizontal(|ui| {
             if ui.checkbox(&mut enabled, "Stop transmitting on high SWR").changed() {
@@ -219,7 +215,7 @@ impl SdroxideApp {
                 let r = ui.add(
                     egui::DragValue::new(&mut limit)
                         .speed(0.1)
-                        .range(1.1..=10.0)
+                        .range(SWR_LIMIT_MIN..=SWR_LIMIT_MAX)
                         .fixed_decimals(1)
                         .suffix(":1"),
                 );
@@ -228,6 +224,15 @@ impl SdroxideApp {
                 if (r.drag_stopped() || r.lost_focus()) && limit != self.state.tx.swr_limit {
                     cmds.push(Command::SetSwrGuard { enabled, limit });
                 }
+                // The tune limit is derived from this one rather than typed, so
+                // it is shown here: an operator who has just had a tune-up
+                // stopped is told a figure, and this is where they find out
+                // where it came from.
+                ui.label(
+                    RichText::new(format!("(tuning: {:.1}:1)", swr_tune_limit(limit)))
+                        .size(11.0)
+                        .color(crate::theme::gray(140)),
+                );
             });
         });
 
@@ -237,6 +242,10 @@ impl SdroxideApp {
                 "Stops the transmission when the radio reports an SWR at or above this figure, and \
                  keeps transmit locked out until you acknowledge it. Catches a disconnected \
                  antenna, a failed feeder, or a switch left on the wrong port.\n\n\
+                 Tuning is treated differently, because feeding a mismatch is the point of it: an \
+                 antenna tuner gets double the limit and about five seconds before the guard \
+                 applies at all. A manual tuner that takes longer than that wants the guard \
+                 switched off for the session.\n\n\
                  Needs a rig that reports SWR over CAT. Ignores the first fifth of a second of \
                  each transmission, and does not wait for high power.",
             )

@@ -58,7 +58,10 @@ or connects to a remote sdroxide server.
   name, programme type, radio text, what is playing, and the station's clock.
 - **Transmit** (on TX-capable rigs): PTT, TUNE, drive and tune-drive levels,
   mic gain, XIT, and a transmit meter (power / SWR / ALC). A ham-band-only
-  transmit lockout is on by default. While transmitting, the panadapter shows a
+  transmit lockout is on by default, as is an **SWR guard** that stops the over
+  and latches transmit out when the rig reports a bad match — with a looser
+  limit and a five-second grace while you are tuning an ATU. While transmitting,
+  the panadapter shows a
   **monitor of your own signal**: wideband IQ rigs display it at its on-air
   frequency in the full span; CAT rigs and digital modes show a narrow
   transmit-sideband scope (an approximation built from the outgoing audio).
@@ -82,7 +85,8 @@ or connects to a remote sdroxide server.
   including callsign exchange in the RADE End-of-Over frame.
 - **Callsign lookup and QSL upload** — QRZ/HamQTH name/QTH/grid auto-fill, and
   one-click (or automatic) upload to eQSL, QRZ Logbook and Club Log, with LoTW
-  ADIF export and confirmation download.
+  ADIF export and confirmation download. Each service's credentials can be
+  tested against it from the settings, without logging anything.
 - **Award tracking** — live DXCC / WAS / WAZ / grid tallies, worked vs confirmed.
 - **Winlink radio email** — a native client for the amateur store-and-forward
   email network: B2F/FBB forwarding, LZHUF compression and the secure login,
@@ -634,10 +638,45 @@ ALC/TX meter and take the same amount back off Mic gain.** Cutting is free; a
 cut band and a little more mic gain gets the same tone with none of the risk.
 
 > **Transmit safety:** by default sdroxide refuses to transmit outside the
-> amateur bands (`tx_ham_only`). Transmit hardware gains start at minimum and
+> amateur bands (`tx_ham_only`), and stops the transmission if the radio reports
+> a high SWR (`swr_guard`, below). Transmit hardware gains start at minimum and
 > the tune drive defaults low. Raise drive deliberately. The band lockout can
 > only be lifted from the command line, one run at a time, with `--oob-tx`
 > ([12](#12-command-line-reference)).
+
+**The SWR guard** stops the over when the antenna system is not what it should
+be — a feeder that has come off, a coax switch left on the wrong port, a
+dipole leg that has parted in the wind. It is armed by default at **2.5:1** and
+is set in Settings → General ([6.1](#61-general-station-audio-and-remote-access)).
+
+- It needs a rig that **measures SWR and reports it over CAT or TCI**. On an IQ
+  radio there is no such reading, and the guard is inert rather than approximate.
+- It does **not** wait for high power. A rig with SWR foldback answers a bad
+  match by dropping to a few watts, so a power threshold would gate out exactly
+  the emergency; the first fifth of a second of each over is ignored instead, on
+  the clock, to ride out the key-up transient.
+- When it fires the transmitter stops and **transmit stays locked out** until
+  you press **Acknowledge** on the warning bar. That is deliberate: a latch you
+  can clear by pressing PTT again is not a latch. Turning the guard off also
+  clears a standing trip.
+- The banner names the SWR that fired it, so you know whether you are looking
+  for a bad connector or a completely disconnected antenna.
+
+**TUNE is treated differently, because feeding a mismatch is the whole point of
+it.** An antenna tuner has nothing to work on until the rig keys into the very
+mismatch the tuner exists to remove, and a sweep that begins at 10:1 is what
+tuning looks like. So a tune gets **double the limit** — 5:1 with the default
+2.5:1 setting, shown next to the figure in Settings so you never see a number
+you cannot find — and **about five seconds** before the guard applies at all,
+instead of a fifth of one. What survives is the case worth keeping: a feeder
+that is simply not connected still reads at the top of the scale once the tuner
+has had its five seconds, and still stops the carrier.
+
+> A **manual** tuner can easily take longer than five seconds to find a match.
+> That is the one case the guard gets wrong, and the answer is to turn it off
+> for the session rather than to raise the limit — you are deliberately sitting
+> at a high SWR for as long as it takes, which is the situation the guard exists
+> to end.
 
 On a rig with its own power control — a TCI rig, or a **CAT rig** on any of the
 three dialects — Drive and Tune command the rig's output power directly rather
@@ -2701,6 +2740,19 @@ written on the next reload or start.
 > more), and national band plans differ inside a region. Nothing here is a
 > substitute for your licence conditions — which is exactly why the file is
 > editable.
+
+**SWR guard** — **Stop transmitting on high SWR**, and the ratio it trips at.
+Armed by default at **2.5:1**. When the radio reports an SWR at or above the
+figure, sdroxide stops the transmission and *keeps transmit locked out* until
+you acknowledge it — the point being that a fault which clears itself when you
+release PTT teaches you nothing and lets you carry on transmitting into it. See
+[§ 2.10 Transmit](#210-transmit) for what it does on the air and how to clear a
+trip; in `config.toml` the pair are `swr_guard` and `swr_limit`.
+
+It needs a rig that measures SWR and reports it over CAT or TCI — the Icom CI-V
+dialect, the Yaesu/Kenwood/Elecraft dialects, `rigctld`, and TCI. On anything
+that never sends a figure (any IQ radio: HackRF, Pluto, RTL-SDR, an HPSDR
+board) the setting is simply inert, which is why it costs nothing to leave on.
 
 **Your audio (speakers / microphone)** — the devices sdroxide uses for *you*,
 separate from any sound card wired to a radio:
@@ -5077,6 +5129,35 @@ the fields are:
 At the bottom of the tab, **APPLY** saves everything above, and
 **SYNC CONFIRMATIONS** pulls your LoTW/eQSL confirmations into the log.
 
+#### Testing the credentials
+
+Next to each service is a **Test eQSL / Test QRZ Logbook / Test Club Log / Test
+LoTW** button. It asks that service, there and then, whether the login you have
+typed works, and prints what came back — a green tick with the account the
+service recognised, or a red cross with its own words for the refusal.
+
+Without it the first sign that a password is wrong is a QSO that failed to
+upload, hours after the contact, which is both too late and the wrong place to
+find out.
+
+- **Nothing is logged.** Each button uses the cheapest *read* endpoint the
+  service publishes; none of them can write. A credential check that inserted a
+  dummy QSO to see whether the login worked would leave a fictional contact in
+  your permanent log, and for the services that forward to LoTW or an award
+  programme, somewhere you cannot withdraw it from.
+- **Pressing Test also applies the settings above it**, since it is the applied
+  credentials that get checked — otherwise a freshly pasted key would be tested
+  against the old one and reported wrong when it was merely unsaved.
+- **Club Log's API key cannot be checked**, only the account: the documented key
+  endpoint refuses these requests. A pass there says `account accepted (API key
+  not checked)` rather than pretending otherwise, and an upload can still fail
+  on the key alone.
+- Results are not remembered between sessions — a green tick from an hour ago
+  says nothing about the password typed since.
+- The buttons appear only when the radio is attached to *this* machine. The
+  credentials, and the answer naming the account they belong to, live on the
+  station computer; a remote client is not shown either.
+
 ### 6.8 Winlink: radio email account
 
 Everything the Winlink mailbox needs to identify itself and decide where to
@@ -6659,7 +6740,10 @@ zones).
 ### 10.3 Uploading QSOs (eQSL, QRZ, Club Log, LoTW)
 
 Enter your eQSL, QRZ Logbook and Club Log accounts on the **Uploads** tab
-([§6.7](#67-uploads-callsign-lookup-and-qsl-services)). Then either tick
+([§6.7](#67-uploads-callsign-lookup-and-qsl-services)), where a **Test** button
+beside each service checks the login against that service before a QSO depends
+on it — worth doing once, since otherwise the first sign of a wrong password is
+an upload that failed hours after the contact. Then either tick
 **Auto-upload each new QSO** and the target service(s) to push every QSO as it is
 logged, or upload individual QSOs from the logbook with the per-row **UP**
 button. Each upload sets that QSO's status flag (the **↑** in the logbook), and
@@ -7075,7 +7159,7 @@ sdroxide stores its settings under the per-user config directory:
 
 | File | Format | Contents |
 | --- | --- | --- |
-| `config.toml` | TOML | General settings: `device_args`, `sample_rate`, `cal_offset_db`, `spectrum_fft`, `spectrum_fps`, `server_bind`, `server_port`, `tx_ham_only`, `audio_output`, `audio_input`, `region` (`"R1"` / `"R2"` / `"R3"` — the IARU region every band plan follows, [§6.1](#61-general-station-audio-and-remote-access)), plus the `[ui]` display preferences (including `theme`, `button_style` and `window_style`), the `[speech]` announcement settings ([§6.3](#63-ui-display-preferences-and-voice-announcements)), the `[remote_access]` sign-in that server mode demands ([§8.3](#83-sign-in-who-may-operate-the-station), stored in plaintext) and the `[remote_server]` address the **Remote** tab dials ([§8.2](#82-connect-a-native-remote-client)). Belongs to the machine the engine runs on — except `[ui]`, `[speech]` and `[remote_server]`, which belong to the screen in front of you. |
+| `config.toml` | TOML | General settings: `device_args`, `sample_rate`, `cal_offset_db`, `spectrum_fft`, `spectrum_fps`, `server_bind`, `server_port`, `tx_ham_only`, `swr_guard` and `swr_limit` (the SWR guard, [§6.1](#61-general-station-audio-and-remote-access)), `audio_output`, `audio_input`, `region` (`"R1"` / `"R2"` / `"R3"` — the IARU region every band plan follows, [§6.1](#61-general-station-audio-and-remote-access)), plus the `[ui]` display preferences (including `theme`, `button_style` and `window_style`), the `[speech]` announcement settings ([§6.3](#63-ui-display-preferences-and-voice-announcements)), the `[remote_access]` sign-in that server mode demands ([§8.3](#83-sign-in-who-may-operate-the-station), stored in plaintext) and the `[remote_server]` address the **Remote** tab dials ([§8.2](#82-connect-a-native-remote-client)). Belongs to the machine the engine runs on — except `[ui]`, `[speech]` and `[remote_server]`, which belong to the screen in front of you. |
 | `radio.json` | JSON | Which radio interface is selected and everything that configures it — the CAT/HPSDR/TCI/SmartSDR/RTL-SDR/rtl_tcp/SpyServer/RX-888/Airspy HF+/SDRplay/PlutoSDR sections, the converter offset and stated tuning ranges, and the radio's sound-card device names. |
 | `digi.json` | JSON | Digital-mode operator settings: your callsign and grid, FT8/FT4/FT2 TX period, auto-sequence and message templates, and the WSPR beacon's duty cycle, power and band-hop list. |
 | `memories.json` | JSON | Saved memory channels. |
@@ -7258,6 +7342,15 @@ needs restarting by hand; **Dismiss** clears the banner.
 IQ requires a two-channel (stereo) capture device. A mono USB adapter cannot
 carry I and Q. Use a stereo line-input interface for IQ, or switch **Sound
 format** to **Demod audio**.
+
+**Transmit was cut off, and now every key-up is refused.**
+The SWR guard has tripped ([§2.10](#210-transmit)): the radio reported an SWR at
+or above the limit, so the over was stopped and transmit is latched out until
+you say you have seen it. The banner names the figure; **Acknowledge** on it
+re-enables transmit, and the trip is also shown on Settings → General. Check the
+antenna first — if the fault is still there the next transmission stops too.
+Turning the guard off clears a standing trip as well, which is the answer while
+you are tuning a manual ATU.
 
 **The CAT radio does not change mode.**
 On the **Radio** tab, set **Mode control** to **CAT**. For FT8/FT4/FT2, set

@@ -133,6 +133,38 @@ pub struct TxState {
     pub swr_tripped: Option<f32>,
 }
 
+/// The range a configured SWR limit is clamped to, wherever it arrives from.
+///
+/// Below about 1.1:1 no real antenna ever sits, so a lower figure would refuse
+/// every transmission and look like a broken radio. Above 10:1 is off the top of
+/// the scale the rigs actually report — the Icom SWR curve saturates exactly
+/// there — so a higher one could never trip at all.
+///
+/// Shared rather than restated by each side: the engine clamps to it, and the
+/// settings widget offers exactly this range so it can never show a figure that
+/// comes back changed.
+pub const SWR_LIMIT_MIN: f32 = 1.1;
+pub const SWR_LIMIT_MAX: f32 = 10.0;
+
+/// How much [`swr_tune_limit`] raises the trip limit during a tune.
+pub const SWR_TUNE_LIMIT_SCALE: f32 = 2.0;
+
+/// The SWR limit in force during a TUNE, given the operator's on-air figure.
+///
+/// A tune is the deliberate act of transmitting into a load that is known to be
+/// mismatched — an external ATU has nothing to work on until the rig keys into
+/// the very mismatch the ATU exists to remove — so it is held to a looser limit
+/// than an over, and to a much longer grace period (the engine's
+/// `SWR_TUNE_SETTLE_SAMPLES`). A dead feeder still reads at the top of the scale
+/// and is still caught.
+///
+/// Derived rather than configured, so there is one number to set; it lives here
+/// rather than in the engine because the settings panel shows the operator what
+/// it works out to, and two copies of this formula would drift.
+pub fn swr_tune_limit(limit: f32) -> f32 {
+    (limit * SWR_TUNE_LIMIT_SCALE).min(SWR_LIMIT_MAX)
+}
+
 /// One band of [`TxEqState`]: corner/center frequency and gain, plus either Q
 /// (the mid peaking band, where higher is narrower) or shelf slope (the
 /// low/high shelf bands, the RBJ cookbook's `S`, `0.1..=1.0`; `1.0` is the

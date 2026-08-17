@@ -485,7 +485,8 @@ pub struct SdroxideApp {
     /// still in flight. Not persisted: an answer from an hour ago says nothing
     /// about the password typed since, and a stale green tick is worse than no
     /// tick at all.
-    login_tests: std::collections::HashMap<sdroxide_types::LoginTarget, sdroxide_types::LoginTestResult>,
+    login_tests:
+        std::collections::HashMap<sdroxide_types::LoginTarget, sdroxide_types::LoginTestResult>,
     login_tests_pending: std::collections::HashSet<sdroxide_types::LoginTarget>,
     /// Inbox for an ADIF file chosen via the native "Import" dialog (a picker
     /// thread writes; the UI drains it each frame).

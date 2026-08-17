@@ -87,15 +87,42 @@ fn caps() -> DeviceCaps {
 
 struct Outcome {
     tripped_at: Option<f32>,
+    /// How long after key-down the trip arrived, which is the only way to see a
+    /// grace period from outside: the tune window is measured in seconds and an
+    /// over's in a fifth of one.
+    tripped_after: Option<Duration>,
     /// Whether the transmitter was still running when the test gave up.
     still_keyed: bool,
     /// Whether a key-up attempted AFTER the trip was allowed through.
     keyed_again: bool,
 }
 
-/// Key up with `telem` reported throughout, wait for a verdict, then try to key
-/// up a second time to see whether the latch holds.
+/// How the over is keyed. A tune is not an ordinary over: feeding a mismatch is
+/// the point of it, so it is held to its own limit and its own grace period.
+#[derive(Clone, Copy)]
+enum Key {
+    Ptt,
+    Tune,
+}
+
+impl Key {
+    fn cmd(self, on: bool) -> Command {
+        match self {
+            Key::Ptt => Command::SetPtt(on),
+            Key::Tune => Command::SetTune(on),
+        }
+    }
+}
+
+/// An ordinary over, waited on long enough for the settle window plus the
+/// debounce several times over, so a pass is not a race.
 fn run(telem: TxTelemetry, limit: f32, guard: bool) -> Outcome {
+    run_keyed(telem, limit, guard, Key::Ptt, Duration::from_secs(3))
+}
+
+/// Key up with `telem` reported throughout, wait up to `wait` for a verdict,
+/// then try to key up a second time to see whether the latch holds.
+fn run_keyed(telem: TxTelemetry, limit: f32, guard: bool, key: Key, wait: Duration) -> Outcome {
     let telem = Arc::new(Mutex::new(Some(telem)));
     let keyed = Arc::new(Mutex::new(false));
     let src = MockRig {
@@ -114,17 +141,18 @@ fn run(telem: TxTelemetry, limit: f32, guard: bool) -> Outcome {
     let thread = h.thread.take();
 
     h.cmd_tx.send(Command::SetVfo { vfo: Vfo::A, hz: 14.1e6 }).unwrap();
-    h.cmd_tx.send(Command::SetPtt(true)).unwrap();
+    let keyed_at = Instant::now();
+    h.cmd_tx.send(key.cmd(true)).unwrap();
 
-    // Long enough for the settle window plus the debounce several times over,
-    // so a pass here is not a race.
     let mut tripped_at = None;
-    let deadline = Instant::now() + Duration::from_secs(3);
+    let mut tripped_after = None;
+    let deadline = keyed_at + wait;
     while Instant::now() < deadline && tripped_at.is_none() {
         while let Ok(ev) = h.event_rx.try_recv() {
             if let RadioEvent::State(s) = ev {
                 if let Some(swr) = s.tx.swr_tripped {
                     tripped_at = Some(swr);
+                    tripped_after.get_or_insert(keyed_at.elapsed());
                 }
             }
         }
@@ -142,7 +170,7 @@ fn run(telem: TxTelemetry, limit: f32, guard: bool) -> Outcome {
     if let Some(t) = thread {
         let _ = t.join();
     }
-    Outcome { tripped_at, still_keyed, keyed_again }
+    Outcome { tripped_at, tripped_after, still_keyed, keyed_again }
 }
 
 /// ⭐ THE REGRESSION. An Icom reports SWR and no forward power at all. This is
@@ -194,4 +222,64 @@ fn inert_when_the_rig_reports_no_swr() {
 fn ignores_a_reading_taken_at_no_power() {
     let o = run(TxTelemetry { fwd_w: Some(0.0), swr: Some(9.9) }, 2.5, true);
     assert_eq!(o.tripped_at, None, "0 W means the reading is meaningless, not that the SWR is bad");
+}
+
+/// THE TUNE ALLOWANCE. An antenna tuner is given something to tune on by
+/// keying into the mismatch it exists to remove, so a tune runs to double the
+/// limit: 4:1 is over the 2.5:1 set for an over and under the 5:1 a tune gets.
+///
+/// Waited out well past the five-second grace, so what this proves is the
+/// raised LIMIT and not merely a longer window.
+#[test]
+fn a_tune_is_allowed_above_the_on_air_limit() {
+    let o = run_keyed(
+        TxTelemetry { fwd_w: None, swr: Some(4.0) },
+        2.5,
+        true,
+        Key::Tune,
+        Duration::from_secs(7),
+    );
+    assert_eq!(o.tripped_at, None, "4:1 is under the 5:1 a 2.5:1 setting allows while tuning");
+    assert!(o.still_keyed, "the tune carrier must be left running for the ATU to work on");
+}
+
+/// The same reading, keyed as an ordinary over: the difference is the tune, not
+/// the figure. Without this the test above would also pass on a guard that had
+/// simply stopped working.
+#[test]
+fn the_same_swr_stops_an_ordinary_over() {
+    let o = run(TxTelemetry { fwd_w: None, swr: Some(4.0) }, 2.5, true);
+    assert_eq!(o.tripped_at, Some(4.0), "4:1 is over a 2.5:1 limit when it is not a tune");
+    assert!(!o.still_keyed);
+}
+
+/// THE GRACE PERIOD. A disconnected feeder reads at the top of the scale, and
+/// a tune must still stop it — but only after the tuner has had its five
+/// seconds, since a sweep that starts at 10:1 is what tuning looks like.
+#[test]
+fn a_tune_still_stops_on_a_dead_feeder() {
+    let o = run_keyed(
+        TxTelemetry { fwd_w: None, swr: Some(9.9) },
+        2.5,
+        true,
+        Key::Tune,
+        Duration::from_secs(10),
+    );
+    assert_eq!(o.tripped_at, Some(9.9), "9.9:1 is over the 5:1 a tune is allowed");
+    let after = o.tripped_after.expect("a trip has a time");
+    assert!(
+        after > Duration::from_secs(4),
+        "the tuner must get its grace period, not be cut off in a fifth of a second: {after:?}"
+    );
+    assert!(!o.still_keyed, "the carrier must actually stop once the grace has run out");
+    assert!(!o.keyed_again, "and the latch holds afterwards, exactly as for an over");
+}
+
+/// The grace period is the tune's alone: an ordinary over is still stopped in a
+/// fraction of a second, which is the whole reason the guard exists.
+#[test]
+fn an_over_is_stopped_without_waiting_seconds() {
+    let o = run(TxTelemetry { fwd_w: None, swr: Some(9.9) }, 2.5, true);
+    let after = o.tripped_after.expect("a trip has a time");
+    assert!(after < Duration::from_secs(1), "an over must not inherit the tune grace: {after:?}");
 }

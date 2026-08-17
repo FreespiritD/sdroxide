@@ -2,9 +2,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     AgcMode, Band, DigiConfig, Direction, ImageKind, LoginTarget, Mode, NetworkConfig, NrLevel,
-    QsoStep,
-    RadioConfig, RigctldConfig, RotatorConfig, RxId, SatConfig, SatLockConfig, SkimmerSettings,
-    SpectrumConfig, SstvMode, TciServerConfig, TxEqState, UploadTarget, Vfo, WsjtxConfig,
+    QsoStep, RadioConfig, RigctldConfig, RotatorConfig, RxId, SatConfig, SatLockConfig,
+    SkimmerSettings, SpectrumConfig, SstvMode, TciServerConfig, TxEqState, UploadTarget, Vfo,
+    WsjtxConfig,
 };
 
 /// The single control vocabulary. The GUI, the WebSocket protocol, and the
@@ -113,7 +113,10 @@ pub enum Command {
     /// Arm or disarm the SWR guard and set the ratio it trips at.
     ///
     /// The engine clamps `limit`; see [`crate::TxState::swr_limit`].
-    SetSwrGuard { enabled: bool, limit: f32 },
+    SetSwrGuard {
+        enabled: bool,
+        limit: f32,
+    },
     /// Acknowledge a tripped SWR guard and allow transmit again.
     ///
     /// Deliberately its own command rather than a side effect of the next

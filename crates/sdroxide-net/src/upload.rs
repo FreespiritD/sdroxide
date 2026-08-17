@@ -154,11 +154,17 @@ fn test_eqsl(cfg: &NetworkConfig) -> Result<String, String> {
         let line = text
             .lines()
             .map(str::trim)
-            .find(|l| l.to_ascii_lowercase().contains("error") || l.to_ascii_lowercase().contains("no such"))
+            .find(|l| {
+                l.to_ascii_lowercase().contains("error")
+                    || l.to_ascii_lowercase().contains("no such")
+            })
             .unwrap_or("login rejected");
         return Err(line.trim_start_matches("Error:").trim().chars().take(120).collect());
     }
-    if low.contains("no log entries") || low.contains("has been built") || page.to_ascii_lowercase().contains(".adi") {
+    if low.contains("no log entries")
+        || low.contains("has been built")
+        || page.to_ascii_lowercase().contains(".adi")
+    {
         return Ok(format!("signed in as {}", cfg.eqsl.user.trim()));
     }
     Err("unexpected reply; check the username and password".into())
