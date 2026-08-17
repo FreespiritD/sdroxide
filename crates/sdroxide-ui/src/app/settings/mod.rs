@@ -1297,6 +1297,11 @@ impl SdroxideApp {
                 ui.add_space(10.0);
                 ui.separator();
                 ui.add_space(6.0);
+                self.settings_swr_guard(ui, cmds);
+
+                ui.add_space(10.0);
+                ui.separator();
+                ui.add_space(6.0);
                 self.settings_user_audio(ui, io.audio_pick);
                 // The radio's own sound card is only used by the CAT / Audio
                 // interface; every other backend carries its audio in-band.

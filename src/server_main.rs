@@ -48,6 +48,13 @@ pub fn run(
                 initial_mode: boot.initial_mode,
                 initial_antenna: boot.initial_antenna,
                 tx_ham_only,
+                // The SWR guard matters MORE headless, not less: there is no
+                // operator watching the meter, so an unattended beacon or a
+                // remote client would otherwise keep transmitting into a fault
+                // indefinitely. The latch is cleared by a connected client
+                // acknowledging it.
+                swr_guard: settings.swr_guard,
+                swr_limit: settings.swr_limit,
                 // A headless server is typically started before the rig it
                 // talks to; the engine uses this to attach as soon as the
                 // radio is there.

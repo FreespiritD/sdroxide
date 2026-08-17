@@ -47,6 +47,34 @@ pub const DISPLAY_BINS: usize = 2048;
 /// the remote-client WebSocket.
 const METER_INTERVAL: Duration = Duration::from_millis(33);
 
+/// Consecutive over-limit SWR readings required before the guard fires. At the
+/// 33 ms meter interval this is about a fifth of a second of genuinely bad SWR,
+/// which is long enough to ride out the key-up transient and short enough that
+/// the transmitter is not left into a fault.
+const SWR_TRIP_SAMPLES: u8 = 6;
+
+/// Meter samples to ignore after key-up before the SWR is believed at all.
+///
+/// This is the right way to discard the key-up transient, and it replaced a
+/// forward-power floor that looked equivalent and was not. See
+/// [`SWR_MIN_FWD_W`].
+const SWR_SETTLE_SAMPLES: u8 = 6;
+
+/// Forward power below which an SWR reading is ignored, purely to reject a
+/// reading taken when the transmitter is not really producing anything.
+///
+/// ⛔ THIS MUST STAY LOW. It was 5.0 W until 17 August 2026 and that was a real
+/// bug, found on the first live test: a rig with SWR foldback REDUCES POWER
+/// BECAUSE THE SWR IS BAD. Rodger's IC-7300 dropped to 3 W into a 7.5:1 load,
+/// every reading was therefore discarded as untrustworthy, and the guard sat
+/// silent through exactly the fault it exists to catch. A power floor high
+/// enough to be useful as a transient filter is high enough to gate out the
+/// emergency.
+///
+/// Discarding the transient is [`SWR_SETTLE_SAMPLES`]'s job, which is what a
+/// key-up transient actually is: a property of time, not of power.
+const SWR_MIN_FWD_W: f32 = 0.5;
+
 /// How often the RDS snapshot goes out. Far slower than the meters: a station
 /// name changes never, radio text every few seconds, and the only thing arriving
 /// continuously is the diagnostics log, which is a delta and so costs the same
@@ -136,6 +164,11 @@ pub struct EngineConfig {
     pub initial_antenna: (Option<String>, Option<String>),
     /// Refuse to key up outside amateur bands.
     pub tx_ham_only: bool,
+    /// Abort the over and latch out transmit when the rig reports an SWR at or
+    /// above [`Self::swr_limit`]. Inert on rigs that do not measure SWR.
+    pub swr_guard: bool,
+    /// The SWR ratio the guard trips at.
+    pub swr_limit: f32,
     /// Rebuilds the IQ source at runtime when the operator switches interfaces.
     /// `None` disables runtime interface switching (a restart is then required).
     pub reopen: Option<ReopenFn>,
@@ -185,6 +218,8 @@ impl Default for EngineConfig {
             initial_mode: None,
             initial_antenna: (None, None),
             tx_ham_only: true,
+            swr_guard: true,
+            swr_limit: 2.5,
             reopen: None,
             remember_session: false,
             store: sdroxide_config::Store::station(),
@@ -1171,6 +1206,30 @@ struct Engine {
     tx_freq_told: Option<f64>,
     tx_center_hz: f64,
     tx_ham_only: bool,
+    /// SWR guard: trip threshold, and the latch it sets.
+    ///
+    /// ⚠️ The count is the part that makes this usable rather than infuriating.
+    /// SWR is meaningless until forward power has actually risen, and the first
+    /// readings after key-up are routinely nonsense, so a bare `swr > limit`
+    /// would abort a large share of perfectly good overs — and a protection
+    /// that cries wolf gets switched off, which leaves the operator worse off
+    /// than having none. It therefore needs [`SWR_TRIP_SAMPLES`] consecutive
+    /// readings over the limit, each with forward power above
+    /// [`SWR_MIN_FWD_W`], before it fires.
+    swr_guard: bool,
+    swr_limit: f32,
+    /// Consecutive over-limit meter samples seen so far this over.
+    swr_over: u8,
+    /// Meter samples since this over began, counted so the key-up transient can
+    /// be ignored by TIME rather than by forward power. See [`SWR_MIN_FWD_W`]
+    /// for why the power-based version of this was wrong.
+    swr_settle: u8,
+    /// Set when the guard has fired, holding the SWR that fired it. While this
+    /// is `Some`, transmit is refused. Cleared only by the operator
+    /// acknowledging it ([`Command::ClearSwrTrip`]), which is the "latch"
+    /// half: a fault that clears itself the moment you release PTT teaches you
+    /// nothing and lets you keep transmitting into it.
+    swr_tripped: Option<f32>,
     /// TX monitor: FFTs the transmitted 48 kHz baseband (the modulator output,
     /// or the outgoing audio for a CAT rig) so the operator sees their own signal
     /// on the panadapter while transmitting.
@@ -1581,6 +1640,11 @@ fn engine_thread(
     // Published so every UI attached to this engine — including a remote one
     // started by somebody else — can warn about it.
     state.oob_tx = !engine_cfg.tx_ham_only;
+    // Seeded here, next to the other config-derived state, so the very first
+    // broadcast carries the real guard settings and no client ever renders the
+    // 0.0 that `TxState::default()` would give it.
+    state.tx.swr_guard = engine_cfg.swr_guard;
+    state.tx.swr_limit = engine_cfg.swr_limit.clamp(1.1, 10.0);
     if let Some(mode) = engine_cfg.initial_mode {
         for rx in &mut state.rx {
             *rx = RxState::with_mode(mode);
@@ -1738,6 +1802,11 @@ fn engine_thread(
         tx_freq_told: None,
         tx_center_hz: 0.0,
         tx_ham_only: engine_cfg.tx_ham_only,
+        swr_guard: engine_cfg.swr_guard,
+        swr_limit: engine_cfg.swr_limit.clamp(1.1, 10.0),
+        swr_over: 0,
+        swr_settle: 0,
+        swr_tripped: None,
         wide_scratch: Vec::new(),
         wide_seq: 0,
         wide_levels: None,
@@ -2095,6 +2164,75 @@ fn engine_thread(
                 if let Some(srv) = engine.tci_srv.as_ref() {
                     srv.push_telemetry(tele);
                 }
+                // The SWR guard. Placed here because this is the one point in
+                // the engine where a fresh SWR reading and `tx_active` are both
+                // in hand; it runs before the meters are published so the trip
+                // and the reading the operator sees cannot disagree.
+                engine.swr_settle = engine.swr_settle.saturating_add(1);
+                if engine.swr_guard
+                    && engine.swr_tripped.is_none()
+                    && engine.swr_settle > SWR_SETTLE_SAMPLES
+                {
+                    // ⛔ FORWARD POWER IS OPTIONAL AND MUST STAY OPTIONAL. This
+                    // read `(Some(swr), Some(fwd))` until 17 August 2026, on the
+                    // reasoning that a rig reporting SWR without power "cannot be
+                    // vetted". That reasoning cost two failed live tests: the
+                    // CI-V driver sends `TxTelemetry { fwd_w: None, swr: Some(v) }`,
+                    // so on every Icom the arm could never match and the guard
+                    // was dead code. Requiring a figure the most common rig
+                    // family never sends is not caution, it is a silent
+                    // disablement.
+                    match tele.swr {
+                        Some(swr)
+                            if swr >= engine.swr_limit
+                                && tele.fwd_w.map_or(true, |f| f >= SWR_MIN_FWD_W) =>
+                        {
+                            engine.swr_over = engine.swr_over.saturating_add(1);
+                            if engine.swr_over >= SWR_TRIP_SAMPLES {
+                                let limit = engine.swr_limit;
+                                warn!(swr, limit, "SWR guard tripped, unkeying");
+                                // Latch FIRST, so the transmitter cannot be
+                                // re-keyed in the window between unkeying and
+                                // the operator seeing the warning.
+                                engine.swr_tripped = Some(swr);
+                                engine.state.tx.swr_tripped = Some(swr);
+                                engine.swr_over = 0;
+                                // ⛔ NOT `deny_tx`, and the difference matters.
+                                // That helper only sets the state flags, on the
+                                // documented assumption that every deny happens
+                                // BEFORE the transmitter keyed — true of the
+                                // rails in `sync_tx_state`, false here, where
+                                // the rig is keyed and on the air right now.
+                                // Keying never touches `tx_active` directly; it
+                                // goes through `Command::SetPtt` so the guards
+                                // and the hardware both follow. Same route the
+                                // TCI starvation unkey uses.
+                                engine.apply(Command::SetTune(false));
+                                engine.apply(Command::SetPtt(false));
+                                // Short on purpose. This lands on a banner in
+                                // front of an operator who has just had a
+                                // transmission cut off, and the two things worth
+                                // reading are the figure and what to look at.
+                                engine.notice(&format!(
+                                    "Transmit stopped. SWR {swr:.1}:1, limit {limit:.1}:1. \
+                                     Check the antenna."
+                                ));
+                                engine.emit_state();
+                            }
+                        }
+                        // A reading that is fine resets the run. The count is for
+                        // CONSECUTIVE samples: an isolated spike is exactly what
+                        // the debounce exists to ignore.
+                        Some(_) => engine.swr_over = 0,
+                        // ⚠️ NO READING IS NOT A GOOD READING. Neither advance
+                        // nor reset: the rig has simply not said anything yet.
+                        // Resetting here would have been the same class of bug
+                        // as the one above, quietly holding the count at zero on
+                        // any rig whose telemetry arrives slower than the meter
+                        // tick.
+                        None => {}
+                    }
+                }
                 Some(Meters {
                     s_dbm: -127.0,
                     adc_peak_dbfs: 0.0,
@@ -2103,6 +2241,14 @@ fn engine_thread(
                     tone: None,
                 })
             } else {
+                // Not transmitting: both SWR counters belong to an over, so they
+                // reset here. Doing it on every receive sample rather than at
+                // one un-key site means no path out of transmit can leave a
+                // stale count behind to blank or trip the NEXT over.
+                // ⚠️ The LATCH is deliberately not touched: it survives until
+                // acknowledged, which is the whole point of it.
+                engine.swr_over = 0;
+                engine.swr_settle = 0;
                 let stereo = engine.main.as_ref().is_some_and(|c| c.stereo_locked());
                 let tone = engine.main.as_ref().and_then(|c| c.sub_tone());
                 engine.rx_signal_dbm().map(|s_dbm| Meters {
@@ -3713,6 +3859,39 @@ impl Engine {
                 // left the rig alone — swap the power level over by hand.
                 if self.tx_active {
                     self.source.set_tx_drive(self.tx_power_level() as f64);
+                }
+            }
+            SetSwrGuard { enabled, limit } => {
+                // Clamped, not trusted. Below about 1.1:1 no real antenna ever
+                // sits, so a low value would refuse every transmission and look
+                // like a broken radio; and the field is `0.0` in a default
+                // `TxState`, so an early edit from a client that has not yet
+                // heard from the engine would otherwise arm exactly that.
+                let limit = limit.clamp(1.1, 10.0);
+                self.swr_guard = enabled;
+                self.swr_limit = limit;
+                self.state.tx.swr_guard = enabled;
+                self.state.tx.swr_limit = limit;
+                self.swr_over = 0;
+                // Disarming clears a standing trip: leaving transmit latched
+                // out by a guard that is no longer on would be unexplainable
+                // from the screen.
+                if !enabled && self.swr_tripped.take().is_some() {
+                    self.state.tx.swr_tripped = None;
+                    self.clear_notice();
+                }
+                self.emit_state();
+            }
+            ClearSwrTrip => {
+                if let Some(swr) = self.swr_tripped.take() {
+                    info!(swr, "SWR guard acknowledged, transmit re-enabled");
+                    self.swr_over = 0;
+                    self.state.tx.swr_tripped = None;
+                    self.emit_state();
+                    // Clears the persistent warning raised by `deny_tx`, so the
+                    // banner goes when the condition it reports has been dealt
+                    // with, and not before.
+                    self.clear_notice();
                 }
             }
             SetTxDrive(v) => {
@@ -6404,6 +6583,11 @@ impl Engine {
         let _ = self.event_tx.send(RadioEvent::Notice(Some(text.to_string())));
     }
 
+    /// Withdraw the persistent notice. `Notice(None)` is the documented clear.
+    fn clear_notice(&self) {
+        let _ = self.event_tx.send(RadioEvent::Notice(None));
+    }
+
     fn emit_state(&self) {
         let _ = self.event_tx.send(RadioEvent::State(self.state.clone()));
     }
@@ -7275,6 +7459,16 @@ impl Engine {
             return;
         }
         if want_tx {
+            // The SWR latch comes before every other rail, including the
+            // station interlock. It is a pure state check with no side effects
+            // to unwind, and it is the one refusal that says the antenna system
+            // itself is suspect: there is no point acquiring the transmit gate
+            // to key into a fault.
+            if let Some(swr) = self.swr_tripped {
+                return self.deny_tx(&format!(
+                    "SWR guard tripped at {swr:.1}:1. Acknowledge it to transmit again"
+                ));
+            }
             // The station's transmit interlock: one radio on the air at a
             // time. First among the rails, before anything with side effects,
             // so a refused key-up on this radio leaves it exactly as it was.
@@ -7416,6 +7610,10 @@ impl Engine {
             self.source.discard_pending_rx();
             self.tx = None;
             self.tx_active = false;
+            // The run of over-limit readings belongs to the over that just
+            // ended. The LATCH deliberately survives: that is what makes it a
+            // latch rather than a per-over warning.
+            self.swr_over = 0;
             self.release_tx_gate();
             if let Some(mixer) = self.mixer.as_mut() {
                 mixer.rx_rec_enabled = true;

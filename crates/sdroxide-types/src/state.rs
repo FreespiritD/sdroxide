@@ -109,6 +109,28 @@ pub struct TxState {
     pub mic_gain: f32,
     /// Parametric EQ on the mic/modulator audio (voice modes only).
     pub eq: TxEqState,
+    /// Whether the SWR guard is armed, and the ratio it trips at.
+    ///
+    /// Carried in the broadcast state rather than read from `config.toml` by
+    /// each client, because the guard is a property of the RADIO's antenna
+    /// system and the config file of a remote client is on the wrong machine
+    /// entirely — the same reasoning that keeps the IARU region here.
+    ///
+    /// ⚠️ `TxState` derives `Default`, so `swr_limit` is `0.0` until the engine
+    /// has spoken. The engine sets both at construction and clamps anything it
+    /// is sent to a sane range, so a client that edits the field before the
+    /// first state arrives cannot arm a zero threshold.
+    pub swr_guard: bool,
+    pub swr_limit: f32,
+    /// Set when the SWR guard has tripped, holding the SWR that tripped it.
+    /// While it is `Some`, transmit is refused until the operator acknowledges
+    /// it with [`Command::ClearSwrTrip`].
+    ///
+    /// It lives in the shared state rather than being inferred from the notice
+    /// text so that every client, native and remote, can offer the
+    /// acknowledgement and can grey out transmit for the right reason. Matching
+    /// on a human-readable string would break the moment the wording changed.
+    pub swr_tripped: Option<f32>,
 }
 
 /// One band of [`TxEqState`]: corner/center frequency and gain, plus either Q
