@@ -229,8 +229,21 @@ pub struct WinlinkConfig {
     /// Digipeaters to route through, in order. Usually empty.
     #[serde(default)]
     pub gateway_via: Vec<String>,
+    /// The speed the gateway named above runs.
+    ///
+    /// Held here rather than read from the modem because it is a property of
+    /// *that gateway*, not of the band or of the operator's last session: a
+    /// 2 m RMS may be 1200 or 9600, and the only way to know is to have been
+    /// told. Applied to the modem when the packet lane connects.
+    #[serde(default)]
+    pub gateway_baud: crate::PacketBaud,
+    /// Where the gateway listens. Zero means "wherever the radio already is",
+    /// which is the right answer for an operator who parks on one channel.
+    #[serde(default)]
+    pub gateway_freq_hz: f64,
     /// The operator's own gateway list, since the published one needs an API
-    /// key. Picking one fills in `gateway` and `gateway_via`.
+    /// key. Picking one fills in `gateway`, `gateway_via`, `gateway_baud` and
+    /// `gateway_freq_hz`.
     #[serde(default)]
     pub gateways: Vec<WinlinkGateway>,
     /// Connect automatically on a timer.
@@ -250,6 +263,8 @@ impl Default for WinlinkConfig {
             lane: WinlinkLane::default(),
             gateway: String::new(),
             gateway_via: Vec::new(),
+            gateway_baud: crate::PacketBaud::default(),
+            gateway_freq_hz: 0.0,
             gateways: Vec::new(),
             auto_connect: false,
             auto_connect_minutes: 30,
@@ -261,6 +276,24 @@ impl WinlinkConfig {
     /// Whether a session could even be attempted.
     pub fn is_usable(&self) -> bool {
         !self.callsign.trim().is_empty() && !self.password.is_empty()
+    }
+
+    /// Make the `i`th saved gateway the one the next connect calls.
+    ///
+    /// Every field the gateway knows about itself moves, not just its name.
+    /// This lives here rather than in the settings panel because copying only
+    /// the callsign is a silent bug — the session then runs at whatever speed
+    /// the modem happened to be on, and calling a 1200-baud gateway at 9600
+    /// is indistinguishable from calling one that is off the air.
+    ///
+    /// Out-of-range indices are ignored, so a list edited concurrently by a
+    /// second client cannot panic the one that was looking at it.
+    pub fn select_gateway(&mut self, i: usize) {
+        let Some(g) = self.gateways.get(i).cloned() else { return };
+        self.gateway = g.callsign;
+        self.gateway_via = g.via;
+        self.gateway_baud = g.baud;
+        self.gateway_freq_hz = g.freq_hz;
     }
 }
 
@@ -293,5 +326,62 @@ mod tests {
         let blank =
             WinlinkConfig { callsign: "   ".into(), password: "x".into(), ..Default::default() };
         assert!(!blank.is_usable());
+    }
+
+    fn two_gateways() -> WinlinkConfig {
+        WinlinkConfig {
+            gateways: vec![
+                WinlinkGateway {
+                    callsign: "OE1XAR-10".into(),
+                    via: vec!["OE3XLR-1".into()],
+                    freq_hz: 144_800_000.0,
+                    baud: crate::PacketBaud::Vhf1200,
+                    label: "Vienna".into(),
+                },
+                WinlinkGateway {
+                    callsign: "DB0FHN-10".into(),
+                    via: Vec::new(),
+                    freq_hz: 438_425_000.0,
+                    baud: crate::PacketBaud::Vhf9600,
+                    label: String::new(),
+                },
+            ],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn selecting_a_gateway_takes_its_speed_and_channel() {
+        // The whole point: a 9600 gateway must arrive as 9600. Copying only
+        // the callsign left the modem at whatever it was, and the session
+        // then failed with no evidence of why.
+        let mut cfg = two_gateways();
+        cfg.select_gateway(1);
+        assert_eq!(cfg.gateway, "DB0FHN-10");
+        assert_eq!(cfg.gateway_baud, crate::PacketBaud::Vhf9600);
+        assert_eq!(cfg.gateway_freq_hz, 438_425_000.0);
+        assert!(cfg.gateway_via.is_empty());
+    }
+
+    #[test]
+    fn selecting_another_gateway_clears_the_previous_path() {
+        // Switching from a digipeated gateway to a direct one must not leave
+        // the old path behind: the call would go out via a digipeater the new
+        // gateway has never heard of.
+        let mut cfg = two_gateways();
+        cfg.select_gateway(0);
+        assert_eq!(cfg.gateway_via, ["OE3XLR-1"]);
+        cfg.select_gateway(1);
+        assert!(cfg.gateway_via.is_empty(), "the Vienna digipeater followed us to Franconia");
+        assert_eq!(cfg.gateway_baud, crate::PacketBaud::Vhf9600);
+    }
+
+    #[test]
+    fn selecting_a_gateway_that_is_not_there_changes_nothing() {
+        let mut cfg = two_gateways();
+        cfg.select_gateway(0);
+        let before = cfg.clone();
+        cfg.select_gateway(7);
+        assert_eq!(cfg, before);
     }
 }

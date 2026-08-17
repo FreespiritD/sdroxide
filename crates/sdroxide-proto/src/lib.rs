@@ -320,7 +320,16 @@ use sdroxide_types::{
 /// on connect like the other announced-once state: the station being listened to
 /// is a *condition*, not an event, and a browser tab that attaches after the
 /// dial stopped moving would otherwise sit blank until the text next changed.
-pub const PROTO_VERSION: u16 = 58;
+///
+/// **59** — an RMS gateway carries its own speed and channel. `WinlinkConfig`
+/// gained `gateway_baud` and `gateway_freq_hz`, so picking a 9600 gateway from
+/// the list calls it at 9600 instead of in silence at 1200. `WinlinkConfig`
+/// travels inside `Command::SetNetworkConfig`, and postcard is not
+/// self-describing: two appended fields shift every byte after them, so a v58
+/// client and a v59 server would disagree about where the gateway list starts.
+/// `#[serde(default)]` covers the config file on disk, not the wire — hence
+/// the bump.
+pub const PROTO_VERSION: u16 = 59;
 const VERSION_BYTE: u8 = 0x12;
 
 #[derive(Debug, thiserror::Error)]

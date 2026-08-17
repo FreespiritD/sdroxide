@@ -4660,6 +4660,21 @@ Choosing **Radio (packet)** reveals the gateway fields:
 - **Gateway** — the RMS gateway's callsign including SSID, e.g. `OE1XAR-10`.
 - **Via** — digipeaters, in order, separated by spaces. Usually empty: a gateway
   you can hear directly is a gateway you should call directly.
+- **Speed** — the speed *that gateway* runs, which is a fact about the gateway
+  rather than about the band: a 2 m RMS may be 1200 or 9600, and nothing but its
+  owner's published details tells you which. Most answer at 1200. Set it from
+  what is published rather than guessing, because calling a 1200 gateway at 9600
+  sounds exactly like calling one that is off the air — no error, just silence.
+  9600 additionally needs the radio's data port at both ends; a microphone and
+  speaker path destroys it. 300 is HF.
+- **Frequency** — where the gateway listens. Zero leaves the dial alone, which is
+  what you want when you park on one channel; anything else tunes the radio when
+  the session starts.
+
+Both Speed and Frequency are applied when the session starts, not when you set
+them, so nothing moves the dial or the modem out from under you while you are
+still listening. When a connect does change either one it says so in the status
+line, and the session transcript names the speed it called at.
 
 #### My gateways
 
@@ -4668,11 +4683,16 @@ without an access key sdroxide does not have, so you keep your own list. That is
 what a packet operator does anyway — the two or three gateways reachable from
 one location are learned by trying, and they rarely change.
 
-**+ ADD GATEWAY** saves whatever is in the Gateway and Via fields. Each saved
-entry shows its digipeater path, frequency and speed; **USE** makes it the one
-the next connect calls, and **✕** forgets it. A typed callsign works exactly as
-well as a fetched one would, and if an API key ever arrives the fetched entries
-land in this same list.
+**+ ADD GATEWAY** saves whatever is in the Gateway, Via, Speed and Frequency
+fields. Each saved entry shows its digipeater path, frequency and speed; **USE**
+loads all four back into those fields, making it the one the next connect calls,
+and **FORGET** removes it. A typed callsign works exactly as well as a fetched
+one would, and if an API key ever arrives the fetched entries land in this same
+list.
+
+Because each entry carries its own speed and channel, a list holding a 1200
+gateway and a 9600 one needs no further setting-up: **USE** on either puts the
+modem and the dial where that gateway wants them.
 
 #### Internet gateway
 
@@ -6428,12 +6448,15 @@ no open implementation of the waveform exists.
 
 To forward over the air:
 
-1. Put the radio in **PACKET** (VHF/UHF, FM) or **PACKET-HF** (HF, sideband)
-   and tune to the gateway's frequency.
+1. Put the radio in **PACKET** (VHF/UHF, FM) or **PACKET-HF** (HF, sideband).
 2. Set your **station call** in the packet setup dialog — with an SSID, e.g.
    `OE3JJS-10`. Nothing transmits until this is set: an unidentified
    transmission is illegal everywhere.
-3. Set the route to **Radio (packet)** and name the gateway.
+3. Set the route to **Radio (packet)** and name the gateway, along with the
+   speed and frequency it runs. Both are properties of that gateway rather than
+   of the band, so they live with its callsign and are applied when the session
+   starts. Leave the frequency at zero to keep the dial where it is and tune
+   manually.
 4. Press **CONNECT** in the MAIL window as usual.
 
 While a session is running, CONNECT becomes **ABORT**. Stopping is cooperative
@@ -6451,14 +6474,21 @@ two or three gateways reachable from one location are learned by trying, and
 they rarely change.
 
 Under **Settings → Winlink**, with the route set to Radio, type a gateway
-callsign and press **+ ADD GATEWAY** to remember it. Each saved entry can carry
-a digipeater path, a frequency and a speed, and **USE** makes it the one the
-next connect calls. Nothing is hidden behind the missing API key: a typed
-callsign works exactly as well as a fetched one, and if a key ever arrives the
-fetched entries land in the same list.
+callsign and press **+ ADD GATEWAY** to remember it. Each saved entry carries a
+digipeater path, a frequency and a speed, and **USE** loads all of them, making
+that gateway the one the next connect calls. Nothing is hidden behind the
+missing API key: a typed callsign works exactly as well as a fetched one, and if
+a key ever arrives the fetched entries land in the same list.
 
 Digipeaters go in **Via**, in order, separated by spaces — usually empty, since
 a gateway you can hear directly is one you should call directly.
+
+Keeping the speed with the gateway is what makes a mixed list work. There is no
+rule that derives speed from frequency — a 2 m RMS may be 1200 or 9600 — so the
+only reliable source is what the gateway's owner publishes. Get it wrong in the
+1200 direction and you hear the gateway answer a call it cannot understand; get
+it wrong in the 9600 direction and you hear nothing at all, which is why the
+session transcript records the speed each call went out at.
 
 ### Speeds
 

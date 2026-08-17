@@ -43,7 +43,13 @@ pub enum WinlinkRoute {
     /// The CMS over the internet.
     Telnet { address: String },
     /// An RMS gateway over the air, optionally through digipeaters.
-    Packet { gateway: String, via: Vec<String> },
+    ///
+    /// `baud` is carried rather than left implicit in the modem because a
+    /// speed mismatch is the one packet failure that produces no evidence:
+    /// calling a 1200-baud gateway at 9600 is indistinguishable from calling a
+    /// gateway that is off the air. Naming it in the transcript is what makes
+    /// the difference visible afterwards.
+    Packet { gateway: String, via: Vec<String>, baud: sdroxide_types::PacketBaud },
 }
 
 /// What a finished session produced.
@@ -417,9 +423,9 @@ fn run_session(
                 Err(e) => Some(e.to_string()),
             }
         }
-        WinlinkRoute::Packet { gateway, via } => {
+        WinlinkRoute::Packet { gateway, via, baud } => {
             let port = port.expect("connect() proved the link exists before spawning");
-            outcome.log.push(format!("> calling {gateway}"));
+            outcome.log.push(format!("> calling {gateway} at {} baud", baud.label()));
             let mut transport = match Ax25Transport::connect(
                 port,
                 gateway,

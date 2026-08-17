@@ -1964,6 +1964,58 @@ impl SdroxideApp {
                         .weak(),
                     );
 
+                    // The gateway's speed, not the operator's: it belongs
+                    // beside the callsign it describes rather than with the
+                    // modem settings, because nothing about the band predicts
+                    // it and only the gateway's owner knows.
+                    ui.horizontal(|ui| {
+                        ui.add_sized([96.0, 22.0], egui::Label::new("Speed"));
+                        for b in [
+                            sdroxide_types::PacketBaud::Vhf1200,
+                            sdroxide_types::PacketBaud::Vhf9600,
+                            sdroxide_types::PacketBaud::Hf300,
+                        ] {
+                            ui.selectable_value(&mut wl.gateway_baud, b, b.label());
+                        }
+                    });
+                    ui.label(
+                        RichText::new(
+                            "Most RMS gateways answer at 1200. Calling a 1200 gateway at 9600 \
+                             sounds exactly like a gateway that is off the air, so set this \
+                             from what the gateway's owner publishes rather than guessing. \
+                             9600 also needs the radio's data port at both ends. 300 is HF.",
+                        )
+                        .weak(),
+                    );
+
+                    let mut mhz = wl.gateway_freq_hz / 1e6;
+                    ui.horizontal(|ui| {
+                        ui.add_sized([96.0, 22.0], egui::Label::new("Frequency"));
+                        if ui
+                            .add(
+                                egui::DragValue::new(&mut mhz)
+                                    .speed(0.001)
+                                    .range(0.0..=1300.0)
+                                    .max_decimals(4)
+                                    .suffix(" MHz"),
+                            )
+                            .changed()
+                        {
+                            wl.gateway_freq_hz = mhz * 1e6;
+                        }
+                        if wl.gateway_freq_hz > 0.0 && ui.button("CLEAR").clicked() {
+                            wl.gateway_freq_hz = 0.0;
+                        }
+                    });
+                    ui.label(
+                        RichText::new(
+                            "Zero leaves the dial alone, which is what you want when you park \
+                             on one channel. Anything else tunes the radio when the session \
+                             starts.",
+                        )
+                        .weak(),
+                    );
+
                     ui.add_space(6.0);
                     net_heading(ui, "My gateways");
                     ui.label(
@@ -2011,9 +2063,7 @@ impl SdroxideApp {
                         });
                     }
                     if let Some(i) = pick {
-                        let g = wl.gateways[i].clone();
-                        wl.gateway = g.callsign;
-                        wl.gateway_via = g.via;
+                        wl.select_gateway(i);
                     }
                     if let Some(i) = remove {
                         wl.gateways.remove(i);
@@ -2029,8 +2079,8 @@ impl SdroxideApp {
                         wl.gateways.push(sdroxide_types::WinlinkGateway {
                             callsign: wl.gateway.trim().to_uppercase(),
                             via: wl.gateway_via.clone(),
-                            freq_hz: 0.0,
-                            baud: sdroxide_types::PacketBaud::default(),
+                            freq_hz: wl.gateway_freq_hz,
+                            baud: wl.gateway_baud,
                             label: String::new(),
                         });
                     }

@@ -4029,36 +4029,37 @@ impl Engine {
                 return;
             }
             WinlinkConnect => {
-                match self.winlink.as_mut() {
-                    Some(wl) => {
-                        // The lane is the operator's setting rather than a
-                        // command parameter, so an existing client that knows
-                        // nothing about radio lanes still connects by telnet.
-                        let c = wl.config();
-                        let route = match c.lane {
-                            sdroxide_types::WinlinkLane::Telnet => {
-                                sdroxide_winlink::WinlinkRoute::Telnet {
-                                    address: c.cms_address.clone(),
-                                }
-                            }
-                            sdroxide_types::WinlinkLane::Packet => {
-                                sdroxide_winlink::WinlinkRoute::Packet {
-                                    gateway: c.gateway.trim().to_uppercase(),
-                                    via: c.gateway_via.clone(),
-                                }
-                            }
-                        };
-                        if let Err(e) = wl.connect(route) {
-                            let _ = self.event_tx.send(RadioEvent::Notice(Some(e)));
+                // Taken by value so the radio can be set up for the call
+                // below: applying the gateway's channel needs the engine, and
+                // the mailbox is borrowed from it.
+                let Some(c) = self.winlink.as_ref().map(|wl| wl.config().clone()) else {
+                    let _ = self.event_tx.send(RadioEvent::Notice(Some(
+                        "the Winlink mailbox is unavailable".into(),
+                    )));
+                    return;
+                };
+                // The lane is the operator's setting rather than a
+                // command parameter, so an existing client that knows
+                // nothing about radio lanes still connects by telnet.
+                let route = match c.lane {
+                    sdroxide_types::WinlinkLane::Telnet => {
+                        sdroxide_winlink::WinlinkRoute::Telnet { address: c.cms_address.clone() }
+                    }
+                    sdroxide_types::WinlinkLane::Packet => {
+                        self.apply_gateway_channel(&c);
+                        sdroxide_winlink::WinlinkRoute::Packet {
+                            gateway: c.gateway.trim().to_uppercase(),
+                            via: c.gateway_via.clone(),
+                            baud: c.gateway_baud,
                         }
-                        self.emit_winlink_status();
                     }
-                    None => {
-                        let _ = self.event_tx.send(RadioEvent::Notice(Some(
-                            "the Winlink mailbox is unavailable".into(),
-                        )));
-                    }
+                };
+                if let Some(wl) = self.winlink.as_mut()
+                    && let Err(e) = wl.connect(route)
+                {
+                    let _ = self.event_tx.send(RadioEvent::Notice(Some(e)));
                 }
+                self.emit_winlink_status();
                 return;
             }
             MailList { folder, offset, count } => {
@@ -5338,6 +5339,65 @@ impl Engine {
             for frame in digi.packet_take_air_frames() {
                 srv.broadcast(&frame);
             }
+        }
+    }
+
+    /// Put the radio on the selected RMS gateway's channel and speed.
+    ///
+    /// Both belong to the gateway rather than to the operator: a 2 m RMS runs
+    /// 1200 or 9600 because of how it was built, and no rule about the band
+    /// predicts which. So they are applied here, at the moment of calling,
+    /// rather than when the gateway was picked in settings — a settings dialog
+    /// that moved the dial under a listening operator would be worse than the
+    /// problem it solves.
+    ///
+    /// Both changes are announced. A speed change is invisible on the air and
+    /// its failure mode is silence, so an operator who is not told would have
+    /// no way to tell a retuned modem from a dead gateway.
+    fn apply_gateway_channel(&mut self, cfg: &sdroxide_types::WinlinkConfig) {
+        // Only VHF/UHF has a choice: HF packet is 300 baud and the controller
+        // clamps to it, so touching the config on 40 m would write a setting
+        // that does nothing and leave the Setup panel describing a modem the
+        // operator does not have.
+        if self.state.rx[0].mode == Mode::Packet && self.digi_config.packet_baud != cfg.gateway_baud
+        {
+            self.digi_config.packet_baud = cfg.gateway_baud;
+            // The same fan-out SetDigiConfig does: the Setup panel's speed
+            // chip reads this field, and a stale one would show 1200 while
+            // the modem ran 9600.
+            if let Some(d) = self.digi.as_mut() {
+                d.set_config(self.digi_config.clone());
+            }
+            if let Err(e) = sdroxide_config::save_digi_config(&self.digi_config) {
+                warn!("saving digi config: {e}");
+            }
+            self.mark_shared_store_write();
+            self.emit_digi_status();
+            let _ = self.event_tx.send(RadioEvent::Notice(Some(format!(
+                "packet speed set to {} baud for {}",
+                cfg.gateway_baud.label(),
+                cfg.gateway.trim().to_uppercase(),
+            ))));
+        }
+
+        // Zero means "wherever the radio already is", which is what an
+        // operator parked on one channel wants.
+        if cfg.gateway_freq_hz > 0.0
+            && (self.state.active_freq_hz() - cfg.gateway_freq_hz).abs() >= 1.0
+        {
+            self.stop_scan_for_operator();
+            match self.state.active_vfo {
+                Vfo::A => self.state.vfo_a_hz = cfg.gateway_freq_hz,
+                Vfo::B => self.state.vfo_b_hz = cfg.gateway_freq_hz,
+            }
+            self.state.band = Band::containing(cfg.gateway_freq_hz);
+            self.keep_vfo_in_span();
+            self.update_tuning();
+            let _ = self.event_tx.send(RadioEvent::Notice(Some(format!(
+                "tuned to {:.4} MHz for {}",
+                cfg.gateway_freq_hz / 1e6,
+                cfg.gateway.trim().to_uppercase(),
+            ))));
         }
     }
 
