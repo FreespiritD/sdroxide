@@ -349,7 +349,15 @@ use sdroxide_types::{
 /// positional and not self-describing: a v60 client reading a v61
 /// `RadioConfig` would run off the end of the message, and `#[serde(default)]`
 /// covers the file, not the stream.
-pub const PROTO_VERSION: u16 = 61;
+///
+/// **62** — the panadapter's gestures say so. `Command::TuneInSpan` is appended
+/// last, so no surviving discriminant moves, but a v61 engine would answer a
+/// command it cannot decode with a protocol error. It separates tuning inside
+/// the span already on screen (click, drag, wheel on the panadapter) from
+/// setting the dial (`Command::SetVfo` — the readout, a memory, an external
+/// controller), which are the same thing on an SDR and are not on a rig whose
+/// own synthesiser is the centre of what we capture.
+pub const PROTO_VERSION: u16 = 62;
 const VERSION_BYTE: u8 = 0x12;
 
 #[derive(Debug, thiserror::Error)]

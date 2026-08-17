@@ -3428,6 +3428,24 @@ impl Engine {
                 }
                 if vfo == self.state.active_vfo {
                     self.state.band = Band::containing(hz);
+                    self.follow_dial();
+                }
+                self.update_tuning();
+            }
+            // The panadapter's own gestures: what they point at is already in
+            // the baseband, so the receiver moves onto it and the front end
+            // stays where it is for as long as the span holds the VFO. That is
+            // what `SetVfo` does too on a radio whose window is its own; the
+            // two only part company on one that tunes with the dial.
+            TuneInSpan { vfo, hz } => {
+                self.stop_scan_for_operator();
+                let hz = hz.max(0.0);
+                match vfo {
+                    Vfo::A => self.state.vfo_a_hz = hz,
+                    Vfo::B => self.state.vfo_b_hz = hz,
+                }
+                if vfo == self.state.active_vfo {
+                    self.state.band = Band::containing(hz);
                     self.keep_vfo_in_span();
                 }
                 self.update_tuning();
@@ -3435,13 +3453,13 @@ impl Engine {
             SelectVfo(v) => {
                 self.state.active_vfo = v;
                 self.state.band = Band::containing(self.state.active_freq_hz());
-                self.keep_vfo_in_span();
+                self.follow_dial();
                 self.update_tuning();
             }
             SwapVfos => {
                 std::mem::swap(&mut self.state.vfo_a_hz, &mut self.state.vfo_b_hz);
                 self.state.band = Band::containing(self.state.active_freq_hz());
-                self.keep_vfo_in_span();
+                self.follow_dial();
                 self.update_tuning();
             }
             CopyAtoB => {
@@ -7830,6 +7848,39 @@ impl Engine {
             self.emit_digi_status();
         }
         Ok(())
+    }
+
+    /// The operator set the dial — the readout, a keypad entry, a memory, VFO
+    /// A/B, an external controller. Put the front end where that dial is.
+    ///
+    /// On almost every radio that is [`Self::keep_vfo_in_span`]: the window is
+    /// a resource worth keeping, the VFO tunes inside it with a DDC, and the
+    /// hardware only moves when the span can no longer reach. On a rig that
+    /// tunes *with* the dial — a transceiver whose I/Q output feeds a sound
+    /// card, an Icom sending its 12 kHz IF — there is no such window to keep:
+    /// its one synthesiser decides both where we listen and what we capture.
+    /// Tuning the DDC away from it there would leave the radio's readout and
+    /// ours showing different frequencies, with nothing to reconcile them until
+    /// the next thing the rig reported snapped ours back to its — so the dial
+    /// the operator asked for is commanded at the radio, and the window follows
+    /// it.
+    ///
+    /// The panadapter keeps the old behaviour through
+    /// [`sdroxide_types::Command::TuneInSpan`]: clicking a signal that is
+    /// already inside the captured baseband is not a request to move the radio.
+    fn follow_dial(&mut self) {
+        if self.audio_mode || !self.source.center_is_dial() {
+            self.keep_vfo_in_span();
+            return;
+        }
+        let vfo = self.state.active_freq_hz();
+        // Asking for a centre the front end is already on costs a skimmer
+        // restart and a CAT write for nothing.
+        if (self.state.center_hz - (vfo + self.lo_offset_hz())).abs() >= 0.5 {
+            self.retune_for_vfo(vfo);
+        } else {
+            self.good_vfo_hz = vfo;
+        }
     }
 
     /// Retune hardware center if the active VFO left the usable span — or, on a

@@ -497,19 +497,23 @@ fn draw_net_box(p: &egui::Painter, b: &NetBox, spot: &Spot, hovered: bool, alpha
 /// Tune the active VFO onto a network spot and set its mode. CW is dialed a
 /// sidetone-pitch below so the signal lands in the CW passband (as click-tune
 /// on a skimmer spot does).
+///
+/// [`Command::TuneInSpan`], like every click on the picture: the spot is drawn
+/// where it is because it is inside the span we are already receiving, so the
+/// receiver moves onto it and a radio that tunes with its dial stays put.
 fn tune_to_net_spot(spot: &Spot, state: &RadioState, cmds: &mut Vec<Command>) {
     match spot.radio_mode() {
         Some(Mode::Cw) => {
             let (lo, hi) = Mode::Cw.default_filter();
             let pitch = ((lo + hi) * 0.5) as f64;
-            cmds.push(Command::SetVfo { vfo: state.active_vfo, hz: spot.freq_hz - pitch });
+            cmds.push(Command::TuneInSpan { vfo: state.active_vfo, hz: spot.freq_hz - pitch });
             cmds.push(Command::SetMode { rx: RxId::Main, mode: Mode::Cw });
         }
         Some(m) => {
-            cmds.push(Command::SetVfo { vfo: state.active_vfo, hz: spot.freq_hz });
+            cmds.push(Command::TuneInSpan { vfo: state.active_vfo, hz: spot.freq_hz });
             cmds.push(Command::SetMode { rx: RxId::Main, mode: m });
         }
-        None => cmds.push(Command::SetVfo { vfo: state.active_vfo, hz: spot.freq_hz }),
+        None => cmds.push(Command::TuneInSpan { vfo: state.active_vfo, hz: spot.freq_hz }),
     }
 }
 
@@ -1019,6 +1023,8 @@ pub fn show_ext(
                 Vfo::A => state.vfo_a_hz = hz, // optimistic echo
                 Vfo::B => state.vfo_b_hz = hz,
             }
+            // The dial, not a click: dragging turns the VFO continuously, so a
+            // radio that tunes with its dial comes along (see `SetVfo`).
             cmds.push(Command::SetVfo { vfo: state.active_vfo, hz });
         }
     } else {
@@ -1047,6 +1053,8 @@ pub fn show_ext(
                             Vfo::A => state.vfo_a_hz = hz,
                             Vfo::B => state.vfo_b_hz = hz,
                         }
+                        // Wheel-tuning is the dial too — the same gesture the
+                        // readout's digits take, made over the picture.
                         cmds.push(Command::SetVfo { vfo: state.active_vfo, hz });
                     }
                     WheelAction::None => {}
@@ -1087,7 +1095,7 @@ pub fn show_ext(
                         cmds.push(Command::SetSubRxFreq(hz));
                     } else {
                         state.vfo_b_hz = hz;
-                        cmds.push(Command::SetVfo { vfo: Vfo::B, hz });
+                        cmds.push(Command::TuneInSpan { vfo: Vfo::B, hz });
                     }
                 } else if let Some(nb) = net_boxes.iter().find(|b| b.rect.contains(pos)) {
                     // Network spot: tune + set mode, and hand the spot back so the
@@ -1119,7 +1127,7 @@ pub fn show_ext(
                                     let (lo, hi) = Mode::Cw.default_filter();
                                     ((lo + hi) * 0.5) as f64
                                 });
-                                cmds.push(Command::SetVfo {
+                                cmds.push(Command::TuneInSpan {
                                     vfo: state.active_vfo,
                                     hz: spot_hz - pitch,
                                 });
@@ -1129,7 +1137,7 @@ pub fn show_ext(
                                 // Put the signal at a fixed audio offset and open
                                 // the PSK/RTTY panel there for a clean decode.
                                 const AF: f64 = 1500.0;
-                                cmds.push(Command::SetVfo {
+                                cmds.push(Command::TuneInSpan {
                                     vfo: state.active_vfo,
                                     hz: spot_hz - AF,
                                 });
@@ -1152,7 +1160,7 @@ pub fn show_ext(
                     // it is guaranteed not to be audible.
                     let off = cursor_hz.map(f64::from).unwrap_or(0.0);
                     let hz = ((view.x_to_freq(pos.x, &rect) - off) / step).round() * step;
-                    cmds.push(Command::SetVfo { vfo: state.active_vfo, hz });
+                    cmds.push(Command::TuneInSpan { vfo: state.active_vfo, hz });
                 }
             }
         }
@@ -1201,6 +1209,7 @@ pub fn show_ext(
                     Vfo::A => state.vfo_a_hz = hz,
                     Vfo::B => state.vfo_b_hz = hz,
                 }
+                // Still the drag that let go, so still the dial.
                 cmds.push(Command::SetVfo { vfo: state.active_vfo, hz });
                 if hz == 0.0 {
                     fling = None; // ran into the bottom of the spectrum

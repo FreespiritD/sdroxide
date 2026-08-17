@@ -11,6 +11,10 @@ use crate::{
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Command {
     // VFO / tuning
+    /// Put the dial here: the frequency readout, a keypad entry, a band or
+    /// memory recall, a spot from the list, an external controller. On a rig
+    /// that is its own front end this moves the radio — see
+    /// [`Command::TuneInSpan`] for the panadapter's gestures, which do not.
     SetVfo {
         vfo: Vfo,
         hz: f64,
@@ -532,5 +536,23 @@ pub enum Command {
         from: crate::MailFolder,
         to: crate::MailFolder,
         mid: String,
+    },
+    /// Tune inside the span already on screen — the panadapter's own gestures
+    /// (click, drag, wheel, a spot box) as against [`Command::SetVfo`], which
+    /// is the dial.
+    ///
+    /// The two are the same thing on an SDR, whose window is a resource worth
+    /// keeping: the engine only retunes the hardware when the VFO would leave
+    /// the span, whichever command asked. They part company on a rig that *is*
+    /// the front end — a transceiver whose I/Q output feeds a sound card, an
+    /// Icom sending its 12 kHz IF — where the dial and the centre of what we
+    /// capture are one synthesiser. Setting the dial there has to move the
+    /// radio, or its readout and ours disagree and the next touch of its knob
+    /// snaps ours back. Clicking a signal that is *already inside* the captured
+    /// span must not: the content is in hand, so the receiver moves to it
+    /// smoothly and the radio stays where it is.
+    TuneInSpan {
+        vfo: Vfo,
+        hz: f64,
     },
 }

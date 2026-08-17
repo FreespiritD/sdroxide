@@ -378,6 +378,14 @@ impl IqSource for PanadapterSource {
         }
     }
 
+    /// False however the transceiver answers: here the window belongs to the
+    /// *receiver*, and the dial moves inside it through [`Self::set_if_offset`]
+    /// without the span having to follow. That separation is the whole point of
+    /// the pairing — it is what a rig with only its own I/Q output does not have.
+    fn center_is_dial(&self) -> bool {
+        false
+    }
+
     fn poll_control(&mut self) -> Vec<ControlUpdate> {
         let mut out = Vec::new();
         for u in self.ctrl.poll_control() {

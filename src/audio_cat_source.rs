@@ -255,6 +255,12 @@ impl IqSource for AudioCatSource {
         }
     }
 
+    /// The rig's synthesiser is the centre of the I/Q it sends us: there is no
+    /// second oscillator to park somewhere and tune away from.
+    fn center_is_dial(&self) -> bool {
+        true
+    }
+
     fn read(&mut self, buf: &mut [Complex32]) -> Result<usize> {
         match self.format {
             SoundFormat::DemodAudio => {

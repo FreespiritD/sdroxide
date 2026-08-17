@@ -421,6 +421,13 @@ impl IqSource for IcomNetSource {
         }
     }
 
+    /// Both receive paths hang off the radio's own dial: the 12 kHz IF is
+    /// mixed down from it, and AF is what it demodulated there. Either way
+    /// there is no second oscillator to leave parked while the dial moves.
+    fn center_is_dial(&self) -> bool {
+        true
+    }
+
     fn read(&mut self, buf: &mut [Complex32]) -> Result<usize> {
         let n = self.drain(buf);
         if n == 0 {

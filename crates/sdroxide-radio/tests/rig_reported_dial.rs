@@ -8,9 +8,13 @@
 //! content that no longer matches its labels, and the DDC, left on the offset
 //! between a stale centre and the new VFO, demodulates somewhere else again.
 //!
-//! Clicking inside the captured span is the opposite case and must keep
-//! working: the signal is already in the baseband, so the DDC tunes to it and
-//! the rig stays where it is.
+//! It runs the other way too. Setting the dial here — the readout, a memory, an
+//! external controller — has to move the radio, or its readout and ours show
+//! different frequencies with nothing to reconcile them until the next thing it
+//! reports snaps ours back to its. Only a click on the picture is exempt: the
+//! signal is already in the baseband, so the receiver tunes onto it and the rig
+//! stays where it is. That is [`Command::TuneInSpan`], and it is what `SetVfo`
+//! does anyway on a radio whose window is its own.
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -51,6 +55,10 @@ impl IqSource for MockIqRig {
         r.dial = hz;
         r.commanded.push(hz);
         Ok(())
+    }
+    /// The point of this whole fixture: one synthesiser for both jobs.
+    fn center_is_dial(&self) -> bool {
+        true
     }
     fn read(&mut self, buf: &mut [Complex32]) -> Result<usize> {
         std::thread::sleep(Duration::from_millis(5));
@@ -172,12 +180,84 @@ fn clicking_inside_the_span_does_not_move_the_rig() {
     rig.lock().unwrap().commanded.clear();
 
     let clicked = DIAL + 5_000.0;
-    h.cmd_tx.send(Command::SetVfo { vfo: Vfo::A, hz: clicked }).unwrap();
+    h.cmd_tx.send(Command::TuneInSpan { vfo: Vfo::A, hz: clicked }).unwrap();
     let state = settle(&h, |s| s.vfo_a_hz == clicked);
     assert_eq!(state.center_hz, DIAL, "the window stays on the baseband we are capturing");
     assert!(
         rig.lock().unwrap().commanded.is_empty(),
         "a signal already inside the span is tuned by the DDC, not by the rig"
     );
+    shutdown(h);
+}
+
+/// Setting the dial is the opposite gesture, and the step it moves by is not
+/// what decides: a nudge well inside the captured span has to reach the radio
+/// exactly as a jump to another band does. Anything less leaves the two
+/// readouts disagreeing.
+#[test]
+fn setting_the_dial_moves_the_rig_however_small_the_step() {
+    let (h, rig) = engine();
+    settle(&h, |s| s.vfo_a_hz == DIAL);
+    rig.lock().unwrap().commanded.clear();
+
+    // One detent on the 10 kHz digit, then on the 100 Hz digit — both far
+    // inside the ±21 kHz this 48 kHz capture can reach, which is exactly why
+    // neither used to be commanded at the rig.
+    for step in [10_000.0, 100.0] {
+        let want = rig.lock().unwrap().dial + step;
+        h.cmd_tx.send(Command::SetVfo { vfo: Vfo::A, hz: want }).unwrap();
+        let state = settle(&h, |s| s.center_hz == want);
+        assert_eq!(
+            rig.lock().unwrap().commanded.last().copied(),
+            Some(want),
+            "a {step} Hz dial step has to reach the radio"
+        );
+        assert_eq!(state.vfo_a_hz, want);
+        assert_eq!(state.center_hz, want, "and the window follows the radio it just moved");
+    }
+    shutdown(h);
+}
+
+/// The same command on an ordinary SDR must not touch the front end while the
+/// VFO is inside the span: its window is a resource worth keeping, and retuning
+/// on every dial nudge would throw the picture away.
+#[test]
+fn an_sdr_still_keeps_its_window_when_the_dial_moves() {
+    let rig = Arc::new(Mutex::new(Rig { dial: DIAL, ..Rig::default() }));
+    // Same fixture, minus the one thing that makes a rig a rig.
+    struct Sdr(Arc<Mutex<Rig>>);
+    impl IqSource for Sdr {
+        fn sample_rate(&self) -> f64 {
+            RATE
+        }
+        fn center_hz(&self) -> f64 {
+            self.0.lock().unwrap().dial
+        }
+        fn set_center_hz(&mut self, hz: f64) -> Result<()> {
+            let mut r = self.0.lock().unwrap();
+            r.dial = hz;
+            r.commanded.push(hz);
+            Ok(())
+        }
+        fn read(&mut self, buf: &mut [Complex32]) -> Result<usize> {
+            std::thread::sleep(Duration::from_millis(5));
+            let n = buf.len().min(1024);
+            buf[..n].fill(Complex32::new(0.0, 0.0));
+            Ok(n)
+        }
+        fn describe(&self) -> String {
+            "mock SDR".into()
+        }
+    }
+    let cfg = EngineConfig { tx_ham_only: false, ..Default::default() };
+    let h = start_engine(Box::new(Sdr(Arc::clone(&rig))), iq_rig_caps(), cfg);
+    settle(&h, |s| s.center_hz == DIAL);
+    rig.lock().unwrap().commanded.clear();
+
+    let want = DIAL + 10_000.0;
+    h.cmd_tx.send(Command::SetVfo { vfo: Vfo::A, hz: want }).unwrap();
+    let state = settle(&h, |s| s.vfo_a_hz == want);
+    assert_eq!(state.center_hz, DIAL, "the SDR's window stays where it was");
+    assert!(rig.lock().unwrap().commanded.is_empty(), "and its hardware is not retuned");
     shutdown(h);
 }

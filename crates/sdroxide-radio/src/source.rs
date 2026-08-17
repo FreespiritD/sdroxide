@@ -266,6 +266,27 @@ pub trait IqSource: Send {
         None
     }
 
+    /// Whether this front end's centre *is* the rig's dial — one synthesiser
+    /// doing both jobs.
+    ///
+    /// True for a transceiver whose I/Q output feeds a sound card and for an
+    /// Icom sending its 12 kHz IF: [`Self::set_center_hz`] retunes the radio,
+    /// and turning the radio's knob moves the spectrum we capture. It changes
+    /// what setting the dial means. On an SDR the window is a resource worth
+    /// keeping, so the engine leaves the hardware alone and tunes its DDC until
+    /// the VFO would leave the span; here that would leave the radio's readout
+    /// and ours showing different numbers, with nothing to reconcile them until
+    /// the next report from the rig snapped ours back to its.
+    ///
+    /// Not the same question as [`crate::DeviceCaps::audio_mode`], which asks
+    /// whether there is any IQ at all: a demod-audio rig has no window to tune
+    /// within, so it never reaches the distinction this draws.
+    ///
+    /// Default: false — a front end that tunes independently of any rig.
+    fn center_is_dial(&self) -> bool {
+        false
+    }
+
     /// Drain any out-of-band changes the rig reported (dial/mode moved on the
     /// radio). Default: none.
     fn poll_control(&mut self) -> Vec<ControlUpdate> {
@@ -609,6 +630,12 @@ impl IqSource for ConvertedSource {
     /// up at `(vfo ± lo_offset) + converter offset`, which is what both want.
     fn lo_offset_hz(&self) -> f64 {
         self.inner.lo_offset_hz()
+    }
+
+    /// A transverter in front of a rig does not change which knob decides where
+    /// the spectrum sits — it is still the rig's.
+    fn center_is_dial(&self) -> bool {
+        self.inner.center_is_dial()
     }
 
     fn read(&mut self, buf: &mut [Complex32]) -> Result<usize> {
