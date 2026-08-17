@@ -2903,8 +2903,10 @@ switch **Split** on and put the uplink on VFO B (2400.050 MHz for a downlink of
 10489.550), or lock onto the satellite ([2.16](#216-satellite-operation-sat)) and let
 the transponder mapping derive the uplink from wherever you tune the downlink,
 which is what you want for anything that moves. Receive is torn down for the
-length of an over on a half-duplex front end such as a Pluto, so you will not
-hear your own downlink while transmitting.
+length of an over on a half-duplex front end, so you will not hear your own
+downlink while transmitting — unless the radio is a Pluto or LibreSDR on real
+Ethernet, where **Full duplex**
+([6.2.7](#627-plutosdr-adalm-pluto)) keeps the receiver running through it.
 
 Three things to know:
 
@@ -3783,11 +3785,35 @@ radio you actually own. Press **Test connection** to see which it reported. (If
 a firmware publishes no limits at all, sdroxide says so rather than quoting the
 fallback figures as fact.)
 
-**Half duplex.** The AD9361 genuinely is a full-duplex part, and sdroxide still
-stops receive for the length of an over. The reason is the link, not the button: a
-USB 2.0 Ethernet gadget will not carry a megasample-per-second stream in both
-directions at once, and trying produces a transmission full of holes. The whole
-link goes to transmit while you are keyed, exactly as the HPSDR backend does.
+**Full duplex** — the checkbox above the port boxes, off by default. With it
+off, receive stops for the length of an over and the whole link goes to
+transmit, exactly as the HPSDR backend does. The reason is the link, not the
+part: the AD9361 genuinely does both at once (it has a synthesiser per
+direction), but a USB 2.0 Ethernet gadget will not carry a megasample-per-second
+stream in both directions and trying produces a transmission full of holes.
+
+Turn it on for a board on **real Ethernet** — a LibreSDR, or a Pluto behind a
+gigabit adapter — and you keep hearing the receiver through your own
+transmission. That is what a QO-100 station wants: the downlink comes back
+through the transponder about a quarter of a second later, and listening to it
+while you talk is how you check your own audio, your drive and your frequency.
+It works for anything else split across two bands too — a crossband repeater
+watch, or simply hearing the frequency you are about to unkey onto.
+
+Three things to know before you switch it on:
+
+- **An over asks the link for twice the sample rate.** 2.5 Msps is 10 MB/s each
+  way, so 20 MB/s while you are keyed. Gigabit has room; 100BASE-TX and the USB
+  gadget do not. If the log starts saying the link is not carrying the full
+  sample rate, it now adds that full duplex is on — lower the rate or turn it
+  back off.
+- **The panadapter still shows your transmission during an over**, not the
+  receiver: the wideband display is fed the modulated I/Q as it goes out, which
+  is the transmit monitor. It is the *audio* that keeps coming.
+- **A board in TDD cannot do it at all.** sdroxide reads the AD9361's
+  `ensm_mode` when you enable this and says so on connect if it is not `fdd`; a
+  stock Pluto boots in FDD, so this is only a concern on a board somebody has
+  deliberately reconfigured.
 
 **The sample rate is a transmit setting too.** Every I/Q sample is four bytes in
 each direction, so 2.5 Msps is 10 MB/s the link has to carry — and on transmit

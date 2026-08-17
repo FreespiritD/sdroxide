@@ -263,6 +263,10 @@ fn default_attr(key: &str) -> &'static str {
         "ad9361-phy/INPUT/voltage0/sampling_frequency" => "2500000",
         "ad9361-phy/OUTPUT/voltage0/sampling_frequency" => "2500000",
         "ad9361-phy/INPUT/voltage0/rf_bandwidth" => "1800000",
+        // How a Pluto boots: transmit and receive enabled together, which is
+        // what makes full duplex a question about the link rather than about
+        // the part.
+        "ad9361-phy/ensm_mode" => "fdd",
         _ => "0",
     }
 }
@@ -915,6 +919,89 @@ fn transmitting_takes_the_link_and_gives_it_back() {
     }
 
     handle.release();
+}
+
+/// Full duplex is the same over with the arbitration taken out: both buffers
+/// hold the link at once, receive is never closed, and the receive oscillator
+/// is left exactly where it was.
+///
+/// That last one is the part worth a test. Half duplex rewrites the receive LO
+/// at every unkey, on the chance that the two directions share a synthesiser;
+/// doing that to a receiver that is running would put a gap in it every time
+/// the operator let go of PTT.
+#[test]
+fn full_duplex_receives_through_an_over() {
+    let fake = Fake::start();
+    let cfg = PlutoConfig { full_duplex: true, ..config() };
+    let mut handle =
+        PlutoHandle::open(&fake.address(), &cfg, 145_500_000.0).expect("open the fake Pluto");
+    wait_for("the receive buffer", || fake.state.lock().unwrap().rx_buffer_open);
+    let opens_before = fake.state.lock().expect("lock").rx_buffer_opens;
+    // Where the receive oscillator was left by the tune-up, so a later write
+    // shows as a change rather than as an equal value.
+    handle.set_rx_freq(145_400_000.0);
+    wait_for("the retune", || {
+        fake.state.lock().unwrap().get("ad9361-phy/OUTPUT/altvoltage0/frequency")
+            == Some("145400000")
+    });
+    let lo_writes =
+        fake.state.lock().expect("lock").writes_of("ad9361-phy/OUTPUT/altvoltage0/frequency").len();
+
+    handle.tx_begin(2_400_050_000.0);
+    let iq: Vec<f32> = (0..8192).map(|i| if i % 2 == 0 { 1.0 } else { 0.0 }).collect();
+    handle.tx_write(&iq);
+    wait_for("a transmit buffer", || !fake.state.lock().unwrap().tx_payloads.is_empty());
+
+    // Samples keep arriving while the transmitter is running — the whole point.
+    let mut buf = vec![0f32; 4096];
+    let mut got = 0;
+    wait_for("receive samples during the over", || {
+        got = handle.rx_read(&mut buf);
+        got > 0
+    });
+    {
+        let g = fake.state.lock().expect("lock");
+        assert!(g.rx_buffer_open, "receive must hold the link through the over");
+        assert!(g.tx_buffer_open, "and transmit must have it as well");
+        assert_eq!(g.rx_buffer_opens, opens_before, "the receive buffer was never closed");
+        // Transmit went to its own oscillator, receive stayed on the dial.
+        assert_eq!(g.get("ad9361-phy/OUTPUT/altvoltage1/frequency"), Some("2400050000"));
+        assert_eq!(g.get("ad9361-phy/OUTPUT/altvoltage0/frequency"), Some("145400000"));
+    }
+
+    handle.tx_end();
+    wait_for("the transmit buffer to close", || !fake.state.lock().unwrap().tx_buffer_open);
+    {
+        let g = fake.state.lock().expect("lock");
+        assert!(g.rx_buffer_open, "receive was never interrupted, so it is still open");
+        assert_eq!(g.rx_buffer_opens, opens_before);
+        assert_eq!(
+            g.writes_of("ad9361-phy/OUTPUT/altvoltage0/frequency").len(),
+            lo_writes,
+            "unkeying must not rewrite the receive oscillator of a running receiver"
+        );
+    }
+
+    handle.release();
+}
+
+/// A board whose enable state machine is in TDD cannot do both directions at
+/// once whatever its link can carry, so asking for full duplex there earns a
+/// sentence on screen rather than a silent half-duplex over.
+#[test]
+fn full_duplex_on_a_tdd_board_says_so() {
+    let fake = Fake::start_with(
+        DeviceState {
+            attrs: vec![("ad9361-phy/ensm_mode".to_string(), "tdd".to_string())],
+            ..DeviceState::default()
+        },
+        CONTEXT_XML.to_string(),
+    );
+    let cfg = PlutoConfig { full_duplex: true, ..config() };
+    let handle = PlutoHandle::open(&fake.address(), &cfg, 145_500_000.0).expect("it still opens");
+    let status = handle.open_status().unwrap_or_default();
+    assert!(status.contains("tdd"), "the mode should be named, got {status:?}");
+    assert!(status.contains("full duplex"), "and what it collides with, got {status:?}");
 }
 
 #[test]

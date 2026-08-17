@@ -545,10 +545,13 @@ starting sdroxide before the rig is fine:
   The AD9361's four AGC modes, receive gain, transmit attenuation and both RF
   ports are on the Radio tab. Tuning limits are read off the device, so a stock
   AD9363 board (325 MHz–3.8 GHz) and one unlocked to AD9364 (70 MHz–6 GHz) are
-  both reported correctly without a setting. Half duplex: receive stops for the
-  length of an over, because a USB 2.0 gadget will not carry a
-  megasample-per-second stream both ways at once. Not yet hardware-verified —
-  see the user manual, §5.2.7.
+  both reported correctly without a setting. Half duplex by default: receive
+  stops for the length of an over, because a USB 2.0 gadget will not carry a
+  megasample-per-second stream both ways at once. On a board with real Ethernet
+  behind it — a LibreSDR, or a Pluto on a gigabit adapter — tick **Full duplex**
+  and the receiver keeps running through your own transmission, which is how a
+  QO-100 station listens to its own downlink. Not yet hardware-verified — see
+  the user manual, §5.2.7.
 
 - **SoapySDR** — any [SoapySDR](https://github.com/pothosware/SoapySDR) device
   (wideband IQ) — LimeSDR, bladeRF, USRP and friends. See below. A HackRF or an
@@ -588,8 +591,9 @@ Airspy R2/Mini, SDRplay, HackRF, SoapySDR, HPSDR, TCI, SmartSDR, PlutoSDR)
 drive the full panadapter, the CW/PSK/RTTY skimmers, and internal demodulation;
 a CAT rig feeding demodulated audio shows only a narrow audio-band slice.
 RTL-SDR, RX-888, Airspy HF+, Airspy R2/Mini and SDRplay are receive-only; the
-others can transmit — the HackRF and the PlutoSDR half duplex, the rest while
-still receiving.
+others can transmit — the HackRF half duplex, the PlutoSDR either way (half
+duplex by default, full duplex on a board with real Ethernet behind it), the
+rest while still receiving.
 
 Whichever backend you pick, a **converter offset** on the same tab handles an
 external frequency converter: an HF upconverter (Ham It Up, SpyVerter), a

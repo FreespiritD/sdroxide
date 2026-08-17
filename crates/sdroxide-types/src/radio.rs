@@ -2776,6 +2776,23 @@ pub struct PlutoConfig {
     /// every existing `radio.json` on chain 0, exactly as before.
     #[serde(default)]
     pub rx: u8,
+    /// Keep receiving through an over, instead of standing receive down for
+    /// its length.
+    ///
+    /// The AD9361 is a full-duplex part in FDD, with a synthesiser for each
+    /// direction, so the limit is never the silicon — it is the link. Both
+    /// streams together are twice the sample rate in 16-bit I/Q: 2.5 Msps is
+    /// 10 MB/s each way, which a Pluto's USB 2.0 Ethernet gadget cannot carry
+    /// and 100BASE-TX cannot either. On a board with real Ethernet (a
+    /// LibreSDR, a Pluto on a gigabit adapter) there is room, and then the
+    /// operator hears the receiver through their own over — which is how a
+    /// QO-100 station listens to its own downlink.
+    ///
+    /// Off by default because the failure is not a refusal but a bad signal:
+    /// a link that cannot carry both directions starves the transmit buffer,
+    /// and what goes on the air is chopped.
+    #[serde(default)]
+    pub full_duplex: bool,
 }
 
 impl Default for PlutoConfig {
@@ -2796,6 +2813,7 @@ impl Default for PlutoConfig {
             ppm: 0.0,
             buffer_samples: 32768,
             rx: 0,
+            full_duplex: false,
         }
     }
 }

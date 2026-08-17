@@ -461,6 +461,19 @@ impl Phy {
         conn.read_attr(&self.phy_id, Some(RX_CHAN), "rf_port_select")
     }
 
+    /// The AD9361's enable-state-machine mode — `fdd` or `tdd`, a device-level
+    /// attribute rather than a channel one.
+    ///
+    /// Only full duplex cares. In FDD the part receives and transmits at once,
+    /// each direction with its own synthesiser; in TDD it does one at a time
+    /// and the receiver is dead for the length of an over whatever the link can
+    /// carry. Read rather than written: a board deliberately put in TDD (a
+    /// custom design, a timing experiment) should be told about the collision,
+    /// not silently reconfigured out from under its owner.
+    pub fn ensm_mode(&self, conn: &mut Connection) -> Result<String> {
+        conn.read_attr(&self.phy_id, None, "ensm_mode")
+    }
+
     pub fn tx_port(&self, conn: &mut Connection) -> Result<String> {
         conn.read_attr(&self.phy_id, Some(TX_CHAN), "rf_port_select")
     }

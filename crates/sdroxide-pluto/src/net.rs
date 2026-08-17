@@ -12,13 +12,24 @@
 //! mid-buffer can wait that long inside the server; that is a bounded stall in
 //! the right place, not a queue that grows.)
 //!
-//! # Half duplex, deliberately
+//! # Half duplex by default, full duplex by choice
 //!
-//! The AD9361 is a full-duplex part and this backend still transmits half
-//! duplex: a Pluto is normally reached over a USB 2.0 Ethernet gadget, and that
-//! link will not carry a megasample-per-second stream in both directions at
-//! once. Receive is torn down for the length of an over so the whole link is
-//! available to transmit — the same trade the HPSDR backend makes.
+//! The AD9361 is a full-duplex part — a synthesiser per direction in FDD — so
+//! what decides this is the link, not the silicon. A Pluto is normally reached
+//! over a USB 2.0 Ethernet gadget, which will not carry a megasample-per-second
+//! stream in both directions at once, so by default receive is torn down for
+//! the length of an over and the whole link is available to transmit: the same
+//! trade the HPSDR backend makes.
+//!
+//! [`PlutoConfig::full_duplex`] takes that arbitration out, for a board with
+//! real Ethernet behind it (a LibreSDR, a Pluto on a gigabit adapter). The two
+//! buffers then stay open together and each thread reads its own socket, which
+//! is what the three-connection layout above was already built for — and the
+//! two buffers are two different IIO devices (`cf-ad9361-lpc` and
+//! `cf-ad9361-dds-core-lpc`), so a per-device lock in the server does not
+//! serialise them either. It is the operator's decision because only they can
+//! see the link: the symptom of getting it wrong is not a refusal but a
+//! transmit buffer that runs dry, which goes on the air as a chopped envelope.
 
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -138,6 +149,10 @@ pub(crate) struct Shared {
     /// The second chain's clock, stamped only while its ring is attached.
     pub last_rx1_ms: AtomicU64,
     pub transmitting: AtomicBool,
+    /// Receive and transmit may hold the link at the same time — see this
+    /// module's header. Fixed for the life of the connection: it describes the
+    /// network the radio is on, which does not change under it.
+    pub full_duplex: bool,
     pub buffer_samples: usize,
     pub rate_hz: f64,
     /// The transmit path's own rate. The AD9361 clocks both directions
@@ -341,6 +356,31 @@ impl PlutoRig {
         if let Some(n) = phy.limits.assumption_notice() {
             warnings.push(n);
         }
+        if cfg.full_duplex {
+            // Both a note for the log — full duplex is the setting a chopped
+            // transmission gets blamed on, so the session has to say whether it
+            // was on — and the one check that can be made from here. The link
+            // itself cannot be measured before anything has streamed; the
+            // throughput warnings in `stream::Stats` cover that once it has.
+            match phy.ensm_mode(&mut control) {
+                Ok(mode) if mode.eq_ignore_ascii_case("fdd") => {
+                    tracing::info!("PlutoSDR: full duplex — receive stays up through an over");
+                }
+                Ok(mode) => {
+                    let msg = format!(
+                        "PlutoSDR: full duplex is on, but this board's enable state machine is \
+                         in {mode}, not FDD — it can only receive or transmit at one time, so \
+                         receive will still stop for the length of an over"
+                    );
+                    tracing::warn!("{msg}");
+                    warnings.push(msg);
+                }
+                // Not fatal, and not worth a warning on screen: a firmware
+                // that does not publish `ensm_mode` is one this check cannot
+                // be made on, not one that is known to be wrong.
+                Err(e) => tracing::debug!("PlutoSDR: could not read ensm_mode: {e}"),
+            }
+        }
         // A dial left outside this board's range — a restored session from a
         // different radio is the usual way — is clamped by `set_rx_lo`, and
         // silently receiving 20 MHz from where the operator is looking is
@@ -395,6 +435,7 @@ impl PlutoRig {
             last_rx_ms: AtomicU64::new(0),
             last_rx1_ms: AtomicU64::new(0),
             transmitting: AtomicBool::new(false),
+            full_duplex: cfg.full_duplex,
             buffer_samples,
             rate_hz: rate,
             tx_rate_hz: tx_rate,
@@ -534,6 +575,12 @@ impl PlutoRig {
     /// such as a Pluto+).
     pub fn rx_chains(&self) -> u8 {
         self.inner.shared.phy.rx_pairs_available() as u8
+    }
+
+    /// Whether receive runs through an over on this connection — the
+    /// operator's answer about their link, not a property of the board.
+    pub fn full_duplex(&self) -> bool {
+        self.inner.shared.full_duplex
     }
 
     /// Stop the threads and close the sockets. What dropping the last handle
@@ -691,6 +738,12 @@ impl PlutoRx {
 
     pub fn rf_bandwidth_hz(&self) -> f64 {
         self.rig.rf_bandwidth_hz
+    }
+
+    /// Whether this stream keeps running through an over — see
+    /// [`PlutoRig::full_duplex`].
+    pub fn full_duplex(&self) -> bool {
+        self.rig.shared.full_duplex
     }
 
     pub fn limits(&self) -> &PlutoLimits {
@@ -1155,8 +1208,8 @@ fn notify_lo_moved(shared: &Shared, hz: f64, origin: u8) {
     }
 }
 
-/// Tune the transmit LO, silence the DDS, take receive down, then hand the link
-/// to the transmit thread.
+/// Tune the transmit LO, silence the DDS, take receive down unless the link can
+/// carry both, then hand the link to the transmit thread.
 ///
 /// The DDS step is the one that cannot be skipped: the transmit path is fed by
 /// four on-chip tone generators unless they are explicitly zeroed, and a Pluto
@@ -1166,12 +1219,14 @@ fn key_up(conn: &mut Connection, shared: &Shared, hz: f64, ppm: f64) -> Result<(
     let phy = &shared.phy;
     phy.set_tx_lo(conn, PlutoConfig::apply_ppm(hz, ppm))?;
     phy.silence_dds(conn)?;
-    shared.rx_enabled.store(false, Ordering::Relaxed);
-    // Wait for the receive thread to actually let go of its buffer. Bounded:
-    // if it has died, transmit should still work.
-    let deadline = Instant::now() + Duration::from_millis(500);
-    while shared.rx_active.load(Ordering::Relaxed) && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(2));
+    if !shared.full_duplex {
+        shared.rx_enabled.store(false, Ordering::Relaxed);
+        // Wait for the receive thread to actually let go of its buffer.
+        // Bounded: if it has died, transmit should still work.
+        let deadline = Instant::now() + Duration::from_millis(500);
+        while shared.rx_active.load(Ordering::Relaxed) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(2));
+        }
     }
     shared.tx_enabled.store(true, Ordering::Relaxed);
     Ok(())
@@ -1179,8 +1234,17 @@ fn key_up(conn: &mut Connection, shared: &Shared, hz: f64, ppm: f64) -> Result<(
 
 /// Give the link back to receive, and put the receive LO back where the dial is
 /// — the transmit LO may have moved it if the two share a synthesiser.
+///
+/// Both halves are skipped in full duplex, and for the same reason: receive
+/// never let go. The LO in particular must be left alone — nothing moved it (a
+/// part that transmits and receives at once has a synthesiser for each, which
+/// is the premise of running this way at all), and writing it mid-stream would
+/// put a gap in a receiver that is working.
 fn key_down(conn: &mut Connection, shared: &Shared, rx_hz: f64, ppm: f64) -> Result<()> {
     shared.tx_enabled.store(false, Ordering::Relaxed);
+    if shared.full_duplex {
+        return Ok(());
+    }
     // Wait for the transmit buffer to actually close before receive reclaims
     // the link: on a USB 2.0 gadget there is only room for one of them.
     let deadline = Instant::now() + Duration::from_millis(500);

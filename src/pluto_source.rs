@@ -67,9 +67,12 @@ pub struct PlutoSource {
 impl PlutoSource {
     /// Attach receive chain `cfg.rx` of the Pluto at `address`, connecting
     /// only if no radio in this process already holds that connection, and
-    /// start receiving at `center_hz`. The rate, bandwidth and reference trim
-    /// are connection-level: whoever connects first sets them, and a later
-    /// attach runs with the established ones whatever its own config says.
+    /// start receiving at `center_hz`. The rate, bandwidth, reference trim and
+    /// duplex are connection-level: whoever connects first sets them, and a
+    /// later attach runs with the established ones whatever its own config
+    /// says. (Which is why the capabilities read duplex back off the rig rather
+    /// than out of `cfg` — the engine must be told what the link is actually
+    /// doing, not what this radio asked for.)
     pub fn open(address: &str, cfg: &PlutoConfig, center_hz: f64) -> anyhow::Result<Self> {
         let rig = registry()
             .get_or_open(DeviceKey::Pluto(address.to_string()), || {
@@ -112,6 +115,44 @@ impl PlutoSource {
         self.rig.as_deref().map(PlutoRig::limits)
     }
 
+    /// Whether receive runs through an over on this connection.
+    pub fn full_duplex(&self) -> bool {
+        self.rig.as_deref().is_some_and(PlutoRig::full_duplex)
+    }
+
+    /// Drain what the receive thread has queued. `wait` naps briefly on an
+    /// empty ring, which is what keeps the engine's receive loop off a hot
+    /// spin; a full-duplex over passes `false` and takes the empty answer.
+    fn take(&mut self, buf: &mut [Complex32], wait: bool) -> Result<usize> {
+        let Some(rx) = self.rx.as_mut() else {
+            // Released: nothing will ever arrive; nap so the engine loop
+            // doesn't spin while the reopen it asked for is prepared.
+            std::thread::sleep(Duration::from_millis(5));
+            return Ok(0);
+        };
+        let need = buf.len() * 2;
+        if self.rx_scratch.len() < need {
+            self.rx_scratch.resize(need, 0.0);
+        }
+        let n = rx.rx_read(&mut self.rx_scratch[..need]);
+        let pairs = n / 2;
+        if pairs == 0 {
+            if wait {
+                // Nothing yet — brief nap so the DSP loop doesn't spin hot.
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            return Ok(0);
+        }
+        for p in 0..pairs {
+            buf[p] = Complex32::new(self.rx_scratch[2 * p], self.rx_scratch[2 * p + 1]);
+        }
+        // Deliberately not reset across an over: the offset is a property of
+        // the hardware, not of the stream, so carrying the estimate avoids a
+        // re-convergence transient every time receive resumes.
+        self.dc.process(&mut buf[..pairs]);
+        Ok(pairs)
+    }
+
     /// How many receive chains this firmware streams.
     pub fn rx_chains(&self) -> u8 {
         self.rig.as_deref().map_or(1, PlutoRig::rx_chains)
@@ -152,31 +193,17 @@ impl IqSource for PlutoSource {
     }
 
     fn read(&mut self, buf: &mut [Complex32]) -> Result<usize> {
-        let Some(rx) = self.rx.as_mut() else {
-            // Released: nothing will ever arrive; nap so the engine loop
-            // doesn't spin while the reopen it asked for is prepared.
-            std::thread::sleep(Duration::from_millis(5));
-            return Ok(0);
-        };
-        let need = buf.len() * 2;
-        if self.rx_scratch.len() < need {
-            self.rx_scratch.resize(need, 0.0);
-        }
-        let n = rx.rx_read(&mut self.rx_scratch[..need]);
-        let pairs = n / 2;
-        if pairs == 0 {
-            // Nothing yet — brief nap so the DSP loop doesn't spin hot.
-            std::thread::sleep(Duration::from_millis(2));
-            return Ok(0);
-        }
-        for p in 0..pairs {
-            buf[p] = Complex32::new(self.rx_scratch[2 * p], self.rx_scratch[2 * p + 1]);
-        }
-        // Deliberately not reset across an over: the offset is a property of
-        // the hardware, not of the stream, so carrying the estimate avoids a
-        // re-convergence transient every time receive resumes.
-        self.dc.process(&mut buf[..pairs]);
-        Ok(pairs)
+        self.take(buf, true)
+    }
+
+    /// What a full-duplex over reads with: the same drain, without the nap.
+    ///
+    /// The engine's thread owes the transmitter a block every 10 ms while it is
+    /// keyed, so two milliseconds spent waiting for receive is a fifth of that
+    /// budget spent on the wrong direction — and the transmit ring emptying is
+    /// heard on the air, where an empty receive block is not heard at all.
+    fn read_available(&mut self, buf: &mut [Complex32]) -> Result<usize> {
+        self.take(buf, false)
     }
 
     fn describe(&self) -> String {
@@ -286,7 +313,15 @@ impl IqSource for PlutoSource {
 
     /// Receive is torn down for the length of an over, but a partial buffer can
     /// still be sitting in the ring when it resumes.
+    ///
+    /// Not in full duplex, where receive never stopped: the ring holds the last
+    /// few milliseconds of a *live* signal, and throwing it away would put a
+    /// gap in the audio at every unkey — the one moment an operator is
+    /// listening hardest.
     fn discard_pending_rx(&mut self) {
+        if self.full_duplex() {
+            return;
+        }
         if let Some(rx) = self.rx.as_mut() {
             rx.discard_pending_rx();
         }

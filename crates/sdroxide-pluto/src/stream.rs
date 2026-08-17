@@ -61,6 +61,9 @@ fn silence_before_restart(buffer_samples: usize, rate_hz: f64) -> Duration {
 struct Stats {
     what: &'static str,
     nominal_hz: f64,
+    /// Whether both directions are sharing the link, so the shortfall warning
+    /// can name the setting that put them there.
+    full_duplex: bool,
     /// How long the buffer has actually been open, summed across every window.
     ///
     /// Wall time since the thread started is the wrong denominator: the
@@ -78,10 +81,11 @@ struct Stats {
 }
 
 impl Stats {
-    fn new(what: &'static str, nominal_hz: f64) -> Stats {
+    fn new(what: &'static str, nominal_hz: f64, full_duplex: bool) -> Stats {
         Stats {
             what,
             nominal_hz,
+            full_duplex,
             active: Duration::ZERO,
             since: Instant::now(),
             win_buffers: 0,
@@ -152,10 +156,16 @@ impl Stats {
                 "PlutoSDR {}: {ksps:.1} of {:.1} ksps over {:.2}s — the link is not carrying the \
                  full sample rate. On transmit this leaves the modulation with gaps in it; \
                  lower the sample rate, or reach the radio over Ethernet rather than the USB \
-                 gadget",
+                 gadget{}",
                 self.what,
                 self.nominal_hz / 1e3,
                 dt.as_secs_f64(),
+                if self.full_duplex {
+                    ". Full duplex is on, so an over is asking this link for both directions \
+                     at once — turning it off halves what is being asked for"
+                } else {
+                    ""
+                },
             );
         }
         if self.win_dropped > 0 {
@@ -217,7 +227,7 @@ pub(crate) fn rx_thread(mut conn: Connection, shared: Arc<Shared>, mut ring: Pro
     let mut raw = vec![0u8; shared.buffer_samples * phy.rx_sample_bytes(max_pairs)];
     let mut iq: Vec<f32> = Vec::with_capacity(shared.buffer_samples * 2);
     let mut iq1: Vec<f32> = Vec::with_capacity(shared.buffer_samples * 2);
-    let mut stats = Stats::new("RX", shared.rate_hz);
+    let mut stats = Stats::new("RX", shared.rate_hz, shared.full_duplex);
     let mut open_pairs = 0usize;
     // When this buffer last produced anything, and how long it may go without
     // before it is reopened. Reset on every open so a buffer is judged from
@@ -363,7 +373,7 @@ pub(crate) fn tx_thread(mut conn: Connection, shared: Arc<Shared>, mut ring: Con
     let i_bytes = phy.tx_scan[0].bytes();
     let pairs = shared.tx_buffer_samples;
     let mut raw = vec![0u8; pairs * set_bytes];
-    let mut stats = Stats::new("TX", shared.tx_rate_hz);
+    let mut stats = Stats::new("TX", shared.tx_rate_hz, shared.full_duplex);
     let mut open = false;
 
     // How long a full buffer takes the engine to produce, which is what the

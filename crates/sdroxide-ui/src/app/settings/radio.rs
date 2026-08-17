@@ -1982,6 +1982,27 @@ pub(in crate::app) fn settings_pluto_tab(
         }
         ui.end_row();
 
+        // Not a property of the board — the AD9361 does this natively — but of
+        // the network it is on, which is why it is asked rather than detected:
+        // the failure mode is a starved transmit buffer, heard on the air as a
+        // chopped envelope rather than reported as an error.
+        ui.label("Full duplex");
+        ui.checkbox(&mut cfg.pluto.full_duplex, "Keep receiving while transmitting").on_hover_text(
+            "Leave this off on a Pluto reached over its USB cable. That link cannot \
+                 carry a megasample per second in both directions at once, and an over \
+                 that starves the transmit buffer goes out chopped — so by default \
+                 receive stops for the length of an over.\n\nTurn it on for a board on \
+                 real Ethernet (a LibreSDR, a Pluto on a gigabit adapter), where there \
+                 is room for both: you then hear the receiver through your own \
+                 transmission, which is how a QO-100 station listens to its own \
+                 downlink.\n\nAn over needs twice the sample rate's worth of link — \
+                 2.5 Msps is 10 MB/s each way — so lower the rate if the log starts \
+                 saying the link is not carrying it. The panadapter still shows the \
+                 transmitted signal during an over; it is the audio that keeps \
+                 coming.\n\nTakes effect on Apply.",
+        );
+        ui.end_row();
+
         ui.label("RX / TX port").on_hover_text(
             "The AD9361's rf_port_select. A stock Pluto wires one of each, so leave \
              these empty unless you have a board that does not. Takes effect on Apply.",

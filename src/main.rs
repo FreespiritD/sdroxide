@@ -1748,7 +1748,8 @@ fn open_pluto_source(
     Ok((Box::new(src), caps))
 }
 
-/// Capabilities for a PlutoSDR: wideband IQ, transmit-capable, half duplex.
+/// Capabilities for a PlutoSDR: wideband IQ, transmit-capable, half duplex
+/// unless the operator has said their link carries both directions.
 ///
 /// Everything here except the duplex flag is read off the device rather than
 /// written down, because the two boards this backend serves genuinely differ: a
@@ -1757,10 +1758,12 @@ fn open_pluto_source(
 /// either set of numbers as a constant would leave half the Plutos in
 /// circulation refusing frequencies they can reach.
 ///
-/// The AD9361 *is* a full-duplex part, and `full_duplex` is still left false: a
-/// Pluto is normally reached over a USB 2.0 Ethernet gadget, which will not
-/// carry a megasample-per-second stream both ways at once. Receive is torn down
-/// for the length of an over so the whole link is available to transmit.
+/// The duplex flag is the exception because it is not a fact about the board.
+/// The AD9361 *is* a full-duplex part; what cannot carry both directions at a
+/// megasample per second is the USB 2.0 Ethernet gadget a Pluto is normally
+/// reached over. So the default stands receive down for the length of an over,
+/// and `PlutoConfig::full_duplex` — set by whoever can see the network the
+/// radio is on — lifts it.
 fn pluto_caps(src: &pluto_source::PlutoSource, rx: u8) -> DeviceCaps {
     use sdroxide_types::{Direction, GainElement, PlutoConfig};
     let Some(limits) = src.limits() else {
@@ -1792,7 +1795,9 @@ fn pluto_caps(src: &pluto_source::PlutoSource, rx: u8) -> DeviceCaps {
         label: src.describe(),
         rx_channels: 1,
         tx_channels: if tx_capable { 1 } else { 0 },
-        full_duplex: false,
+        // Only the chain that owns the transmitter has an over to receive
+        // through; a second chain's radio never keys and is never stood down.
+        full_duplex: tx_capable && src.full_duplex(),
         audio_mode: false,
         freq_ranges_rx: vec![limits.rx_lo_hz],
         freq_ranges_tx: if tx_capable { vec![limits.tx_lo_hz] } else { Vec::new() },
