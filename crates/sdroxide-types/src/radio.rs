@@ -3346,6 +3346,196 @@ pub fn format_freq_ranges(ranges: &[(f64, f64)]) -> String {
     ranges.iter().map(|&(lo, hi)| format!("{}-{}", mhz(lo), mhz(hi))).collect::<Vec<_>>().join(", ")
 }
 
+/// Where the attached receiver is connected.
+///
+/// Not cosmetic: it decides whether an offset is expected at all, and whether
+/// the per-mode table below has anything to say.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum PanadapterTap {
+    /// The same antenna, through a splitter or the transceiver's RX-out loop.
+    /// The receiver tunes to the dial and the offset is normally zero.
+    #[default]
+    Antenna,
+    /// The transceiver's I.F. output. The receiver stays parked on the rig's
+    /// intermediate frequency, so what looks like a dial move is really the
+    /// rig's own first oscillator moving underneath a receiver that never
+    /// retunes — and the offset is the I.F., which on many rigs depends on the
+    /// mode.
+    IfOutput,
+}
+
+impl PanadapterTap {
+    pub const ALL: [PanadapterTap; 2] = [PanadapterTap::Antenna, PanadapterTap::IfOutput];
+    pub fn label(self) -> &'static str {
+        match self {
+            PanadapterTap::Antenna => "Antenna (shared with the radio)",
+            PanadapterTap::IfOutput => "The radio's I.F. output",
+        }
+    }
+}
+
+/// Which of the two radios you listen to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum PanadapterAudio {
+    /// The attached receiver: sdroxide demodulates its I/Q, so its filter, AGC,
+    /// noise reduction and notch are the ones in the panel.
+    #[default]
+    Attached,
+    /// The transceiver's own demodulated audio, over its sound card. The rig's
+    /// receiver does the work and the attached one supplies only the picture.
+    Transceiver,
+}
+
+impl PanadapterAudio {
+    pub const ALL: [PanadapterAudio; 2] = [PanadapterAudio::Attached, PanadapterAudio::Transceiver];
+    pub fn label(self) -> &'static str {
+        match self {
+            PanadapterAudio::Attached => "The attached receiver",
+            PanadapterAudio::Transceiver => "The transceiver",
+        }
+    }
+}
+
+/// The classes a rig's I.F. offset can differ between.
+///
+/// Deliberately *not* [`crate::Mode`]: there are 29 of those and a rig has at
+/// most a handful of carrier positions. And deliberately not the engine's
+/// `rig_mode_class` either, which folds the data modes onto the sideband they
+/// ride on — the whole point of a DATA entry here is that a rig commonly puts
+/// its data mode at a different carrier offset from plain SSB.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum IfModeClass {
+    Lsb,
+    Usb,
+    Cw,
+    Am,
+    Fm,
+    Data,
+}
+
+impl IfModeClass {
+    pub const ALL: [IfModeClass; 6] = [
+        IfModeClass::Lsb,
+        IfModeClass::Usb,
+        IfModeClass::Cw,
+        IfModeClass::Am,
+        IfModeClass::Fm,
+        IfModeClass::Data,
+    ];
+    pub fn label(self) -> &'static str {
+        match self {
+            IfModeClass::Lsb => "LSB",
+            IfModeClass::Usb => "USB",
+            IfModeClass::Cw => "CW",
+            IfModeClass::Am => "AM",
+            IfModeClass::Fm => "FM",
+            IfModeClass::Data => "DATA",
+        }
+    }
+}
+
+/// How far a panadapter offset may be set either way, in Hz.
+///
+/// Sized for an I.F. rather than for a sound card: 70.455 MHz is an ordinary
+/// first I.F., and a receiver watching one is doing exactly what this feature
+/// is for. Well inside [`CONVERTER_OFFSET_MAX_HZ`], which has a satellite LNB
+/// to reach.
+pub const PANADAPTER_OFFSET_MAX_HZ: f64 = 1_000_000_000.0;
+
+/// Using another radio in the roster as this one's receiver: the panadapter,
+/// the waterfall and everything sdroxide reads off them come from that radio's
+/// front end, while the dial, the mode, the filter and the transmitter stay
+/// with this one.
+///
+/// The pairing is recorded on the radio that *uses* the receiver, not on the
+/// receiver, because that is the radio the operator is looking at and the one
+/// whose engine opens both devices.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PanadapterConfig {
+    /// Roster id of the radio whose receiver supplies the spectrum. `None` —
+    /// the default — is an ordinary radio with nothing attached.
+    pub source_radio: Option<u32>,
+    pub tap: PanadapterTap,
+    /// How far above this radio's dial the attached receiver sits, in Hz.
+    /// Zero for a receiver on the same antenna; the intermediate frequency for
+    /// an I.F. tap.
+    ///
+    /// The sign rule is the converter's: the receiver is tuned to
+    /// `dial + offset`. Nothing here is ever sent to the transceiver.
+    pub offset_hz: f64,
+    /// Overrides of [`Self::offset_hz`] for a rig whose I.F. moves with the
+    /// mode. A class with no entry uses the plain offset.
+    ///
+    /// A list rather than a map so the file stays diffable and the wire format
+    /// stays positional.
+    pub mode_offsets: Vec<(IfModeClass, f64)>,
+    /// The tap is spectrally inverted — a high-side-injection I.F., where the
+    /// band arrives mirrored about the receiver's centre.
+    pub invert: bool,
+    /// Follow the transceiver's dial. Off parks the receiver where it is, which
+    /// is what a fixed watch on one segment wants.
+    pub track: bool,
+    pub audio: PanadapterAudio,
+    /// Silence receive audio while the transceiver is transmitting. On by
+    /// default: with the receiver on the same antenna (or on the rig's I.F.)
+    /// what it hears during an over is your own transmitter.
+    pub mute_on_tx: bool,
+    /// Stop the panadapter and waterfall while the transceiver is
+    /// transmitting. On by default, for the same reason and because a
+    /// transmitter painted across the whole span erases the band behind it.
+    pub blank_on_tx: bool,
+}
+
+impl Default for PanadapterConfig {
+    fn default() -> Self {
+        PanadapterConfig {
+            source_radio: None,
+            tap: PanadapterTap::default(),
+            offset_hz: 0.0,
+            mode_offsets: Vec::new(),
+            invert: false,
+            track: true,
+            audio: PanadapterAudio::default(),
+            mute_on_tx: true,
+            blank_on_tx: true,
+        }
+    }
+}
+
+impl PanadapterConfig {
+    /// Whether a receiver is attached at all.
+    pub fn is_attached(&self) -> bool {
+        self.source_radio.is_some()
+    }
+
+    /// The offset to use in `mode`: the class override where there is one,
+    /// otherwise the plain offset.
+    pub fn offset_for(&self, mode: crate::Mode) -> f64 {
+        let class = mode.if_class();
+        self.mode_offsets
+            .iter()
+            .find(|(c, _)| *c == class)
+            .map(|(_, hz)| *hz)
+            .unwrap_or(self.offset_hz)
+    }
+
+    /// Record (or clear) a class override. Clearing removes the entry rather
+    /// than storing the plain offset, so a later change to
+    /// [`Self::offset_hz`] still reaches every class that never had one.
+    pub fn set_mode_offset(&mut self, class: IfModeClass, hz: Option<f64>) {
+        self.mode_offsets.retain(|(c, _)| *c != class);
+        if let Some(hz) = hz {
+            self.mode_offsets.push((class, hz));
+        }
+    }
+
+    /// The class override, if this class has one.
+    pub fn mode_offset(&self, class: IfModeClass) -> Option<f64> {
+        self.mode_offsets.iter().find(|(c, _)| *c == class).map(|(_, hz)| *hz)
+    }
+}
+
 /// Persisted backend configuration (`radio.json`).
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -3410,6 +3600,9 @@ pub struct RadioConfig {
     pub hackrf: HackRfConfig,
     pub pluto: PlutoConfig,
     pub sdrplay: SdrPlayConfig,
+    /// Another roster radio used as this one's receiver. Appended last, like
+    /// every other field here: the layout is positional.
+    pub panadapter: PanadapterConfig,
 }
 
 #[cfg(test)]

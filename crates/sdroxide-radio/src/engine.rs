@@ -755,6 +755,17 @@ struct StereoMixer {
     /// placement rationale as `duck`. Zeroed rather than skipped so the ring
     /// keeps flowing and unmuting is instant, with nothing stale queued.
     muted: bool,
+    /// Silence the speaker path for the length of an over, where the receiver
+    /// keeps running through it: a radio with another radio attached as its
+    /// panadapter, set to blank nothing but still to mute
+    /// ([`IqSource::mutes_rx_audio_on_tx`]). A half-duplex front end is not
+    /// read during an over at all and never reaches this.
+    ///
+    /// A third scalar here rather than a branch upstream, for the reason `duck`
+    /// gives: this is the one funnel every speaker path goes through, and the
+    /// recording tap arrives as separate arguments that it must not touch —
+    /// what the transmitter hears of the band is not the operator's archive.
+    tx_muted: bool,
 }
 
 /// Bound on per-channel queueing (≈¼ s at 48 kHz) so a stalled side can't
@@ -777,6 +788,7 @@ impl StereoMixer {
             rec_mono: false,
             duck: 1.0,
             muted: false,
+            tx_muted: false,
         }
     }
 
@@ -861,7 +873,7 @@ impl StereoMixer {
 
         if n > 0 {
             if self.out.slots() >= n * 2 {
-                let duck = if self.muted { 0.0 } else { self.duck };
+                let duck = if self.muted || self.tx_muted { 0.0 } else { self.duck };
                 for i in 0..n {
                     let l = self.main_q[i] * duck;
                     let r = if dual { self.sub_q[i] * duck } else { l };
@@ -1336,8 +1348,19 @@ struct Engine {
     audio_play: Vec<f32>,
     /// The recorder's copy of `audio_play`, pre-volume/mute — see `main_play_rec`.
     audio_play_rec: Vec<f32>,
-    /// Resamples the radio's audio to the speaker rate in audio mode.
+    /// Resamples audio that arrived as audio to the speaker rate — a demod-audio
+    /// rig, or the transceiver behind an attached panadapter receiver.
     audio_resampler: Option<MonoResampler>,
+    /// The rate pair `audio_resampler` was built for, so `play_rx_audio` can
+    /// tell when either end has moved.
+    audio_rs_in_rate: f64,
+    audio_rs_out_rate: f64,
+    /// The rate [`IqSource::rx_audio`] last reported, for the arrangement where
+    /// receive audio comes from a transceiver while an attached receiver
+    /// supplies the I/Q ([`DeviceCaps::rx_audio_external`]). Remembered because
+    /// a block in which nothing arrived says nothing about the rate, and the
+    /// digital-mode tap is built from it.
+    ext_audio_rate: f64,
     /// Rebuilds the IQ source when the operator switches radio interface at
     /// runtime (see [`EngineSwap::ReopenSource`]). Shared with the background
     /// reconnect thread, which uses the same factory (never both at once — the
@@ -1742,6 +1765,9 @@ fn engine_thread(
         audio_play: Vec::new(),
         audio_play_rec: Vec::new(),
         audio_resampler,
+        audio_rs_in_rate: radio_fs,
+        audio_rs_out_rate: audio_out_rate,
+        ext_audio_rate: 48_000.0,
         reopen: engine_cfg.reopen.map(|f| Arc::new(Mutex::new(f))),
         retry: None,
         retry_join: None,
@@ -1855,6 +1881,11 @@ fn engine_thread(
     // where the VFO now sits — on zero-IF hardware that is the one place the VFO
     // must not be, so let the span check park the LO clear of it before the
     // first block arrives.
+    // A front end that follows the operator's mode is told it before the first
+    // block, not on the first change: the mode came out of the session, and a
+    // panadapter pairing whose receiver offset depends on it would otherwise
+    // open on the wrong intermediate frequency.
+    engine.push_rx_mode();
     engine.keep_vfo_in_span();
     engine.update_tuning();
 
@@ -2125,6 +2156,14 @@ impl Drop for Engine {
 impl Engine {
     fn run_audio(&mut self, iq: &[Complex32]) {
         let want_rec = self.recorder.is_some();
+        // A radio listening to its transceiver while an attached receiver
+        // paints the picture. The main chain still runs — the high-resolution
+        // channel analyzer reads its DDC output, and the sub receiver is a
+        // second DDC on the same I/Q — but nothing demodulated here is heard,
+        // so its speaker and recorder taps are dropped and the transceiver's
+        // audio takes their place below.
+        let ext = self.caps.rx_audio_external;
+        let want_rec_main = want_rec && !ext;
         let Some(main) = self.main.as_mut() else { return };
         let out_rate = main.out_rate;
         // Copied out rather than borrowed: a digital-voice mode may replace
@@ -2132,14 +2171,14 @@ impl Engine {
         // would otherwise be borrowed against the chain.
         self.main_play.clear();
         self.main_play_r.clear();
-        let (audio, right) = main.run(iq, &self.state.rx[0], want_rec);
+        let (audio, right) = main.run(iq, &self.state.rx[0], want_rec_main);
         self.main_play.extend_from_slice(audio);
         if let Some(r) = right {
             self.main_play_r.extend_from_slice(r);
         }
         self.main_play_rec.clear();
         self.main_play_r_rec.clear();
-        if want_rec {
+        if want_rec_main {
             let (rec_audio, rec_right) = main.take_rec_audio();
             self.main_play_rec.extend_from_slice(rec_audio);
             if let Some(r) = rec_right {
@@ -2147,51 +2186,74 @@ impl Engine {
             }
         }
 
-        // Feed the digital-mode decoder from the clean tap (not the mixed,
-        // possibly-muted output).
-        if let (Some(digi), Some(main)) = (self.digi.as_mut(), self.main.as_ref()) {
-            if main.tap_enabled {
-                digi.on_rx_audio(&main.tap_out);
+        if ext {
+            // Everything the operator hears is the transceiver's: the speaker,
+            // the recording and the decoders alike. `play_rx_audio` is the same
+            // stage a demod-audio rig runs — level, digital-mode tap,
+            // auto-notch, noise reduction, volume — and it leaves its result in
+            // `audio_play`, from where it stands in for what the main chain
+            // demodulated. Only the left ear: the sub receiver is the attached
+            // receiver's and keeps the right one, below.
+            self.audio_re.clear();
+            if let Some(rate) = self.source.rx_audio(&mut self.audio_re)
+                && rate > 0.0
+            {
+                self.ext_audio_rate = rate;
             }
-        }
-        // Digital voice: play the decoded speech instead of the demodulated
-        // signal. The mode declines while it is out of sync, so the operator
-        // still hears the raw audio while tuning — unless they asked for it
-        // muted.
-        // Monitoring a voice-keyer message takes the speakers for its duration:
-        // the operator asked to hear the recording, not the band.
-        let block = self.main_play.len();
-        if self.take_preview_audio(out_rate, block) {
+            self.play_rx_audio(self.ext_audio_rate);
             self.main_play.clear();
-            self.main_play.extend_from_slice(&self.voice_prev_out);
+            self.main_play.extend_from_slice(&self.audio_play);
             self.main_play_r.clear();
-            // Unscaled in both cases: preview audio was never subject to the
-            // AF knob to begin with.
             self.main_play_rec.clear();
+            self.main_play_rec.extend_from_slice(&self.audio_play_rec);
             self.main_play_r_rec.clear();
-            if want_rec {
-                self.main_play_rec.extend_from_slice(&self.voice_prev_out);
+        } else {
+            // Feed the digital-mode decoder from the clean tap (not the mixed,
+            // possibly-muted output).
+            if let (Some(digi), Some(main)) = (self.digi.as_mut(), self.main.as_ref()) {
+                if main.tap_enabled {
+                    digi.on_rx_audio(&main.tap_out);
+                }
             }
-        } else if self.take_voice_audio(out_rate) {
-            let rx0 = &self.state.rx[0];
-            let vol = if rx0.muted { 0.0 } else { rx0.volume * rx0.volume };
-            self.main_play.clear();
-            self.main_play.extend(self.voice_play.iter().map(|s| s * vol));
-            self.main_play_r.clear();
-            // Recorder gets the decoded speech unscaled — same reasoning as
-            // the demodulated-audio tap above.
-            self.main_play_rec.clear();
-            self.main_play_r_rec.clear();
-            if want_rec {
-                self.main_play_rec.extend_from_slice(&self.voice_play);
+            // Digital voice: play the decoded speech instead of the demodulated
+            // signal. The mode declines while it is out of sync, so the operator
+            // still hears the raw audio while tuning — unless they asked for it
+            // muted.
+            // Monitoring a voice-keyer message takes the speakers for its duration:
+            // the operator asked to hear the recording, not the band.
+            let block = self.main_play.len();
+            if self.take_preview_audio(out_rate, block) {
+                self.main_play.clear();
+                self.main_play.extend_from_slice(&self.voice_prev_out);
+                self.main_play_r.clear();
+                // Unscaled in both cases: preview audio was never subject to the
+                // AF knob to begin with.
+                self.main_play_rec.clear();
+                self.main_play_r_rec.clear();
+                if want_rec {
+                    self.main_play_rec.extend_from_slice(&self.voice_prev_out);
+                }
+            } else if self.take_voice_audio(out_rate) {
+                let rx0 = &self.state.rx[0];
+                let vol = if rx0.muted { 0.0 } else { rx0.volume * rx0.volume };
+                self.main_play.clear();
+                self.main_play.extend(self.voice_play.iter().map(|s| s * vol));
+                self.main_play_r.clear();
+                // Recorder gets the decoded speech unscaled — same reasoning as
+                // the demodulated-audio tap above.
+                self.main_play_rec.clear();
+                self.main_play_r_rec.clear();
+                if want_rec {
+                    self.main_play_rec.extend_from_slice(&self.voice_play);
+                }
+            } else if self.mutes_analog_audio() {
+                // Silenced in place rather than dropped: the block still has to
+                // reach the mixer to keep the output paced.
+                self.main_play.fill(0.0);
+                self.main_play_r.fill(0.0);
+                self.main_play_rec.fill(0.0);
+                self.main_play_r_rec.fill(0.0);
             }
-        } else if self.mutes_analog_audio() {
-            // Silenced in place rather than dropped: the block still has to
-            // reach the mixer to keep the output paced.
-            self.main_play.fill(0.0);
-            self.main_play_r.fill(0.0);
-            self.main_play_rec.fill(0.0);
-            self.main_play_r_rec.fill(0.0);
         }
 
         // Both taps come out of one borrow: `run`'s own return would keep the
@@ -2283,19 +2345,40 @@ impl Engine {
         self.audio_re.clear();
         self.audio_re.extend(iq.iter().map(|c| c.re));
 
-        // The only level reading there is on a demod-audio source: there is no
-        // DDC and no demodulator here, so nothing else measures anything. Same
-        // one-pole as the real S-meter's, so the scanner's threshold behaves
-        // consistently across front ends even though the two are not the same
-        // quantity — this one is the rig's audio, after its own AGC and squelch.
+        // Panadapter (packed-real FFT — see make_spectrum_frame).
+        self.analyzer.process(iq);
+
+        self.play_rx_audio(self.radio_fs);
+        // Mono: a demod-audio rig has one receiver and no sub, so there is
+        // never a second ear to fill.
+        if let Some(mixer) = self.mixer.as_mut() {
+            mixer.push(&self.audio_play, None, &self.audio_play_rec, None);
+        }
+    }
+
+    /// The receive stage for audio that arrives *as* audio rather than being
+    /// demodulated here: level meter, digital-mode tap, auto-notch, noise
+    /// reduction, then the speaker and recorder paths, from whatever is already
+    /// in `audio_re` at `in_rate`.
+    ///
+    /// Two arrangements have such a stream, and they share every step of it.
+    /// For a demod-audio rig it *is* the receiver, and `in_rate` is the front
+    /// end's own rate. For a radio with another radio attached as its
+    /// panadapter and [`sdroxide_types::PanadapterAudio::Transceiver`] chosen,
+    /// the picture comes from the attached receiver's I/Q and this comes from
+    /// the transceiver's sound card — a different clock, hence the parameter.
+    fn play_rx_audio(&mut self, in_rate: f64) {
+        // The only level reading there is on audio that nothing here
+        // demodulated: no DDC and no demodulator ran, so nothing else measured
+        // anything. Same one-pole as the real S-meter's, so the scanner's
+        // threshold behaves consistently across front ends even though the two
+        // are not the same quantity — this one is the rig's audio, after its
+        // own AGC and squelch.
         if !self.audio_re.is_empty() {
             let p: f32 =
                 self.audio_re.iter().map(|s| s * s).sum::<f32>() / self.audio_re.len() as f32;
             self.audio_level += 0.3 * (p - self.audio_level);
         }
-
-        // Panadapter (packed-real FFT — see make_spectrum_frame).
-        self.analyzer.process(iq);
 
         // FT8/FT4 run directly on the radio audio (before NR, so the decoder
         // always sees the raw signal).
@@ -2355,10 +2438,10 @@ impl Engine {
             }
         }
         if self.audio_nr_level.is_on() {
-            // Per block, not on the level change: `radio_fs` is reassigned when
-            // the interface is reopened, and the rate-aware engines would
+            // Per block, not on the level change: the input rate is reassigned
+            // when the interface is reopened, and the rate-aware engines would
             // otherwise keep resampling for the rate the old device had.
-            let fs = self.radio_fs;
+            let fs = in_rate;
             match self.audio_nr_level.engine() {
                 Some(NrEngine::Rnn) => {
                     self.audio_nnr.set_rate(fs);
@@ -2388,7 +2471,18 @@ impl Engine {
             }
         }
 
-        // Speaker path: resample radio_fs → out_rate, apply volume/mute.
+        // Speaker path: resample in_rate → out_rate, apply volume/mute. Built
+        // on demand rather than at construction because either end can move
+        // under us — a reopened interface changes the first, an audio-device
+        // swap the second — and a resampler left on the old pair retunes the
+        // pitch of everything that follows.
+        if (in_rate - self.audio_rs_in_rate).abs() > 0.01
+            || (self.audio_out_rate - self.audio_rs_out_rate).abs() > 0.01
+        {
+            self.audio_rs_in_rate = in_rate;
+            self.audio_rs_out_rate = self.audio_out_rate;
+            self.audio_resampler = MonoResampler::new(in_rate, self.audio_out_rate);
+        }
         let rx0 = &self.state.rx[0];
         let vol = if rx0.muted { 0.0 } else { rx0.volume };
         self.audio_play.clear();
@@ -2429,9 +2523,6 @@ impl Engine {
         } else if self.mutes_analog_audio() {
             self.audio_play.fill(0.0);
             self.audio_play_rec.fill(0.0);
-        }
-        if let Some(mixer) = self.mixer.as_mut() {
-            mixer.push(&self.audio_play, None, &self.audio_play_rec, None);
         }
     }
 
@@ -2478,6 +2569,15 @@ impl Engine {
                 }
                 self.state.band = Band::containing(hz);
                 self.adopt_source_center();
+                // A dial the rig moved can land outside what the front end is
+                // receiving, and then nothing is demodulated at all. On a rig
+                // that carries its own I/Q (TCI) it never does — the window
+                // moved with the dial, and `adopt_source_center` above has just
+                // taken the new centre — so this is a no-op there. Where the
+                // two are *different radios*, though, turning the transceiver's
+                // knob moves the dial and leaves the receiver exactly where it
+                // was, and something has to bring it along.
+                self.keep_vfo_in_span();
                 self.update_display_center();
                 let _ = self.event_tx.send(RadioEvent::State(self.state.clone()));
             }
@@ -3047,15 +3147,45 @@ impl Engine {
 
     /// Hand the main receiver's passband to a radio that filters for us.
     ///
-    /// A no-op everywhere but a CAT rig. There the operator's width control has
+    /// A no-op everywhere but a CAT rig, and a radio listening to one behind an
+    /// attached panadapter receiver. There the operator's width control has
     /// nothing on this side to act on — the audio arrives already filtered — so
     /// unless it reaches the radio it is a control that moves and does nothing.
     fn push_control_filter(&mut self) {
-        if !self.audio_mode {
+        if !self.filters_at_the_rig() {
             return;
         }
         let r = &self.state.rx[0];
         self.source.set_control_filter(r.mode, r.filter_lo as f64, r.filter_hi as f64);
+    }
+
+    /// Whether the radio in front of us is the one doing the receiving, so its
+    /// mode and its filter are the ones the operator's controls have to reach.
+    ///
+    /// True for a demod-audio rig, where there is nothing else; and for a radio
+    /// listening to its transceiver while an attached receiver paints the
+    /// picture, where there *is* a demodulator here but it is not the one being
+    /// heard. False where sdroxide demodulates what is heard, however the
+    /// transmitter is driven — the rig's receive settings are then its own
+    /// business, and its transmit mode is asserted at key-down instead.
+    fn filters_at_the_rig(&self) -> bool {
+        self.audio_mode || self.caps.rx_audio_external
+    }
+
+    /// Assert the operator's receive mode (and, where it applies, passband) to
+    /// a front end that asked to track it — see [`IqSource::tracks_rx_mode`].
+    ///
+    /// Called wherever the source is established rather than only when the
+    /// operator changes something: a radio comes up in the mode its session
+    /// restored, and a pairing whose receiver offset depends on that mode has
+    /// no other way to learn it. Deliberately *not* extended to demod-audio
+    /// rigs, which have always been left to report their own mode at startup.
+    fn push_rx_mode(&mut self) {
+        if !self.source.tracks_rx_mode() {
+            return;
+        }
+        let _ = self.source.set_control_mode(self.state.rx[0].mode);
+        self.push_control_filter();
     }
 
     /// Construct or tear down the digi controller to match the current mode.
@@ -3069,9 +3199,14 @@ impl Engine {
         let want = mode.is_digital() || mode == Mode::Cw;
         let have = self.digi.is_some();
         // Audio mode feeds the decoder the rig's audio directly (run_audio_mode);
-        // there's no RxChain tap or high-res channel analyzer.
+        // there's no RxChain tap or high-res channel analyzer. A radio
+        // listening to its transceiver behind an attached panadapter receiver
+        // feeds it the same way, at the transceiver's sound-card rate — the
+        // decoders work on what is heard, not on what the receiver demodulated.
         let tap_rate = if self.audio_mode {
             self.radio_fs
+        } else if self.caps.rx_audio_external {
+            self.ext_audio_rate
         } else {
             self.main.as_ref().map(|c| c.audio_rate()).unwrap_or(48_000.0)
         };
@@ -5467,13 +5602,21 @@ impl Engine {
         }
         // A CAT rig: command its mode (subject to the mode policy) and, since
         // the sideband flips which half of the audio band is RF, re-center.
-        if self.audio_mode && rx == RxId::Main {
+        // A radio listening to its transceiver behind an attached panadapter
+        // receiver commands the same two things, and for the same reason — the
+        // rig is doing the receiving — but its display is the receiver's I/Q
+        // and a sideband flip does not move it.
+        if rx == RxId::Main && (self.audio_mode || self.source.tracks_rx_mode()) {
             let _ = self.source.set_control_mode(mode);
             // After the mode, never before: every family expresses a filter in
             // terms of the mode the rig is in, so a width sent ahead of the
-            // mode is a width measured against the old one.
+            // mode is a width measured against the old one. Self-guarded: a
+            // pairing whose audio comes from the *receiver* leaves the rig's
+            // own filter alone.
             self.push_control_filter();
-            self.update_display_center();
+            if self.audio_mode {
+                self.update_display_center();
+            }
         }
         // The main receiver's mode drives the digital-mode engine; entering
         // or leaving Ft8/Ft4 starts/stops it (and aborts any in-flight QSO).
@@ -5553,13 +5696,22 @@ impl Engine {
         if let Some(dbm) = self.source.rx_signal_dbm() {
             return Some(dbm);
         }
+        // Listening to the transceiver behind an attached panadapter receiver:
+        // the main chain is still running, but on the *other* radio's antenna,
+        // and a meter reading a signal nobody is listening to is worse than no
+        // meter. The audio actually being heard is the only honest measurement
+        // left once the rig has declined to report its own.
+        if self.caps.rx_audio_external {
+            return Some(self.audio_level_dbfs() + self.cal_offset_db);
+        }
         if let Some(p) = self.main.as_ref().and_then(|c| c.power_dbfs()) {
             return Some(p + self.cal_offset_db);
         }
         self.audio_mode.then(|| self.audio_level_dbfs() + self.cal_offset_db)
     }
 
-    /// The smoothed level of the audio a demod-audio source is sending, in
+    /// The smoothed level of audio that arrived as audio — a demod-audio
+    /// source, or the transceiver behind an attached panadapter receiver — in
     /// dBFS. Meaningless (and not measured) on any other kind of front end.
     fn audio_level_dbfs(&self) -> f32 {
         10.0 * (self.audio_level + 1e-20).log10()
@@ -5571,16 +5723,19 @@ impl Engine {
     /// the receiver's own squelch — so "stop where the audio would open" is
     /// true by construction when the operator asks for it.
     fn scan_level_dbfs(&mut self) -> Option<f32> {
-        if let Some(p) = self.main.as_ref().and_then(|c| c.power_dbfs()) {
-            return Some(p);
-        }
         // A CAT rig on a sound card: no DDC, no demodulator, no measurement of
         // the signal itself — the audio it sends is the only evidence there is.
         // Deliberately not the rig's own S-meter, even where one is available:
         // a scan compares this against the *squelch* threshold, which is a
-        // level in the audio, and the two scales do not meet.
-        if self.audio_mode {
+        // level in the audio, and the two scales do not meet. A radio listening
+        // to its transceiver behind an attached receiver is in the same
+        // position, and ahead of the chain below for the same reason as in
+        // `rx_signal_dbm`: that chain is measuring the other antenna.
+        if self.audio_mode || self.caps.rx_audio_external {
             return Some(self.audio_level_dbfs());
+        }
+        if let Some(p) = self.main.as_ref().and_then(|c| c.power_dbfs()) {
+            return Some(p);
         }
         // No audio chain at all — a headless engine started without a sound
         // device. The panadapter's FFT is still running, and channel power read
@@ -6746,6 +6901,7 @@ impl Engine {
         self.broadcast_tci_state();
         // Same as a cold start: the fresh VFO sits on the new front end's LO,
         // which is where zero-IF hardware must not be tuned.
+        self.push_rx_mode();
         self.keep_vfo_in_span();
         self.update_tuning();
     }
@@ -6997,8 +7153,14 @@ impl Engine {
                     // out, so even a short over starts corrected.
                     self.update_sat_tx_nco();
                     self.tx_active = true;
+                    // A front end that keeps receiving through the over on a
+                    // *different* radio from the one keyed (an attached
+                    // panadapter receiver) hears our own transmitter; silence
+                    // the speakers for its length without stopping it.
+                    let tx_mute = self.source.mutes_rx_audio_on_tx();
                     if let Some(mixer) = self.mixer.as_mut() {
                         mixer.rx_rec_enabled = false;
+                        mixer.tx_muted = tx_mute;
                     }
                     // Start the TX monitor + the real-time pacer clean (no residue
                     // from a prior burst/over) and drop any stale mic audio so the
@@ -7033,6 +7195,7 @@ impl Engine {
             self.release_tx_gate();
             if let Some(mixer) = self.mixer.as_mut() {
                 mixer.rx_rec_enabled = true;
+                mixer.tx_muted = false;
             }
             self.tx_pace = None;
             // Drop the transmit residue so the first receive frames aren't a

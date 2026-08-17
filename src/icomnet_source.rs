@@ -371,6 +371,32 @@ impl IcomNetSource {
             }
         }
     }
+
+    /// Take whatever the radio has already sent, and no more.
+    fn drain(&mut self, buf: &mut [Complex32]) -> usize {
+        self.pump();
+        match self.rx_source {
+            IcomRxSource::Af => {
+                let mut n = 0;
+                while n < buf.len() {
+                    let Ok(s) = self.audio.pop() else { break };
+                    buf[n] = Complex32::new(s, 0.0);
+                    n += 1;
+                }
+                n
+            }
+            IcomRxSource::If12k => {
+                self.fill(buf.len());
+                let mut n = 0;
+                while n < buf.len() {
+                    let Some(s) = self.if_out.pop_front() else { break };
+                    buf[n] = s;
+                    n += 1;
+                }
+                n
+            }
+        }
+    }
 }
 
 impl IqSource for IcomNetSource {
@@ -396,42 +422,19 @@ impl IqSource for IcomNetSource {
     }
 
     fn read(&mut self, buf: &mut [Complex32]) -> Result<usize> {
-        self.pump();
-        let n = match self.rx_source {
-            IcomRxSource::Af => {
-                let mut n = 0;
-                while n < buf.len() {
-                    match self.audio.pop() {
-                        Ok(s) => {
-                            buf[n] = Complex32::new(s, 0.0);
-                            n += 1;
-                        }
-                        Err(_) => break,
-                    }
-                }
-                n
-            }
-            IcomRxSource::If12k => {
-                self.fill(buf.len());
-                let mut n = 0;
-                while n < buf.len() {
-                    match self.if_out.pop_front() {
-                        Some(s) => {
-                            buf[n] = s;
-                            n += 1;
-                        }
-                        None => break,
-                    }
-                }
-                n
-            }
-        };
+        let n = self.drain(buf);
         if n == 0 {
             // Nothing yet: the radio paces this stream, so yielding here is
             // what keeps the engine thread off a spin.
             std::thread::sleep(Duration::from_millis(5));
         }
         Ok(n)
+    }
+
+    /// The same drain without the nap — see `AudioCatSource::read_available`
+    /// for why a source that may not be the one pacing the engine needs it.
+    fn read_available(&mut self, buf: &mut [Complex32]) -> Result<usize> {
+        Ok(self.drain(buf))
     }
 
     fn describe(&self) -> String {

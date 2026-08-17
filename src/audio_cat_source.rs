@@ -283,6 +283,31 @@ impl IqSource for AudioCatSource {
         }
     }
 
+    /// The same drain as [`Self::read`] without the nap on an empty ring.
+    ///
+    /// The default falls through to `read`, whose 5 ms sleep is what keeps the
+    /// engine loop from spinning on a sound card that has nothing yet. That is
+    /// right when this is the only stream there is, and wrong wherever it is
+    /// not: a radio with another radio attached as its panadapter pulls this
+    /// rig's audio once per I/Q block, and a sleep there would pace the whole
+    /// receiver off a sound card that is not driving it.
+    fn read_available(&mut self, buf: &mut [Complex32]) -> Result<usize> {
+        Ok(match self.format {
+            SoundFormat::DemodAudio => {
+                let mut n = 0;
+                while n < buf.len() {
+                    let Ok(s) = self.in_consumer.pop() else { break };
+                    buf[n] = Complex32::new(s, 0.0);
+                    n += 1;
+                }
+                n
+            }
+            SoundFormat::Iq => {
+                fill_iq(&mut self.in_consumer, buf, self.q_sign, self.iq_shift.as_mut())
+            }
+        })
+    }
+
     fn describe(&self) -> String {
         self.label.clone()
     }

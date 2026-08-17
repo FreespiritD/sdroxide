@@ -1046,6 +1046,44 @@ impl SdroxideApp {
                 self.ctrl.set_radio_config(cfg.clone());
             }
             self.ctrl.reopen_source();
+            // An Apply here can move a *device* between two engines, and the
+            // other engine has to be told or nothing happens. Three cases, and
+            // reopening all of them covers each:
+            //
+            // - the receiver this radio is now claiming, which is still holding
+            //   its own device open: a reopen makes it let go (the factory
+            //   refuses it the device from here on), and this radio's own retry
+            //   picks it up a moment later;
+            // - a receiver this radio has just *stopped* borrowing, which
+            //   should go back to being a radio without waiting for its retry;
+            // - this radio itself, when it is the one that has been lent out —
+            //   it has no source of its own to rebuild, so what was saved here
+            //   reaches the hardware only through the borrower.
+            //
+            // A reopen that turns out to be none of them is harmless: the
+            // factory refuses while a pairing stands, and a source that cannot
+            // be replaced is left exactly as it was.
+            let station = self.radio_roster.iter().find(|c| c.id == self.radio_id);
+            let claiming = radio_edit
+                .as_ref()
+                .and_then(|c| c.panadapter.source_radio)
+                .and_then(|rx| {
+                    self.radio_roster.iter().find(|c| {
+                        c.station_id == rx && station.is_none_or(|s| c.station == s.station)
+                    })
+                })
+                .map(|c| c.id);
+            let stir: Vec<u32> = self
+                .radio_roster
+                .iter()
+                .filter(|c| c.attached_to.is_some())
+                .map(|c| c.id)
+                .chain(claiming)
+                .chain(self.lent_to())
+                .collect();
+            for id in stir {
+                self.radio_tab_requests.push(crate::app::RadioTabRequest::Reopen(id));
+            }
         }
         self.converter_edit_hz = converter_hz;
         self.range_edit = ranges;
@@ -1480,6 +1518,8 @@ impl SdroxideApp {
                         .weak(),
                     );
                 }
+
+                self.settings_panadapter(ui, cfg);
 
                 // Transmit EQ: mic/modulator-path DSP, not a device feature.
                 // It applies the same way regardless of which interface is
@@ -2330,6 +2370,237 @@ impl SdroxideApp {
     }
 }
 
+/// Settings → Radio → **Panadapter**: borrowing another radio in the roster as
+/// this one's receiver.
+impl SdroxideApp {
+    fn settings_panadapter(&self, ui: &mut egui::Ui, cfg: &mut sdroxide_types::RadioConfig) {
+        use sdroxide_types::{IfModeClass, PanadapterAudio, PanadapterTap};
+
+        // A radio that has itself been lent out is not a radio anything can be
+        // attached to; its page says so instead.
+        if let Some(owner) = self.lent_to() {
+            ui.add_space(8.0);
+            ui.separator();
+            ui.add_space(6.0);
+            ui.label(
+                RichText::new(format!(
+                    "This radio is {}'s panadapter",
+                    crate::app::radio_name(&self.radio_roster, owner)
+                ))
+                .size(14.0)
+                .strong()
+                .color(crate::theme::CYAN()),
+            );
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new(
+                    "Its spectrum, its waterfall and everything read off them are on that \
+                     radio's tab, which is why it has none of its own. The interface settings \
+                     above are still this radio's and still apply — press Apply / reconnect \
+                     after changing them and both radios come back up together.\n\nTo use it on \
+                     its own again, clear the Panadapter receiver box on that radio's page.",
+                )
+                .weak(),
+            );
+            return;
+        }
+
+        // Every other radio on the station, minus any that is already somebody
+        // else's receiver: one receiver, one borrower.
+        //
+        // Named the way the *station* numbers them, not the way this screen
+        // does: what is chosen here is written into a `radio.json` on that
+        // station, which knows nothing of this screen's tab ids. And restricted
+        // to radios on the same station — a receiver is lent inside one
+        // station, and a screen may be holding two.
+        let here = self.radio_roster.iter().find(|c| c.id == self.radio_id);
+        let (station, me) = match here {
+            Some(c) => (c.station.clone(), c.station_id),
+            None => (String::new(), self.radio_id),
+        };
+        let candidates: Vec<(u32, String)> = self
+            .radio_roster
+            .iter()
+            .filter(|c| c.station == station && c.station_id != me)
+            .filter(|c| c.attached_to.is_none_or(|owner| owner == self.radio_id))
+            .map(|c| (c.station_id, c.display_name().to_string()))
+            .collect();
+        if candidates.is_empty() && !cfg.panadapter.is_attached() {
+            return;
+        }
+
+        let pan = &mut cfg.panadapter;
+        ui.add_space(8.0);
+        ui.separator();
+        ui.add_space(6.0);
+        ui.label(RichText::new("Panadapter").size(14.0).strong().color(crate::theme::CYAN()));
+        ui.add_space(4.0);
+        ui.label(
+            RichText::new(
+                "Give this radio a wideband panadapter by borrowing another radio's receiver — \
+                 an SDR on the same antenna, or one fed from this radio's I.F. output. The \
+                 spectrum, the waterfall, the sub receiver, the digital modes and the skimmer \
+                 all come from that receiver; the dial, the mode, the filter and the \
+                 transmitter stay here.",
+            )
+            .weak(),
+        );
+        ui.add_space(6.0);
+
+        egui::Grid::new("panadapter-grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+            ui.label(RichText::new("Receiver").strong());
+            let selected = pan
+                .source_radio
+                .map(|id| {
+                    candidates
+                        .iter()
+                        .find(|(c, _)| *c == id)
+                        .map_or_else(|| format!("radio {}", id + 1), |(_, n)| n.clone())
+                })
+                .unwrap_or_else(|| "None".to_string());
+            ComboBox::from_id_salt("pan-source")
+                .selected_text(selected)
+                .show_ui(ui, |ui| {
+                    if ui.selectable_label(pan.source_radio.is_none(), "None").clicked() {
+                        pan.source_radio = None;
+                    }
+                    for (id, name) in &candidates {
+                        if ui.selectable_label(pan.source_radio == Some(*id), name).clicked() {
+                            pan.source_radio = Some(*id);
+                        }
+                    }
+                })
+                .response
+                .on_hover_text(
+                    "Which radio receives for this one. It leaves the tab strip while it is \
+                 lent — its front end belongs to this radio's engine — and comes straight \
+                 back when this is set to None.\n\nTakes effect on Apply.",
+                );
+            ui.end_row();
+
+            if !pan.is_attached() {
+                return;
+            }
+
+            ui.label(RichText::new("Connected to").strong());
+            enum_combo(ui, "pan-tap", &mut pan.tap, &PanadapterTap::ALL, PanadapterTap::label);
+            ui.end_row();
+
+            ui.label(RichText::new("Offset").strong());
+            ui.add(
+                egui::DragValue::new(&mut pan.offset_hz)
+                    .speed(1.0)
+                    .range(
+                        -sdroxide_types::PANADAPTER_OFFSET_MAX_HZ
+                            ..=sdroxide_types::PANADAPTER_OFFSET_MAX_HZ,
+                    )
+                    .max_decimals(0)
+                    .suffix(" Hz"),
+            )
+            .on_hover_text(
+                "How far above this radio's dial the receiver sits, in hertz. 0 for a receiver \
+                 on the same antenna; the intermediate frequency for an I.F. tap — 9000000 for \
+                 a 9 MHz I.F., 70455000 for a 70.455 MHz one.\n\nThis is not the Converter field \
+                 above, which retunes the radio, and not the CAT tab's I/Q centre offset, which \
+                 is about this radio's own sound card. Nothing typed here is ever sent to \
+                 either radio.\n\nTakes effect on Apply.",
+            );
+            ui.end_row();
+
+            ui.label(RichText::new("Audio from").strong());
+            enum_combo(
+                ui,
+                "pan-audio",
+                &mut pan.audio,
+                &PanadapterAudio::ALL,
+                PanadapterAudio::label,
+            );
+            ui.end_row();
+
+            ui.label(RichText::new("Follow the dial").strong());
+            ui.checkbox(&mut pan.track, "").on_hover_text(
+                "Keep the receiver on this radio's dial, and move the dial when you tune on \
+                 the panadapter. Off parks the receiver where it is — a fixed watch on one \
+                 segment while the radio goes elsewhere.",
+            );
+            ui.end_row();
+
+            ui.label(RichText::new("Invert spectrum").strong());
+            ui.checkbox(&mut pan.invert, "").on_hover_text(
+                "Mirror the receiver's span about its centre, for a tap whose oscillator sits \
+                 above the signal and hands the band over the wrong way round. Leave it off \
+                 unless the waterfall fills with signals that are all on the wrong side of the \
+                 dial.",
+            );
+            ui.end_row();
+
+            ui.label(RichText::new("Mute on transmit").strong());
+            ui.checkbox(&mut pan.mute_on_tx, "").on_hover_text(
+                "Silence receive audio while this radio is transmitting. On by default: with \
+                 the receiver on the same antenna, or on this radio's I.F., what it hears \
+                 during an over is your own transmitter.",
+            );
+            ui.end_row();
+
+            ui.label(RichText::new("Blank on transmit").strong());
+            ui.checkbox(&mut pan.blank_on_tx, "").on_hover_text(
+                "Stop the panadapter and waterfall while this radio is transmitting. On by \
+                 default: a transmitter painted across the whole span erases the band behind \
+                 it. Turn it off to watch the band — or your own signal — through an over, \
+                 which is worth having with the receiver on a separate antenna.",
+            );
+            ui.end_row();
+        });
+
+        if pan.is_attached() && pan.tap == PanadapterTap::IfOutput {
+            ui.add_space(6.0);
+            ui.label(
+                RichText::new(
+                    "Per-mode offsets, for a radio whose I.F. moves with the mode. A mode left \
+                     empty uses the offset above.",
+                )
+                .weak(),
+            );
+            ui.add_space(4.0);
+            egui::Grid::new("pan-mode-offsets").num_columns(3).spacing([10.0, 4.0]).show(
+                ui,
+                |ui| {
+                    for class in IfModeClass::ALL {
+                        ui.label(RichText::new(class.label()).strong());
+                        let mut on = pan.mode_offset(class).is_some();
+                        if ui.checkbox(&mut on, "").changed() {
+                            pan.set_mode_offset(class, on.then_some(pan.offset_hz));
+                        }
+                        match pan.mode_offset(class) {
+                            Some(mut hz) => {
+                                if ui
+                                    .add(
+                                        egui::DragValue::new(&mut hz)
+                                            .speed(1.0)
+                                            .range(
+                                                -sdroxide_types::PANADAPTER_OFFSET_MAX_HZ
+                                                    ..=sdroxide_types::PANADAPTER_OFFSET_MAX_HZ,
+                                            )
+                                            .max_decimals(0)
+                                            .suffix(" Hz"),
+                                    )
+                                    .changed()
+                                {
+                                    pan.set_mode_offset(class, Some(hz));
+                                }
+                            }
+                            None => {
+                                ui.label(RichText::new(format!("{} Hz", pan.offset_hz)).weak());
+                            }
+                        }
+                        ui.end_row();
+                    }
+                },
+            );
+        }
+    }
+}
+
 /// The radio-management strip at the top of Settings → Radio: the same chips
 /// the main window's tab area shows, drawn where radios are configured. The
 /// main window only shows its copy once there is more than one radio, so this
@@ -2372,7 +2643,18 @@ impl SdroxideApp {
                 {
                     requests.push(crate::app::RadioTabRequest::Focus(chip.id));
                 }
-                if chip.tx_on {
+                if let Some(owner) = chip.attached_to {
+                    // Off the main window's strip, so this is the one place it
+                    // shows at all — and the marker has to say why. An emoji
+                    // rather than an arrow: the arrows are not in the text font
+                    // and come out as an empty box, while the mute markers
+                    // beside it prove the emoji font is there.
+                    ui.label(RichText::new("🔗").size(11.0).color(crate::theme::CYAN()))
+                        .on_hover_text(format!(
+                            "Panadapter receiver for {}",
+                            crate::app::radio_name(&self.radio_roster, owner)
+                        ));
+                } else if chip.tx_on {
                     ui.label(RichText::new("● TX").size(11.0).color(crate::theme::ALERT()));
                 } else if chip.error {
                     ui.label(RichText::new("⚠").size(11.0).color(crate::theme::ALERT()));

@@ -119,7 +119,7 @@ pub fn run_multi(
             caps,
             initial_mode,
             initial_antenna: (None, None),
-            reopen: Some(crate::reopen_factory_for(&c, store.clone())),
+            reopen: Some(crate::reopen_factory_for(&c, store.clone(), slot.id)),
             store,
         };
         let ctrl =

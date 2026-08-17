@@ -340,7 +340,16 @@ use sdroxide_types::{
 /// propagation messages index by (`SolarServerMsg`'s per-band planes, and the
 /// band masks the globe and the flat map carry). A v59 client would file 70 cm's
 /// plane under 1.25 m and every plane above it one band low.
-pub const PROTO_VERSION: u16 = 60;
+///
+/// **61** — a second radio used as this one's panadapter. `DeviceCaps` gained
+/// `rx_audio_external` and `RadioConfig` gained a whole `panadapter` block, and
+/// both travel over the wire — `DeviceCaps` in `ServerMsg::Capabilities`,
+/// `RadioConfig` in `ServerMsg::RadioConfig` and `Command::SetRadioConfig`.
+/// Both are appended last, so nothing already on disk moves, but postcard is
+/// positional and not self-describing: a v60 client reading a v61
+/// `RadioConfig` would run off the end of the message, and `#[serde(default)]`
+/// covers the file, not the stream.
+pub const PROTO_VERSION: u16 = 61;
 const VERSION_BYTE: u8 = 0x12;
 
 #[derive(Debug, thiserror::Error)]

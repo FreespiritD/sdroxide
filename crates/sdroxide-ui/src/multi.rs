@@ -64,6 +64,16 @@ struct Tab {
     name: String,
     app: SdroxideApp,
     muted: bool,
+    /// The radio that has borrowed this one's receiver as its panadapter, if
+    /// one has. Such a radio has no front end of its own — the borrower opened
+    /// it — so it is kept out of the strip: a tab that can only ever say "my
+    /// receiver is on that other tab" is a tab worth not having.
+    ///
+    /// It stays in the roster the settings dialog draws, which is how the
+    /// operator reaches its interface settings and detaches it again. Refreshed
+    /// each frame from the configuration its engine reports, so undoing the
+    /// pairing brings the tab straight back.
+    attached_to: Option<u32>,
     /// Somebody else's station, reached over the network. It has no entry in
     /// this machine's radio roster, so closing or renaming it must not go
     /// looking for one. In the browser there is no roster and every tab is
@@ -142,7 +152,7 @@ impl MultiApp {
                 app.set_focused_flag(i == 0);
                 app.set_shared_log(shared_log);
                 app.set_can_add_radio(can_add);
-                Tab { id: r.id, name: r.name, app, muted: false, remote }
+                Tab { id: r.id, name: r.name, app, muted: false, remote, attached_to: None }
             })
             .collect();
         assert!(!tabs.is_empty(), "MultiApp needs at least one radio");
@@ -163,8 +173,45 @@ impl MultiApp {
     /// exactly as it always has, and radios are managed from Settings → Radio
     /// (which is also where the second one gets added, and the only place a
     /// radio can be deleted from).
+    ///
+    /// A radio lent to another as its panadapter does not count: a station of
+    /// one transceiver and one borrowed receiver is a one-radio station, and
+    /// should look like one.
     fn strip_wanted(&self) -> bool {
-        self.tabs.len() > 1
+        self.tabs.iter().filter(|t| t.attached_to.is_none()).count() > 1
+    }
+
+    /// Re-read which radios have been lent out as panadapter receivers.
+    ///
+    /// Once per frame from what each engine reports, rather than from the files
+    /// on disk: the answer has to be right for a radio on another machine too,
+    /// and it has to follow an Apply the moment the engine has acted on it.
+    /// A radio never counts as lent to itself, and one that is on screen is
+    /// left there until the operator moves off it — a tab vanishing under the
+    /// pointer mid-click is worse than one frame of a stale strip.
+    fn refresh_attachments(&mut self) {
+        // Each lent radio names its borrower the way its *station* numbers
+        // radios, so the borrower is looked up by (station, station id) rather
+        // than by tab id: a pairing is a relationship inside one station, and a
+        // screen may hold several stations' radios at once — including two
+        // whose rosters both have a radio 2. What comes out is a *tab* id,
+        // which is what the strip and the reopen request speak.
+        let by_station: std::collections::HashMap<(String, u32), u32> = self
+            .tabs
+            .iter()
+            .map(|t| ((t.app.station_key(), t.app.station_radio_id()), t.id))
+            .collect();
+        let attached: Vec<Option<u32>> = self
+            .tabs
+            .iter()
+            .map(|t| {
+                let owner = t.app.lent_to_radio()?;
+                by_station.get(&(t.app.station_key(), owner)).copied()
+            })
+            .collect();
+        for (tab, owner) in self.tabs.iter_mut().zip(attached) {
+            tab.attached_to = owner;
+        }
     }
 
     /// The roster as published to the visible tabs, for the settings dialog's
@@ -175,12 +222,15 @@ impl MultiApp {
             .enumerate()
             .map(|(i, t)| RadioChip {
                 id: t.id,
+                station: t.app.station_key(),
+                station_id: t.app.station_radio_id(),
                 name: t.name.clone(),
                 default_name: Self::default_name(t),
                 tx_on: t.app.tab_tx_on(),
                 error: t.app.tab_error(),
                 muted: t.muted,
                 focused: i == self.focused,
+                attached_to: t.attached_to,
             })
             .collect()
     }
@@ -291,6 +341,11 @@ impl MultiApp {
                     }
                     self.sync_audio();
                 }
+                RadioTabRequest::Reopen(id) => {
+                    if let Some(t) = self.tabs.iter_mut().find(|t| t.id == id) {
+                        t.app.reopen_source();
+                    }
+                }
                 RadioTabRequest::Rename { id, name } => {
                     if let Some(t) = self.tabs.iter_mut().find(|t| t.id == id) {
                         t.name = name.clone();
@@ -340,6 +395,13 @@ impl MultiApp {
     fn strip_row(&self, ui: &mut egui::Ui, pane: usize, actions: &mut Vec<StripAction>) {
         crate::chrome::tab_bar(ui, |ui, bar| {
             for (i, tab) in self.tabs.iter().enumerate() {
+                // A radio lent out as somebody's panadapter receiver is not one
+                // of the radios on this station's strip — unless it is the one
+                // being looked at, which is how it is reached from Settings →
+                // Radio and how the operator gets back off it.
+                if tab.attached_to.is_some() && !self.panes.contains(&tab.id) {
+                    continue;
+                }
                 let id = tab.id;
                 let here = self.panes.get(pane) == Some(&id);
                 let elsewhere = !here && self.panes.contains(&id);
@@ -591,7 +653,14 @@ impl MultiApp {
         );
         app.set_focused_flag(false);
         app.set_can_add_radio(self.factory.is_some());
-        self.tabs.push(Tab { id: r.id, name: r.name, app, muted: false, remote });
+        self.tabs.push(Tab {
+            id: r.id,
+            name: r.name,
+            app,
+            muted: false,
+            remote,
+            attached_to: None,
+        });
         for tab in &mut self.tabs {
             tab.app.set_shared_log(true);
         }
@@ -674,7 +743,10 @@ impl eframe::App for MultiApp {
             }
         }
         // Publish the roster before the frame (the settings dialog draws it),
-        // act on what the strips and the dialogs asked for after it.
+        // act on what the strips and the dialogs asked for after it. Which
+        // radios have been lent out is settled first: both the strip and the
+        // roster are drawn from it.
+        self.refresh_attachments();
         let roster = self.roster();
         let mut actions: Vec<StripAction> = Vec::new();
         let mut reqs: Vec<RadioTabRequest> = Vec::new();

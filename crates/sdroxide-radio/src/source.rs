@@ -306,6 +306,56 @@ pub trait IqSource: Send {
     ///
     /// Default: no-op.
     fn set_rit_hz(&mut self, _hz: f64) {}
+
+    /// Real receive audio this front end produces *alongside* its I/Q — a
+    /// transceiver's own demodulated output, where a second receiver is
+    /// supplying the spectrum. Appends to `out` and returns the rate those
+    /// samples are at; `None` when there is no such stream.
+    ///
+    /// Distinct from a demod-audio source ([`DeviceCaps::audio_mode`]), which
+    /// has no I/Q at all and delivers its audio through [`Self::read`]. Here
+    /// both exist and come from different radios: the engine paints the picture
+    /// from the I/Q and plays (and decodes) this instead of what it
+    /// demodulated. Announced by [`DeviceCaps::rx_audio_external`], which is
+    /// what the engine actually branches on — a source may keep this method
+    /// silent for a block without the engine concluding the arrangement is
+    /// over.
+    ///
+    /// Default: nothing, which is right for every ordinary front end.
+    fn rx_audio(&mut self, _out: &mut Vec<f32>) -> Option<f64> {
+        None
+    }
+
+    /// Whether the operator's *receive* mode has to be commanded to this front
+    /// end as it changes, and asserted whenever the source is established.
+    ///
+    /// True where the radio in front of us is the one being worked even though
+    /// something else may be doing the demodulating: a panadapter pairing,
+    /// whose receiver offset can depend on the mode and whose transceiver's own
+    /// display must not disagree with ours. A demod-audio rig needs the same
+    /// thing and gets it from [`DeviceCaps::audio_mode`], which the engine has
+    /// always keyed this on — the two are kept apart so that path's behaviour
+    /// is unchanged.
+    ///
+    /// False for an SDR, which has no mode of its own, and for a rig that only
+    /// transmits for us (TCI): there the mode asserted at key-down is enough.
+    fn tracks_rx_mode(&self) -> bool {
+        false
+    }
+
+    /// Whether receive audio must be silenced while this source is
+    /// transmitting, without the receiver being stopped.
+    ///
+    /// Only ever true where the transmitter and the receiver are different
+    /// devices, which is the one arrangement where receiving through an over is
+    /// both possible and unwanted: the receiver hears our own transmitter.
+    /// A half-duplex source ([`DeviceCaps::full_duplex`] false) is not read at
+    /// all during an over and needs nothing here.
+    ///
+    /// Default: false.
+    fn mutes_rx_audio_on_tx(&self) -> bool {
+        false
+    }
     /// Write real TX audio to the rig's sound card (used instead of `tx_write`
     /// in demod-audio mode, where the rig does its own modulation).
     fn tx_write_audio(&mut self, _audio: &[f32]) -> Result<()> {
@@ -664,6 +714,19 @@ impl IqSource for ConvertedSource {
     /// Relative (an offset from the dial), so untouched.
     fn set_rit_hz(&mut self, hz: f64) {
         self.inner.set_rit_hz(hz);
+    }
+
+    /// Audio, which no frequency conversion touches.
+    fn rx_audio(&mut self, out: &mut Vec<f32>) -> Option<f64> {
+        self.inner.rx_audio(out)
+    }
+
+    fn tracks_rx_mode(&self) -> bool {
+        self.inner.tracks_rx_mode()
+    }
+
+    fn mutes_rx_audio_on_tx(&self) -> bool {
+        self.inner.mutes_rx_audio_on_tx()
     }
 
     fn tx_write_audio(&mut self, audio: &[f32]) -> Result<()> {

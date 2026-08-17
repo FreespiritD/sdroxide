@@ -832,6 +832,10 @@ fn probe_caps(dev: &soapysdr::Device) -> Result<DeviceCaps> {
         // SoapySDR gives no way to ask whether channels share a synthesiser;
         // each stream here is opened as its own device anyway.
         shared_lo_rx: false,
+        // Both set by the panadapter pairing, which wraps a source rather than
+        // being one — and, for `lent_to`, stands in for one.
+        rx_audio_external: false,
+        lent_to: None,
     })
 }
 

@@ -101,6 +101,11 @@ or connects to a remote sdroxide server.
   transmit interlock. Multi-receiver hardware serves one tab per receiver from
   a single connection: a TCI rig's RX2, an HPSDR Protocol 2 board's DDCs, a
   2R2T PlutoSDR's second chain.
+- **One radio as another's panadapter** — give a CAT transceiver a real
+  wideband display by lending it an SDR's receiver, on the shared antenna or
+  from the rig's I.F. output (with a per-mode offset for a rig whose I.F. moves
+  with the mode). The dial, mode and transmitter stay with the transceiver, and
+  you listen to whichever of the two you choose.
 - **Memory channels** and per-band memory of your last frequency/mode/filter.
 - **Solar system 3D view** — the Sun, the Earth and the Moon, the
   other seven planets and eighteen of their moons with their orbits, live NASA
@@ -1124,6 +1129,17 @@ other streaming, and the transmitter belongs to the first receiver's radio:
   chains **share one local oscillator**, so this is a second *antenna* on the
   same spectrum — retune either radio and both move. See
   [§5.2.7](#527-plutosdr-adalm-pluto).
+
+**One radio can receive for another.** A transceiver with no wideband output —
+a CAT rig on a sound card — can borrow another radio's receiver and use it as
+its panadapter, on the same antenna or fed from the rig's I.F. socket. The two
+then behave as one radio: the spectrum, the waterfall and the sub receiver come
+from the receiver, the dial, the mode and the transmitter stay with the
+transceiver, and you can listen to whichever of the two you prefer. A radio that
+has been lent out this way leaves the tab strip — its front end belongs to the
+radio that borrowed it — and stays in the roster in Settings → Radio, marked
+🔗, which is where it is configured and where the pairing is undone. See
+[§5.2.15](#5215-panadapter-borrowing-another-radios-receiver).
 
 **A server serves every radio in the roster**, each on an address of its own —
 `--server` brings up the same radios the GUI would ([7.1](#71-start-the-server)).
@@ -2668,6 +2684,10 @@ Three things to know:
   display comes out 8 kHz *wrong* rather than corrected. Use **I/Q centre
   offset** on the CAT tab
   ([5.2.2](#522-cat-radios-serial-control--usb-audio)) for that.
+- **Nor for a second radio watching this one's I.F. output.** That offset
+  describes where a *different* receiver is listening, and belongs in the
+  **Panadapter** section below
+  ([5.2.15](#5215-panadapter-borrowing-another-radios-receiver)).
 
 This has been tested against sdroxide's own simulated front ends, not against a
 physical converter. If you have one, reports are welcome.
@@ -4309,6 +4329,115 @@ demodulates its own.
 > **Security.** SpyServer has no authentication and no encryption. A server you
 > run is reachable by anyone who can reach the port, and a public one sees your
 > address. Keep a private server on a trusted network or behind an SSH tunnel.
+
+#### 5.2.15 Panadapter: borrowing another radio's receiver
+
+A great many stations have a transceiver with no wideband output — CAT on a
+serial port, demodulated audio on a USB sound card — and an SDR sitting on the
+desk beside it. On its own the transceiver can only show a slice of its audio
+band mapped to RF ([5.2.2](#522-cat-radios-serial-control--usb-audio)). Give it
+the SDR's receiver and the same tab gets the real thing: a wideband panadapter
+and waterfall you can click to tune, a sub receiver, the digital modes, the CW
+skimmer and the band-plan and spot overlays — while the dial, the mode, the
+filter, the transmitter and the keyer all stay with the transceiver.
+
+Both radios are configured exactly as they are on their own. Add the SDR as a
+radio ([2.17](#217-running-more-than-one-radio)), set its interface up until it
+works, and then, on the **transceiver's** Radio page, pick it under
+**Panadapter → Receiver**. Press **Apply / reconnect**.
+
+**The receiver leaves the tab strip while it is lent.** Its front end now
+belongs to the transceiver's engine, so there is nothing left for a tab of its
+own to show — a station with one transceiver and one borrowed receiver reads as
+the one radio it is. It stays in the roster at the top of Settings → Radio,
+marked 🔗, which is where its own interface settings are and where you set
+**Receiver** back to **None** to have it as a radio again. It comes back by
+itself within a few seconds of being released; nothing needs restarting.
+
+**How the receiver is connected** — the choice under **Connected to** decides
+what the offset below it means:
+
+- **Antenna (shared with the radio)** — a splitter, or the transceiver's RX-out
+  loop. The receiver simply tunes to the dial and the offset stays `0`.
+- **The radio's I.F. output** — the receiver watches the transceiver's
+  intermediate frequency and never really tunes at all: the rig's own first
+  oscillator moves the band underneath it. The **Offset** is that intermediate
+  frequency — `9000000` for a 9 MHz I.F., `70455000` for a 70.455 MHz one.
+
+The offset is **in hertz** and its sign follows the same rule as the converter's
+above: the receiver is tuned to `dial + offset`. Nothing you type here is ever
+sent to either radio.
+
+**This is a third offset field, and the three do different things.** The
+**Converter** offset above retunes the radio itself, for hardware in the antenna
+line ([5.2](#52-radio-choosing-and-configuring-the-rig)). **I/Q centre offset**
+on the CAT tab says where a rig's *own* sound-card output sits relative to its
+dial ([5.2.2](#522-cat-radios-serial-control--usb-audio)). This one says where a
+*different radio* is listening. Putting an I.F. in either of the other two puts
+the whole display out by that much instead of correcting it.
+
+**Per-mode offsets** appear under an I.F. tap, because on many transceivers the
+carrier — and with it the I.F. — sits in a different place in each mode. Tick a
+mode to give it an offset of its own; leave it clear and it uses the plain
+offset above. The classes are the rig's, not sdroxide's: every digital and
+keyboard mode counts as **DATA**, because that is the one setting the rig is in
+for all of them.
+
+These follow the mode the **radio reports**, not the mode named in sdroxide, so
+they stay right even when the two differ — which they routinely do, since
+**Digimode mode** ([5.2.2](#522-cat-radios-serial-control--usb-audio)) may leave
+the rig in plain USB for a digital mode. Changing mode retunes the receiver by
+the difference, so the band does not move on screen.
+
+**Invert spectrum** mirrors the receiver's span about its own centre, for a tap
+whose oscillator sits above the signal and hands the band over the wrong way
+round. The symptom is the one described in
+[5.2.2](#522-cat-radios-serial-control--usb-audio): a waterfall full of
+convincing signals that are all on the wrong side of the dial. Leave it off
+until you see that.
+
+**Follow the dial** is what makes the two one radio, and it works both ways.
+Click a signal on the panadapter and the transceiver's dial goes there; turn the
+transceiver's own VFO knob and the marker follows within one poll. The waterfall
+itself only moves when the dial leaves what the receiver is covering — inside
+that span the picture stays still and the passband marker slides, which is the
+whole point of having it. Turn this off to park the receiver on one segment and
+let the radio go elsewhere.
+
+**Audio from** — which of the two you actually listen to:
+
+- **The attached receiver** — sdroxide demodulates its I/Q, so the filter, AGC,
+  noise reduction, notch and squelch in the panel are the ones doing the work.
+- **The transceiver** — its own demodulated audio, over its sound card. Then the
+  rig is the receiver in every sense that can be heard: the digital-mode
+  decoders, the CW skimmer's keyboard decoder and the recorder all work on that
+  audio rather than on the receiver's, because what gets decoded should be what
+  you are listening to. The S-meter follows it too, and the **width** control
+  and the mode are handed to the radio the way they are for a plain CAT rig. The
+  attached receiver goes on supplying the picture and the sub receiver.
+
+**Mute on transmit** and **Blank on transmit**, both on by default, are for the
+obvious hazard: a receiver on the same antenna — or on the transceiver's own
+I.F. — hears your transmitter, loudly, and paints it across the whole span.
+Blanking stops the receiver being read for the length of the over, so the
+waterfall pauses and picks up on unkey. Turn *both* off only with the receiver
+on a separate antenna, where watching the band through an over is worth having;
+turn off blanking alone to watch your own signal while still not hearing it.
+
+**Things worth knowing.**
+
+- The receiver must be a radio on this machine — the transceiver's engine opens
+  its device. A station reached over the network cannot lend its receiver to a
+  radio here, though a server can pair two of *its* radios and a client dialling
+  in sees the result as one ordinary wideband radio
+  ([7.2](#72-connect-a-native-remote-client)).
+- One receiver, one borrower. A radio already lent out is not offered to a
+  second, and a radio that is itself borrowing one cannot be borrowed.
+- Transmit belongs entirely to the transceiver, including the transmit range,
+  the SWR and power meters and CW keying. The receiver's own gains, antenna and
+  sample rate are still its own, and are set on its page.
+- Closing the receiver from the roster leaves the transceiver on the air: the
+  pairing is dropped, with a line in the log saying so.
 
 ### 5.3 UI: display preferences and voice announcements
 

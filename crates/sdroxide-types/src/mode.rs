@@ -428,6 +428,50 @@ impl Mode {
         matches!(self, Mode::Lsb | Mode::Digl)
     }
 
+    /// Which carrier position a transceiver puts this mode at, for the per-mode
+    /// I.F. offsets of [`crate::PanadapterConfig`].
+    ///
+    /// Not the same folding as the engine's `rig_mode_class`, which exists to
+    /// recognise a rig reporting the plain sideband a data mode rides on. Here
+    /// the data modes have to stay apart from it: a rig's DATA setting commonly
+    /// sits at a different carrier offset from plain SSB, and that difference
+    /// is exactly what this table is for.
+    pub fn if_class(self) -> crate::IfModeClass {
+        use crate::IfModeClass as C;
+        match self {
+            Mode::Lsb => C::Lsb,
+            Mode::Usb | Mode::Spec => C::Usb,
+            Mode::Cw => C::Cw,
+            Mode::Am | Mode::Sam | Mode::Dsb => C::Am,
+            // WFM is FM's carrier position too; a rig with an I.F. output has
+            // no such mode, so nothing here is lost by grouping them.
+            Mode::Nfm | Mode::Wfm => C::Fm,
+            // Everything a rig would be put into DATA (or DIGI) for, on either
+            // sideband — including RIFP and VHF packet, which the rig carries
+            // as FM data rather than SSB but still through its data input.
+            Mode::Digu
+            | Mode::Digl
+            | Mode::Ft8
+            | Mode::Ft4
+            | Mode::Ft2
+            | Mode::Js8
+            | Mode::Wspr
+            | Mode::Psk
+            | Mode::Rtty
+            | Mode::Sstv
+            | Mode::Rifp
+            | Mode::Wefax
+            | Mode::Olivia
+            | Mode::Thor
+            | Mode::Fsq
+            | Mode::Hell
+            | Mode::RfPaint
+            | Mode::Rade
+            | Mode::Packet
+            | Mode::PacketHf => C::Data,
+        }
+    }
+
     /// Furthest a filter edge may be dragged from the carrier — bounded by
     /// the mode's DSP channel bandwidth.
     pub fn max_filter_hz(self) -> f32 {

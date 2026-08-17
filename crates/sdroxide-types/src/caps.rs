@@ -61,6 +61,30 @@ pub struct DeviceCaps {
     /// last (postcard layout; `PROTO_VERSION` bumped with it).
     #[serde(default)]
     pub shared_lo_rx: bool,
+    /// Receive audio arrives from a *separate* transceiver through
+    /// [`IqSource::rx_audio`](../../sdroxide_radio/trait.IqSource.html), rather
+    /// than from demodulating this stream: a radio with another radio attached
+    /// as its panadapter, listening to the transceiver rather than to the
+    /// receiver painting the picture.
+    ///
+    /// The stream itself is still ordinary wideband I/Q — this is not
+    /// [`Self::audio_mode`], which says there is no I/Q at all. Appended last,
+    /// for the same reason as `shared_lo_rx`.
+    #[serde(default)]
+    pub rx_audio_external: bool,
+    /// This radio has no front end of its own because another radio in the
+    /// station has borrowed its receiver as a panadapter: the id that radio is
+    /// known by, on the station both belong to.
+    ///
+    /// Reported by the *lent* radio, and reported here rather than read from
+    /// its configuration because this is about what is actually open. A
+    /// pairing chosen in the settings dialog is not in force until Apply, and a
+    /// tab that vanished the moment the combo was touched would be a tab the
+    /// operator had not yet agreed to lose. Capabilities are announced when the
+    /// source is established and at no other time, which is exactly the
+    /// lifetime wanted.
+    #[serde(default)]
+    pub lent_to: Option<u32>,
 }
 
 impl DeviceCaps {

@@ -618,7 +618,18 @@ pub struct SdroxideApp {
 /// tab chip shows, wherever it is drawn.
 #[derive(Clone)]
 pub(crate) struct RadioChip {
+    /// The *tab's* id, which is what a [`RadioTabRequest`] names. Not what the
+    /// station this radio belongs to calls it — see [`Self::station_id`].
     pub id: u32,
+    /// Which station this radio is on: empty for this machine's own, and the
+    /// address for one reached over the network
+    /// ([`SdroxideApp::station_key`]).
+    pub station: String,
+    /// The id that station knows this radio by
+    /// ([`SdroxideApp::station_radio_id`]). What goes into a configuration
+    /// stored on that station — a panadapter pairing names the receiver this
+    /// way, because the file it is written to lives there.
+    pub station_id: u32,
     /// The operator's own name, exactly as typed — empty until they rename
     /// the radio. What the rename field edits.
     pub name: String,
@@ -630,6 +641,13 @@ pub(crate) struct RadioChip {
     pub error: bool,
     pub muted: bool,
     pub focused: bool,
+    /// The radio that has borrowed this one as its panadapter receiver, when
+    /// one has, by *tab* id — this is for naming it on screen and for asking
+    /// the shell to reopen it, both of which are tab-side. Such a radio is off
+    /// the main window's strip (its front end belongs to the borrower) but
+    /// stays in this roster, because this is where its interface is configured
+    /// and where the pairing is undone.
+    pub attached_to: Option<u32>,
 }
 
 impl RadioChip {
@@ -637,6 +655,15 @@ impl RadioChip {
     pub fn display_name(&self) -> &str {
         if self.name.is_empty() { &self.default_name } else { &self.name }
     }
+}
+
+/// What to call radio `id` given the roster, falling back to its number for a
+/// radio that is not in it (a roster still filling in, a hand-edited file).
+pub(crate) fn radio_name(roster: &[RadioChip], id: u32) -> String {
+    roster
+        .iter()
+        .find(|c| c.id == id)
+        .map_or_else(|| format!("radio {}", id + 1), |c| c.display_name().to_string())
 }
 
 /// A radio-management action requested from inside a tab (the settings
@@ -671,6 +698,11 @@ pub(crate) enum RadioTabRequest {
         id: u32,
         name: String,
     },
+    /// Rebuild another radio's front end. Queued when a radio that has been
+    /// lent out as a panadapter receiver is reconfigured: the device is open on
+    /// the *borrower's* engine, so Apply on the lender's own page has to reach
+    /// the borrower or nothing it changed takes effect.
+    Reopen(u32),
 }
 
 impl SdroxideApp {
@@ -1001,6 +1033,34 @@ impl SdroxideApp {
         self.ctrl.set_muted(muted);
     }
 
+    /// The radio that has borrowed *this* one's receiver as its panadapter, if
+    /// one has — named as the station numbers it, like everything in
+    /// [`DeviceCaps`].
+    ///
+    /// From the engine's capabilities, so it says what is actually open rather
+    /// than what has been typed into a dialog and not yet applied. The shell
+    /// keeps such a radio off the tab strip: its front end belongs to the
+    /// borrower, so it has nothing of its own to show.
+    pub(crate) fn lent_to_radio(&self) -> Option<u32> {
+        self.caps.as_ref()?.lent_to
+    }
+
+    /// Rebuild this radio's front end from its persisted configuration — the
+    /// same thing Apply / reconnect does, asked for from outside the tab.
+    /// Used when the radio this one borrowed as a panadapter receiver has been
+    /// reconfigured on its own page.
+    pub(crate) fn reopen_source(&mut self) {
+        self.ctrl.reopen_source();
+    }
+
+    /// The radio that has borrowed *this* one as its panadapter receiver, if
+    /// one has. Read from the roster the shell publishes — a radio cannot see
+    /// its own borrower any other way, the pairing being recorded on the
+    /// borrower's side.
+    pub(crate) fn lent_to(&self) -> Option<u32> {
+        self.radio_roster.iter().find(|c| c.id == self.radio_id)?.attached_to
+    }
+
     /// The other radios of the station this tab is connected to, and the
     /// address this tab itself is on — what the shell needs to put the rest of
     /// a station's radios in tabs beside it. Both empty for a local radio.
@@ -1018,8 +1078,27 @@ impl SdroxideApp {
 
     /// This connection's station, as the sign-in keys it: every radio of one
     /// station shares a door.
-    fn station_key(&self) -> String {
+    pub(crate) fn station_key(&self) -> String {
         self.ctrl.peer_url().map(|u| crate::login::station_key(&u)).unwrap_or_default()
+    }
+
+    /// Which radio this tab is, *as the station it belongs to numbers it*: the
+    /// roster id for a radio on this machine, and the id in the address for one
+    /// reached over the network.
+    ///
+    /// Not the tab's own id, which is this screen's bookkeeping — a connection
+    /// is numbered from `REMOTE_TAB_ID_BASE` precisely so it cannot collide
+    /// with the local roster. Anything comparing radios *within* a station —
+    /// which of them has lent its receiver to which — has to speak the
+    /// station's numbering, and pair this with [`Self::station_key`] so two
+    /// stations' radio 2 are not taken for one.
+    pub(crate) fn station_radio_id(&self) -> u32 {
+        let Some(url) = self.ctrl.peer_url() else { return self.radio_id };
+        // `…/ws` is the station's first radio; `…/ws/<n>` names one.
+        url.trim_end_matches('/')
+            .rsplit_once("/ws/")
+            .and_then(|(_, id)| id.parse().ok())
+            .unwrap_or(0)
     }
 
     /// Answer a sign-in challenge from what the operator has already given

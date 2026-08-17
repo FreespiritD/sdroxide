@@ -11,6 +11,7 @@ mod hpsdr_source;
 mod icomnet_source;
 mod local_controller;
 mod null_source;
+mod panadapter_source;
 mod pluto_source;
 mod rtlsdr_source;
 mod rx888_source;
@@ -329,9 +330,35 @@ pub struct RadioBoot {
 /// radios, not in which ones the station has.
 fn boot_radios(cli: &mut Cli, settings: &Settings) -> anyhow::Result<Vec<RadioBoot>> {
     let roster = sdroxide_config::load_radios();
+    let owners = panadapter_owners();
     let mut radios = Vec::new();
     for (i, slot) in roster.radios.iter().enumerate() {
         let store = sdroxide_config::Store::radio(slot.id);
+        // Somebody else's receiver: its device belongs to the radio that
+        // borrowed it, and opening it twice would take it away from them. It
+        // still gets an engine and a scope of its own, so its interface stays
+        // configurable and detaching it puts it straight back on the air.
+        if let Some(&owner) = owners.get(&slot.id) {
+            let mut c = secondary_cli(cli);
+            let initial_mode = c.apply_session(store.load_session());
+            tracing::info!("radio {} is radio {}'s panadapter receiver", slot.id + 1, owner + 1);
+            radios.push(RadioBoot {
+                id: slot.id,
+                name: slot.name.clone(),
+                source: Box::new(null_source::NullSource::attached(c.center_hz(), owner)),
+                // Says which radio has it, so the shell can keep this one off
+                // the tab strip and name the borrower.
+                caps: DeviceCaps { lent_to: Some(owner), ..synthetic_caps("Panadapter receiver") },
+                initial_mode,
+                initial_antenna: (None, None),
+                // A real factory, which refuses while the pairing stands: the
+                // engine's retry is then all it takes for this radio to come
+                // back the moment the borrower lets go of its device.
+                reopen: Some(reopen_factory_for(&c, store.clone(), slot.id)),
+                store,
+            });
+            continue;
+        }
         let boot = if i == 0 {
             let initial_mode = cli.restore_session();
             let (source, caps) = open_source(cli, settings)?;
@@ -374,7 +401,7 @@ fn boot_radios(cli: &mut Cli, settings: &Settings) -> anyhow::Result<Vec<RadioBo
                 caps,
                 initial_mode,
                 initial_antenna: (None, None),
-                reopen: Some(reopen_factory_for(&c, store.clone())),
+                reopen: Some(reopen_factory_for(&c, store.clone(), slot.id)),
                 store,
             }
         };
@@ -390,14 +417,26 @@ fn boot_radios(cli: &mut Cli, settings: &Settings) -> anyhow::Result<Vec<RadioBo
 /// current dial. Fallible so a bad new config leaves the current interface
 /// running.
 fn reopen_factory(cli: &Cli) -> sdroxide_radio::ReopenFn {
-    reopen_factory_for(cli, sdroxide_config::Store::station())
+    reopen_factory_for(cli, sdroxide_config::Store::station(), 0)
 }
 
 /// [`reopen_factory`], reading `radio.json` from one radio's scope. The
 /// `--siggen`/`--file` overrides only ever apply to the station scope (radio
 /// 0); every caller building a factory for another radio passes a
 /// [`secondary_cli`], which has them stripped.
-fn reopen_factory_for(cli: &Cli, store: sdroxide_config::Store) -> sdroxide_radio::ReopenFn {
+///
+/// `id` is the roster id the scope belongs to, which the factory needs for one
+/// question it cannot ask a `Store`: whether this radio has been lent to
+/// another as its panadapter receiver. While it has, the factory refuses — the
+/// device is open on the borrower's engine, and opening it here would take it
+/// away from them. Refusing rather than handing back a stand-in is what makes
+/// undoing the pairing enough on its own: the engine's own retry keeps asking,
+/// and the first attempt after the borrower lets go succeeds.
+fn reopen_factory_for(
+    cli: &Cli,
+    store: sdroxide_config::Store,
+    id: u32,
+) -> sdroxide_radio::ReopenFn {
     let cli = cli.clone();
     Box::new(move |center: f64| {
         let mut c = cli.clone();
@@ -405,6 +444,9 @@ fn reopen_factory_for(cli: &Cli, store: sdroxide_config::Store) -> sdroxide_radi
         let settings = Settings::load();
         if c.siggen || c.file.is_some() {
             return open_source(&c, &settings).map_err(|e| format!("{e:#}"));
+        }
+        if let Some(owner) = panadapter_owners().get(&id) {
+            return Err(format!("this radio is radio {}'s panadapter receiver", owner + 1));
         }
         let radio = store.load_radio_config();
         open_converted_source(&radio, &c, &settings).map_err(|e| format!("{e:#}"))
@@ -945,6 +987,9 @@ fn open_converted_source(
     cli: &Cli,
     settings: &Settings,
 ) -> anyhow::Result<(Box<dyn IqSource>, DeviceCaps)> {
+    if radio.panadapter.is_attached() {
+        return open_paired_source(radio, cli, settings);
+    }
     let offset = radio.converter_offset_hz;
     if offset == 0.0 || !offset.is_finite() {
         let (source, caps) = open_configured_source(radio, cli, settings)?;
@@ -959,6 +1004,108 @@ fn open_converted_source(
         offset / 1e6
     );
     Ok((Box::new(ConvertedSource::new(source, offset)), shift_caps(caps, offset)))
+}
+
+/// Open a radio that borrows another roster radio's receiver as its panadapter:
+/// both devices, wrapped as one [`crate::panadapter_source::PanadapterSource`].
+///
+/// The receiver is opened through [`open_converted_source`] on *its own*
+/// configuration, so its converter offset, its stated tuning ranges and every
+/// setting on its own Radio page apply exactly as they would if it were running
+/// as a radio of its own. What it is asked for is the operator's dial plus the
+/// pairing's offset — the receiver's centre is the one frequency in this whole
+/// arrangement that is not on the dial's scale.
+fn open_paired_source(
+    radio: &RadioConfig,
+    cli: &Cli,
+    settings: &Settings,
+) -> anyhow::Result<(Box<dyn IqSource>, DeviceCaps)> {
+    let pan = radio.panadapter.clone();
+    let id = pan.source_radio.context("no panadapter receiver selected")?;
+    // A receiver that has been removed from the roster is gone for good, and a
+    // transceiver must not be taken off the air by the disappearance of the
+    // radio that used to draw its spectrum. Say so and open it on its own; the
+    // Panadapter box is empty of candidates now, so the operator's next visit to
+    // the dialog shows the pairing already undone.
+    if !sdroxide_config::load_radios().radios.iter().any(|s| s.id == id) {
+        tracing::warn!(
+            "the panadapter receiver (radio {}) is no longer in the roster; opening this radio on \
+             its own",
+            id + 1
+        );
+        let mut plain = radio.clone();
+        plain.panadapter = Default::default();
+        return open_converted_source(&plain, cli, settings);
+    }
+    let rx_cfg = sdroxide_config::Store::radio(id).load_radio_config();
+    // One level only. Chains and cycles are refused here rather than allowed to
+    // recurse: two radios attached to each other would each try to open the
+    // other's device, and neither would ever finish.
+    if rx_cfg.panadapter.is_attached() {
+        bail!(
+            "radio {} is itself using another radio as its panadapter — a receiver can only be \
+             borrowed once",
+            id + 1
+        );
+    }
+    if rx_cfg.backend == Backend::None {
+        bail!("radio {} has no interface selected to receive with", id + 1);
+    }
+
+    // The offset picks itself once the mode is known; until then the pairing
+    // opens on the plain one and the engine corrects it before the first block
+    // (see `PanadapterSource::mode`).
+    let mut rx_cli = cli.clone();
+    rx_cli.freq = Some(cli.center_hz() + pan.offset_hz);
+    let (rx, rx_caps) = open_converted_source(&rx_cfg, &rx_cli, settings)
+        .with_context(|| format!("opening radio {} as the panadapter receiver", id + 1))?;
+    let (ctrl, ctrl_caps) = open_configured_source(radio, cli, settings)?;
+    let ctrl_caps = stated_ranges(ctrl_caps, radio);
+
+    let caps = crate::panadapter_source::PanadapterSource::merge_caps(&rx_caps, &ctrl_caps, &pan);
+    let source = crate::panadapter_source::PanadapterSource::new(rx, ctrl, pan, None);
+    Ok((Box::new(source), caps))
+}
+
+/// Which roster radios are somebody else's panadapter receiver, and whose.
+///
+/// Read once at boot from every scope's `radio.json`. Such a radio does not
+/// open its own device — the radio that borrowed it does — so it comes up on
+/// the stand-in source instead, with a tab that says as much.
+fn panadapter_owners() -> std::collections::HashMap<u32, u32> {
+    let roster = sdroxide_config::load_radios();
+    let mut owners = std::collections::HashMap::new();
+    for slot in &roster.radios {
+        let cfg = sdroxide_config::Store::radio(slot.id).load_radio_config();
+        let Some(rx) = cfg.panadapter.source_radio else { continue };
+        // Neither of the two ways a pairing can eat itself gets to boot.
+        if rx == slot.id {
+            tracing::warn!("radio {} is attached to itself as a panadapter; ignoring", slot.id + 1);
+            continue;
+        }
+        if !roster.radios.iter().any(|s| s.id == rx) {
+            tracing::warn!(
+                "radio {} names radio {} as its panadapter, which is not in the roster; ignoring",
+                slot.id + 1,
+                rx + 1
+            );
+            continue;
+        }
+        // First claim wins, so two radios naming the same receiver cannot both
+        // open it. The second is left as an ordinary radio and says so.
+        if let Some(first) = owners.get(&rx) {
+            tracing::warn!(
+                "radios {} and {} both claim radio {} as a panadapter; leaving it with radio {}",
+                first + 1,
+                slot.id + 1,
+                rx + 1,
+                first + 1
+            );
+            continue;
+        }
+        owners.insert(rx, slot.id);
+    }
+    owners
 }
 
 /// Apply the tuning ranges stated in `radio.json`, and say so in the log —

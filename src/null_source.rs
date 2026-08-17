@@ -15,6 +15,25 @@ impl NullSource {
     pub fn new(center_hz: f64, status: String) -> Self {
         NullSource { center: center_hz, status }
     }
+
+    /// The stand-in for a radio whose receiver another radio has borrowed as
+    /// its panadapter. Its device is open — just not by this engine.
+    ///
+    /// It keeps retrying like any other stand-in, and the reopen factory keeps
+    /// refusing while the pairing stands. That is what makes undoing the
+    /// pairing enough on its own: nothing has to remember to wake this radio
+    /// up, and an attempt that loses the race to the borrower's release is
+    /// simply tried again.
+    pub fn attached(center_hz: f64, owner: u32) -> Self {
+        NullSource {
+            center: center_hz,
+            status: format!(
+                "This radio is the panadapter for radio {} — its spectrum and audio are on that \
+                 radio's tab. Clear the Panadapter receiver box there to use it on its own again.",
+                owner + 1
+            ),
+        }
+    }
 }
 
 impl IqSource for NullSource {
