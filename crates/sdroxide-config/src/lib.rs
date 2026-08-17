@@ -963,6 +963,20 @@ pub fn save_skimmer_config(cfg: &sdroxide_types::SkimmerSettings) -> Result<(), 
     save_json("skimmer.json", cfg)
 }
 
+/// ISM decoder preferences (which device families, and the burst threshold).
+///
+/// Kept apart from the live `RadioState.ism` for the same reason as the skimmer's:
+/// a front end that hands over demodulated audio rather than IQ forces the
+/// decoder off, and that must not overwrite what the operator chose for one that
+/// does.
+pub fn load_ism_config() -> sdroxide_types::IsmSettings {
+    load_json("ism.json")
+}
+
+pub fn save_ism_config(cfg: &sdroxide_types::IsmSettings) -> Result<(), ConfigError> {
+    save_json("ism.json", cfg)
+}
+
 /// Scanner settings: what to scan, how hard a signal has to be to stop it, and
 /// which memories to pass over. Restored at startup so a scan set up once is
 /// one keypress away afterwards.

@@ -272,6 +272,8 @@ pub struct RadioState {
     /// Which wideband skimmers (CW / PSK / RTTY) run, and the squelch each
     /// applies to its spots.
     pub skimmer: crate::SkimmerSettings,
+    /// Which ISM-band device decoders run, and how hard they squelch.
+    pub ism: crate::IsmSettings,
 
     /// SoapySDR RX gain elements: (name, dB).
     pub gains: Vec<(String, f64)>,
@@ -328,6 +330,7 @@ impl Default for RadioState {
             scan: crate::ScanState::default(),
             noise_blanker: false,
             skimmer: crate::SkimmerSettings::default(),
+            ism: crate::IsmSettings::default(),
             gains: Vec::new(),
             tx_gains: Vec::new(),
             antenna_rx: String::new(),

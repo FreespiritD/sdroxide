@@ -58,6 +58,7 @@ pub fn run(
                 remember_session: true,
                 store: boot.store,
                 instance: boot.id,
+                record_iq: boot.record_iq.clone(),
                 // Exactly one engine runs the station-wide network services,
                 // for the same reason as in the GUI: they hold logins and
                 // sockets that must not be opened once per radio.

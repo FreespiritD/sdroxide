@@ -40,7 +40,7 @@ const REGION_BINS: usize = 64;
 /// most of their input, so re-running the region medians every frame re-reads
 /// the same noise over and over for an estimate that barely moves. Updating
 /// once per `FFT_SIZE / HOP` frames costs a sixteenth as much *and* draws each
-/// estimate from independent samples; [`crate::noise::stride_alpha`] keeps the
+/// estimate from independent samples; [`sdroxide_dsp::noisefloor::stride_alpha`] keeps the
 /// floor's time constant in seconds unchanged.
 const FLOOR_EVERY: u32 = (FFT_SIZE / HOP) as u32;
 /// Envelope key-off ratio, for a track's activity/SNR metering.
@@ -157,7 +157,7 @@ pub struct DigiSkimmer {
     /// energy (the raw RTTY tones each drop out at the baud rate).
     smooth_power: Vec<f32>,
     /// Scratch for the per-region median floor estimate (one region's power,
-    /// as bit patterns — see [`crate::noise::update_regions`]).
+    /// as bit patterns — see [`sdroxide_dsp::noisefloor::update_regions`]).
     pscratch: Vec<u32>,
     /// Per-bin noise floor (each region's median, scaled to a mean), smoothed.
     floor: Vec<f32>,
@@ -306,12 +306,12 @@ impl DigiSkimmer {
         // (which let noise / faint non-digimode signals decode).
         if self.frames % FLOOR_EVERY == 0 {
             let smooth = if self.frames < WARMUP { 0.3 } else { 0.1 };
-            crate::noise::update_regions(
+            sdroxide_dsp::noisefloor::update_regions(
                 &mut self.floor,
                 &self.power,
                 &mut self.pscratch,
                 REGION_BINS,
-                crate::noise::stride_alpha(smooth, FLOOR_EVERY),
+                sdroxide_dsp::noisefloor::stride_alpha(smooth, FLOOR_EVERY),
                 self.frames == 0,
             );
         }

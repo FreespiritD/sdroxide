@@ -151,6 +151,8 @@ async fn run_session(
         sat_track,
         radio,
         rds,
+        ism_reports,
+        ism_status,
     ) = {
         let latest = shared.latest.lock().unwrap();
         (
@@ -168,6 +170,8 @@ async fn run_session(
             latest.sat_track.clone(),
             latest.radio.clone(),
             latest.rds.clone(),
+            latest.ism_reports.clone(),
+            latest.ism_status.clone(),
         )
     };
     let ack = ServerMsg::HelloAck { proto: PROTO_VERSION, caps, state, rx_codec, tx_codec };
@@ -205,6 +209,14 @@ async fn run_session(
     // have arrived minutes ago and will not be sent again until they change.
     if let Some(d) = rds {
         let _ = socket.send(msg(&ServerMsg::Rds(d))).await;
+    }
+    // The ISM device table and where the decoder is listening. Both are slow
+    // conditions — see `Latest::ism_reports`.
+    if let Some(st) = ism_status {
+        let _ = socket.send(msg(&ServerMsg::IsmStatus(st))).await;
+    }
+    if !ism_reports.is_empty() {
+        let _ = socket.send(msg(&ServerMsg::IsmReports(ism_reports))).await;
     }
     // And the transmit-image presets, for the same reason. The received
     // galleries are not replayed: a panel lists its store when it opens, which

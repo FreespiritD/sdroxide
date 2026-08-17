@@ -404,6 +404,128 @@ fn net_spot_width(p: &egui::Painter, spot: &Spot) -> f32 {
     w.clamp(40.0, 220.0 * fs)
 }
 
+/// One ISM device to label on the waterfall.
+///
+/// A slim type of its own rather than the whole [`sdroxide_types::IsmReport`]:
+/// what goes in the box is a formatted line, and formatting readings into units
+/// belongs with the rest of the panel's formatting rather than in the painter.
+pub struct IsmLabel {
+    /// Measured RF frequency of the device.
+    pub freq_hz: f64,
+    /// Already formatted — protocol, identity and reading.
+    pub text: String,
+    /// The frame validated but its payload is encrypted, so it is tinted like a
+    /// warning rather than like a reading.
+    pub encrypted: bool,
+}
+
+const ISM_BOX_H: f32 = 18.0;
+const ISM_LANE_GAP: f32 = 3.0;
+const ISM_H_GAP: f32 = 6.0;
+const ISM_LEADER: f32 = 14.0;
+const ISM_MAX_LANES: usize = 4;
+
+struct IsmBox {
+    rect: Rect,
+    sig_x: f32,
+    idx: usize,
+}
+
+/// Lay visible ISM labels into staggered lanes at the *newest* waterfall edge,
+/// stacked past where the skimmer's boxes end.
+///
+/// Both edges of the waterfall are already claimed — the skimmer's spot boxes at
+/// the newest, the network spots at the oldest — so these start below the
+/// skimmer's lanes rather than beside them. In practice the two never appear
+/// together, because the skimmers are gated to the HF band segments and there are
+/// none at 868 MHz; the offset is there so that if they ever do, they stack
+/// instead of overprinting.
+fn layout_ism_labels(
+    p: &egui::Painter,
+    view: &ViewState,
+    rect: &Rect,
+    wf_rect: &Rect,
+    labels: &[IsmLabel],
+) -> Vec<IsmBox> {
+    let fs = crate::theme::skimmer_font_scale();
+    let mut vis: Vec<(f32, usize)> = labels
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| (view.view_lo_hz..=view.view_hi_hz).contains(&l.freq_hz))
+        .map(|(i, l)| (view.freq_to_x(l.freq_hz, rect), i))
+        .collect();
+    vis.sort_by(|a, b| a.0.total_cmp(&b.0));
+
+    let box_h = ISM_BOX_H * fs;
+    let mut lane_right: Vec<f32> = Vec::new();
+    let mut out = Vec::with_capacity(vis.len());
+    for (xc, idx) in vis {
+        let box_w = p
+            .layout_no_wrap(
+                labels[idx].text.clone(),
+                FontId::proportional(11.5 * fs),
+                Color32::WHITE,
+            )
+            .size()
+            .x
+            .clamp(40.0, 300.0 * fs)
+            + 10.0;
+        let box_left = xc + ISM_LEADER;
+        let foot_right = box_left + box_w + ISM_H_GAP;
+        let mut lane = lane_right.len();
+        for (k, &r) in lane_right.iter().enumerate() {
+            if xc >= r {
+                lane = k;
+                break;
+            }
+        }
+        if lane >= ISM_MAX_LANES {
+            continue;
+        }
+        if lane == lane_right.len() {
+            lane_right.push(0.0);
+        }
+        lane_right[lane] = foot_right;
+
+        // Past the skimmer's lanes, at whichever end of the waterfall is newest.
+        let base = SPOT_TOP_MARGIN
+            + SPOT_MAX_LANES as f32 * (SPOT_BOX_H * fs + SPOT_LANE_GAP)
+            + lane as f32 * (box_h + ISM_LANE_GAP);
+        let top = if view.waterfall_flip {
+            wf_rect.bottom() - base - box_h
+        } else {
+            wf_rect.top() + base
+        };
+        out.push(IsmBox {
+            rect: Rect::from_min_size(pos2(box_left, top), vec2(box_w, box_h)),
+            sig_x: xc,
+            idx,
+        });
+    }
+    out
+}
+
+/// Draw one ISM label box: the formatted device line, tinted green for a reading
+/// and amber for a frame whose payload is encrypted.
+fn draw_ism_box(p: &egui::Painter, b: &IsmBox, label: &IsmLabel, hovered: bool) {
+    let fs = crate::theme::skimmer_font_scale();
+    let tint = if label.encrypted { crate::theme::YELLOW() } else { crate::theme::GREEN() };
+    let border = if hovered {
+        tint
+    } else {
+        Color32::from_rgba_unmultiplied(tint.r(), tint.g(), tint.b(), 210)
+    };
+    p.rect_filled(b.rect, 2.0, Color32::from_rgba_unmultiplied(0, 0, 0, 200));
+    p.rect_stroke(b.rect, 2.0, Stroke::new(1.0, border), egui::StrokeKind::Inside);
+    p.text(
+        pos2(b.rect.left() + 5.0, b.rect.center().y),
+        Align2::LEFT_CENTER,
+        &label.text,
+        FontId::proportional(11.5 * fs),
+        border,
+    );
+}
+
 /// Kind tint, brightened on hover.
 fn net_spot_color(spot: &Spot, hovered: bool) -> Color32 {
     let (r, g, b) = spot.kind.color();
@@ -667,6 +789,10 @@ pub fn show_ext(
     net_spots: &[Spot],
     net_alpha: &[f32],
     clicked_spot: &mut Option<Spot>,
+    // ISM devices heard on the visible span, labelled on the waterfall. Not
+    // clickable: the ISM window is where a device is acted on, and a box here is
+    // a "this one, there" annotation.
+    ism: &[IsmLabel],
     // Operator's pointer preferences: what the wheel does (plain and with
     // Shift), whether left-drag tunes, and the click-tune rounding.
     wheel: WheelSettings,
@@ -730,6 +856,7 @@ pub fn show_ext(
     // only for FT8 (digital), callsign + message tail for the CW skimmer.
     let spot_boxes = layout_spots(&painter, view, &rect, &wf_rect, skimmer, click_sets_offset);
     let net_boxes = layout_net_spots(&painter, view, &rect, &wf_rect, net_spots);
+    let ism_boxes = layout_ism_labels(&painter, view, &rect, &wf_rect, ism);
 
     // --- interactions -----------------------------------------------------
     // Model: grabbing a filter edge (left button, spectrum strip) always
@@ -1674,6 +1801,32 @@ pub fn show_ext(
         );
         painter.circle_filled(pos2(b.sig_x, cy), 1.8, fade(border, a));
         draw_net_box(&painter, b, spot, hovered, a);
+    }
+
+    // ISM device labels. No fade: a device that has stopped transmitting is
+    // still there, and the ISM window's age column is where "how long ago" is
+    // answered — a box that dimmed away would only hide the quiet ones.
+    for b in &ism_boxes {
+        let label = &ism[b.idx];
+        let hovered = hover_pos.is_some_and(|p| b.rect.contains(p));
+        let tint = if label.encrypted { crate::theme::YELLOW() } else { crate::theme::GREEN() };
+        let cy = b.rect.center().y;
+        painter.vline(
+            b.sig_x,
+            wf_rect.y_range(),
+            Stroke::new(
+                1.0,
+                Color32::from_rgba_unmultiplied(
+                    tint.r(),
+                    tint.g(),
+                    tint.b(),
+                    if hovered { 150 } else { 70 },
+                ),
+            ),
+        );
+        painter.line_segment([pos2(b.sig_x, cy), pos2(b.rect.left(), cy)], Stroke::new(1.0, tint));
+        painter.circle_filled(pos2(b.sig_x, cy), 1.8, tint);
+        draw_ism_box(&painter, b, label, hovered);
     }
 
     // --- time gridlines on the waterfall ----------------------------------

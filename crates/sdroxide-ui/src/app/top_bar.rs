@@ -2749,7 +2749,7 @@ impl SdroxideApp {
     /// The first five window chips — the condensed System box's top row.
     /// `extra` stretches each chip past its label; the popup passes 0.
     fn system_chips_top(&mut self, ui: &mut egui::Ui, extra: f32) {
-        let [log, spots, awards, bands, sat_label, ..] = SYSTEM_CHIPS;
+        let [log, spots, awards, bands, sat_label, ism, ..] = SYSTEM_CHIPS;
         if chip_stretched(ui, self.show_logbook, log, extra)
             .on_hover_text("Logbook — all QSOs (digital + manual)")
             .clicked()
@@ -2800,6 +2800,31 @@ impl SdroxideApp {
             .clicked()
         {
             self.show_sat = !self.show_sat;
+        }
+        // Accented while the decoder is actually running, like the scanner and
+        // the satellite lock: it is spending CPU on four downconverters whether
+        // or not the window is open.
+        let ism_running = self.state.ism.any_enabled();
+        let ism_chip = if ism_running {
+            accent_chip_stretched(
+                ui,
+                true,
+                ism,
+                crate::theme::GREEN(),
+                crate::theme::INK_ON_BRIGHT(),
+                extra,
+            )
+        } else {
+            chip_stretched(ui, self.show_ism, ism, extra)
+        };
+        if ism_chip
+            .on_hover_text(
+                "868 MHz ISM devices — weather sensors, meters and home \
+                 automation heard around you",
+            )
+            .clicked()
+        {
+            self.show_ism = !self.show_ism;
         }
     }
 
@@ -2896,14 +2921,25 @@ impl SdroxideApp {
 /// whatever crosses the window edge is lost. That is how SCAN, SETTINGS and
 /// HELP came to vanish on the layouts where the strip put this box near the
 /// end of a row.
-const SYSTEM_CHIPS: [&str; 10] =
-    ["LOG", "SPOTS", "AWARDS", "BANDS", "SAT", "MAIL", "MEM", "SCAN", "⚙ SETTINGS", "? HELP"];
+const SYSTEM_CHIPS: [&str; 11] = [
+    "LOG",
+    "SPOTS",
+    "AWARDS",
+    "BANDS",
+    "SAT",
+    "ISM",
+    "MAIL",
+    "MEM",
+    "SCAN",
+    "⚙ SETTINGS",
+    "? HELP",
+];
 
 /// Where [`SYSTEM_CHIPS`] breaks into the condensed box's two rows. Has to
 /// agree with the destructuring patterns in `system_chips_top` / `_bottom` —
 /// the array length pins both, so a chip added to the list forces all three
 /// to be revisited together.
-const SYSTEM_SPLIT: usize = 5;
+const SYSTEM_SPLIT: usize = 6;
 
 /// The Display box's view-layer chips (top row); the last is drawn only for a
 /// front end with a full-band lane.

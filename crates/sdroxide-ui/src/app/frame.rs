@@ -212,6 +212,9 @@ impl eframe::App for SdroxideApp {
         self.refresh_broadcast_spots(now_unix());
         let (net_spots, net_alpha) = self.net_overlay(now_unix());
         let mut clicked_spot: Option<Spot> = None;
+        // Built once for both panadapter call sites: the same devices are
+        // labelled whichever layout is on screen.
+        let ism_labels = self.ism_overlay();
         // Remaining space: the panadapter (+ FT8/FT4 operating panel).
         if let Some(err) = self.error.clone() {
             let offer_retry = self.ctrl.can_reconnect();
@@ -393,6 +396,7 @@ impl eframe::App for SdroxideApp {
                         &net_spots,
                         &net_alpha,
                         &mut clicked_spot,
+                        &ism_labels,
                         self.input.cfg.wheel,
                         wf_tuning,
                         show_panel,
@@ -528,6 +532,7 @@ impl eframe::App for SdroxideApp {
                         &net_spots,
                         &net_alpha,
                         &mut clicked_spot,
+                        &ism_labels,
                         self.input.cfg.wheel,
                         wf_tuning,
                         show_panel,
@@ -569,6 +574,7 @@ impl eframe::App for SdroxideApp {
 
         self.memories_window(&ctx, &mut cmds);
         self.scanner_window(&ctx, &mut cmds);
+        self.ism_window(&ctx, &mut cmds);
         self.rds_window(&ctx);
         self.voice_window(&ctx, &mut cmds);
         self.settings_window(&ctx, &mut cmds);
@@ -919,6 +925,12 @@ impl SdroxideApp {
                 }
                 RadioEvent::WefaxStatus(s) => self.wefax.status = s,
                 RadioEvent::Rds(d) => self.on_rds(d),
+                // A whole-table snapshot, so it replaces rather than merges: the
+                // engine's table is authoritative and already carries the history
+                // — first heard, times heard — that a merge here would be
+                // reconstructing badly.
+                RadioEvent::IsmReports(r) => self.ism_reports = r,
+                RadioEvent::IsmStatus(st) => self.ism_status = Some(st),
                 RadioEvent::SstvStatus(s) => {
                     // Adopt a *newly* detected RX mode for the next transmit, but
                     // don't re-apply a steady detection every frame — that would

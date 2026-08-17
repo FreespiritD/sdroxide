@@ -175,6 +175,15 @@ pub(crate) struct Latest {
     /// dial stopped moving would otherwise show nothing until the radio text next
     /// changed — which on some stations is never.
     pub rds: Option<sdroxide_types::RdsData>,
+    /// Every ISM device heard so far, and where the decoder is listening.
+    ///
+    /// Replayed on connect because both are *conditions*, and slow ones: a
+    /// weather sensor speaks every 48 seconds and a meter every few minutes, so a
+    /// client that attaches without the table would sit in front of an empty
+    /// panel for a minute before the first row appeared — and would have no way
+    /// to tell that from a decoder that is not running.
+    pub ism_reports: Vec<sdroxide_types::IsmReport>,
+    pub ism_status: Option<sdroxide_types::IsmStatus>,
 }
 
 /// Everything the routes are served out of: the station's radios and the two
@@ -623,6 +632,14 @@ fn handle_event(shared: &Shared, ev: RadioEvent) {
                 Some(ServerMsg::Rds(d))
             }
             RadioEvent::SkimmerSpots(s) => Some(ServerMsg::SkimmerSpots(s)),
+            RadioEvent::IsmReports(r) => {
+                latest.ism_reports = r.clone();
+                Some(ServerMsg::IsmReports(r))
+            }
+            RadioEvent::IsmStatus(st) => {
+                latest.ism_status = Some(st.clone());
+                Some(ServerMsg::IsmStatus(st))
+            }
             RadioEvent::SstvLine { image_id, y, rgb } => {
                 Some(ServerMsg::SstvLine { image_id, y, rgb })
             }

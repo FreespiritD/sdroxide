@@ -1,0 +1,19 @@
+[package]
+name = "sdroxide-ism"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Native-only: the 868 MHz ISM burst decoder. Not linked by the wasm client —
+# it runs server-side in the engine, like the skimmers and FT8.
+#
+# Deliberately free of GPL dependencies. Every protocol here is written from its
+# published specification rather than ported from an existing decoder, so this
+# crate adds no licence obligation of its own beyond the workspace's.
+
+[dependencies]
+sdroxide-types.workspace = true
+sdroxide-dsp.workspace = true
+num-complex.workspace = true
+crossbeam-channel.workspace = true
+tracing.workspace = true

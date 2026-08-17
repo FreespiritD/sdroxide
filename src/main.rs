@@ -54,6 +54,15 @@ struct Cli {
     #[arg(long)]
     file: Option<std::path::PathBuf>,
 
+    /// Record every raw IQ sample to a file, in the same interleaved CF32 format
+    /// --file reads back.
+    ///
+    /// For capturing a band to work on offline — what a decoder does with a real
+    /// signal is not a question a synthetic one can answer. Large: 8 bytes a
+    /// sample, so 16 MB a second at 2 Msps.
+    #[arg(long, value_name = "PATH")]
+    record_iq: Option<std::path::PathBuf>,
+
     /// Center frequency in Hz (default: where the last session was left)
     #[arg(long)]
     freq: Option<f64>,
@@ -319,6 +328,10 @@ pub struct RadioBoot {
     pub initial_antenna: (Option<String>, Option<String>),
     pub reopen: Option<sdroxide_radio::ReopenFn>,
     pub store: sdroxide_config::Store,
+    /// Where to write a raw IQ capture, from `--record-iq`. Radio 0 only: the
+    /// flag names one file, and two radios writing it would interleave two
+    /// different bands into one stream.
+    pub record_iq: Option<std::path::PathBuf>,
 }
 
 /// Open the station's radio roster: the legacy single radio unless more have
@@ -356,6 +369,7 @@ fn boot_radios(cli: &mut Cli, settings: &Settings) -> anyhow::Result<Vec<RadioBo
                 // back the moment the borrower lets go of its device.
                 reopen: Some(reopen_factory_for(&c, store.clone(), slot.id)),
                 store,
+                record_iq: None,
             });
             continue;
         }
@@ -371,6 +385,7 @@ fn boot_radios(cli: &mut Cli, settings: &Settings) -> anyhow::Result<Vec<RadioBo
                 initial_antenna: cli.initial_antenna(),
                 reopen: Some(reopen_factory(cli)),
                 store,
+                record_iq: cli.record_iq.clone(),
             }
         } else {
             let mut c = secondary_cli(cli);
@@ -403,6 +418,7 @@ fn boot_radios(cli: &mut Cli, settings: &Settings) -> anyhow::Result<Vec<RadioBo
                 initial_antenna: (None, None),
                 reopen: Some(reopen_factory_for(&c, store.clone(), slot.id)),
                 store,
+                record_iq: None,
             }
         };
         radios.push(boot);

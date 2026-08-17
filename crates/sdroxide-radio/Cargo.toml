@@ -23,6 +23,7 @@ sdroxide-digi = { path = "../sdroxide-digi" }
 sdroxide-kiss = { path = "../sdroxide-kiss" }
 sdroxide-ax25 = { path = "../sdroxide-ax25" }
 sdroxide-skimmer = { path = "../sdroxide-skimmer" }
+sdroxide-ism = { path = "../sdroxide-ism" }
 sdroxide-net = { path = "../sdroxide-net" }
 sdroxide-winlink = { path = "../sdroxide-winlink" }
 # Only for `tlesub`: the engine persists the satellite subscriptions and, being

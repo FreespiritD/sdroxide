@@ -17,16 +17,17 @@ or connects to a remote sdroxide server.
 2. [Basic operation](#2-basic-operation)
 3. [Digital modes (FT8, FT4, FT2, PSK31, RTTY, Olivia, THOR, FSQ, Hellschreiber, SSTV, RIFP, weather fax, JS8, RF Paint, WSPR)](#3-digital-modes)
 4. [Skimmers (CW, PSK, RTTY)](#4-skimmers)
-5. [Settings](#5-settings)
-6. [Solar system 3D view](#6-solar-system-3d-view)
-7. [Remote operation](#7-remote-operation)
-8. [Web operation](#8-web-operation)
-9. [Spotting, awards, and QSL upload](#9-spotting-awards-and-qsl-upload)
-10. [Winlink radio email](#10-winlink-radio-email)
-11. [Command-line reference](#11-command-line-reference)
-12. [Configuration files](#12-configuration-files)
-13. [Troubleshooting](#13-troubleshooting)
-14. [Appendix: keyboard shortcuts, modes, bands](#14-appendix)
+5. [ISM band decoder (868 MHz devices)](#5-ism-band-decoder)
+6. [Settings](#6-settings)
+7. [Solar system 3D view](#7-solar-system-3d-view)
+8. [Remote operation](#8-remote-operation)
+9. [Web operation](#9-web-operation)
+10. [Spotting, awards, and QSL upload](#10-spotting-awards-and-qsl-upload)
+11. [Winlink radio email](#11-winlink-radio-email)
+12. [Command-line reference](#12-command-line-reference)
+13. [Configuration files](#13-configuration-files)
+14. [Troubleshooting](#14-troubleshooting)
+15. [Appendix: keyboard shortcuts, modes, bands](#15-appendix)
 
 ---
 
@@ -86,9 +87,12 @@ or connects to a remote sdroxide server.
 - **Winlink radio email** — a native client for the amateur store-and-forward
   email network: B2F/FBB forwarding, LZHUF compression and the secure login,
   with a mailbox, compose and reply, and attachments
-  ([§10](#10-winlink-radio-email)).
+  ([§11](#11-winlink-radio-email)).
 - **Wideband skimmers** — a CW skimmer plus PSK31 and RTTY skimmers that decode
   many signals at once and label them on the waterfall.
+- **ISM band decoder** — reads the unattended 868 MHz traffic around you and
+  lists each device with its readings in real units. See
+  [ISM band decoder](#5-ism-band-decoder).
 - **Many radio backends:** SoapySDR devices, OpenHPSDR (Hermes/Metis) Ethernet
   SDRs, a TCI server (ExpertSDR3/Thetis), a SmartSDR radio (FlexRadio
   FLEX-6000/8000), RTL-SDR, RX-888, Airspy HF+ and SDRplay RSP receivers over
@@ -120,7 +124,7 @@ or connects to a remote sdroxide server.
   and FT8/JS8 messages addressed to you — so it can be operated without seeing
   it. The voice ships with the program and runs on your own machine. The window
   is also exposed to NVDA, Orca and VoiceOver. See
-  [5.3](#53-ui-display-preferences-and-voice-announcements).
+  [6.3](#63-ui-display-preferences-and-voice-announcements).
 - **Remote and web operation:** run headless as a server and control it from a
   browser or from a second sdroxide instance over the network, behind a username
   and password. A station reached that way opens as a radio tab beside your own
@@ -144,7 +148,7 @@ To try the interface with no hardware, use the built-in signal generator:
 sdroxide --siggen
 ```
 
-See the [command-line reference](#11-command-line-reference) for all options.
+See the [command-line reference](#12-command-line-reference) for all options.
 
 ### 2.2 The main window
 
@@ -213,7 +217,7 @@ individual popular modes — **FT8, FT4, FT2, JS8, WSPR, QRSS, PSK, RTTY, SSTV,
 RIFP, FREEDV** — each in its own colour.
 
 Everything on the strip follows the **IARU region** on the General tab
-([5.1](#51-general-station-audio-and-remote-access)) — the ham blocks, their
+([6.1](#61-general-station-audio-and-remote-access)) — the ham blocks, their
 sub-segments, and the shortwave broadcast blocks that overlap an amateur band in
 one region and not another (3.900–4.000 and 7.200–7.300 are broadcasting in
 Regions 1 and 3 and amateur in Region 2).
@@ -244,7 +248,7 @@ popup with three rows:
 
 ![The band and mode selector popup](images/04-band-mode-popup.jpg)
 
-See the [appendix](#14-appendix) for what each mode is.
+See the [appendix](#15-appendix) for what each mode is.
 
 ### 2.5 VFOs, split, and the sub-receiver
 
@@ -503,7 +507,7 @@ passband. The grips work on both the spectrum and the waterfall.
 The volume, AGC mode and manual gain, the squelch, the noise reduction and the
 decimation are remembered in `session.json` and restored the next time you
 start, along with the front end's own gain stages
-([§5.2.1](#521-soapysdr-devices)). They are
+([§6.2.1](#621-soapysdr-devices)). They are
 settings you arrive at by ear against your own antenna and noise floor, so
 sdroxide brings the receiver back up where you left it rather than on defaults.
 
@@ -537,7 +541,7 @@ sdroxide brings the receiver back up where you left it rather than on defaults.
   any skimmer runs. See [Skimmers](#4-skimmers).
 - **SCAN** — opens the scanner window; lit while a scan is running, green while
   it has stopped on a signal. See [Scanning](#213-scanning).
-- **☀ 3D** — open the [solar system 3D view](#6-solar-system-3d-view): a second
+- **☀ 3D** — open the [solar system 3D view](#7-solar-system-3d-view): a second
   window in the native app, a second browser tab in the web client.
 
 **FFT module:**
@@ -553,7 +557,7 @@ sdroxide brings the receiver back up where you left it rather than on defaults.
 
 The **waterfall colour scheme** and the **spectrum background gradient** are set
 on the **UI** tab of the Settings window (see
-[§5.3](#53-ui-display-preferences-and-voice-announcements)). The colour scheme is one of
+[§6.3](#63-ui-display-preferences-and-voice-announcements)). The colour scheme is one of
 `Classic`, `Viridis`, `Gray`, `Icom`, `Neon`, `Synthwave`, `Matrix`, or `Tron`;
 the gradient fills the spectrum area from a top colour down to a bottom colour
 (default dark red → black) and can be turned off. The same tab also themes the
@@ -633,7 +637,7 @@ cut band and a little more mic gain gets the same tone with none of the risk.
 > amateur bands (`tx_ham_only`). Transmit hardware gains start at minimum and
 > the tune drive defaults low. Raise drive deliberately. The band lockout can
 > only be lifted from the command line, one run at a time, with `--oob-tx`
-> ([10](#transmitting-outside-the-amateur-bands---oob-tx)).
+> ([12](#12-command-line-reference)).
 
 On a rig with its own power control — a TCI rig, or a **CAT rig** on any of the
 three dialects — Drive and Tune command the rig's output power directly rather
@@ -692,7 +696,7 @@ Each row is one slot:
 - **✕** erases the recording.
 
 Recordings are stored as plain 48 kHz mono WAV files in
-`~/.config/sdroxide/voice` (see [12. Configuration files](#12-configuration-files)),
+`~/.config/sdroxide/voice` (see [12. Configuration files](#13-configuration-files)),
 one per slot, so you can also record a message in an audio editor, name it
 `slot3.wav`, and drop it in.
 
@@ -701,12 +705,12 @@ slots 1–10 and **−** stops one; on a full keyboard those are the numpad keys
 (the platform reports numpad and top-row digits identically, so either works).
 Like every other binding these can be changed — or moved onto a MIDI pad or
 footswitch — on the **Controls** tab; see
-[5.4](#54-controls-keyboard-mouse-and-midi). A key over an **empty** slot does
+[6.4](#64-controls-keyboard-mouse-and-midi). A key over an **empty** slot does
 nothing at all, which is why the digits can ship bound when PTT deliberately
 does not.
 
 External programs can trigger the keyer too: with the built-in Hamlib server
-running ([5.8](#59-servers-letting-other-programs-drive-the-radio)),
+running ([6.9](#69-servers-letting-other-programs-drive-the-radio)),
 `\send_voice_mem <1–10>` plays a slot and `\stop_voice_mem` stops it.
 
 > **NOTE:** The keyer is available in every voice mode and in
@@ -853,7 +857,7 @@ it was sent. The setting is shared with the keyboard modes
 It is off by default, because sending as you type is how a CW operator sends:
 the first letter of a callsign is on the air while the rest is still being
 typed. Turn it on if you are keying a **transceiver's own keyer** — the usual
-case for a CAT radio in CW ([5.2.2](#522-cat-radios-serial-control--usb-audio)).
+case for a CAT radio in CW ([6.2.2](#622-cat-radios-serial-control--usb-audio)).
 There, every hand-off to the rig is a transmit-receive cycle of its own, so a
 line committed whole switches the relay once where typing it live switches it
 once per word. Set the rig's **break-in delay** long enough to bridge the
@@ -878,7 +882,7 @@ characters as well, or it will drop out between them however the text arrives.
 
 ![Band Conditions](images/bandconditions.jpg)
 
-The [propagation heat map](#68-the-propagation-heat-map) answers "what has got
+The [propagation heat map](#78-the-propagation-heat-map) answers "what has got
 through". The **BANDS** window (the `BANDS` button in the System box) puts that
 next to a second, different answer: the **calculated band conditions** published
 by N0NBH at [hamqsl.com](https://www.hamqsl.com/), which are a forecast from the
@@ -922,7 +926,7 @@ correct half of the published table is read wherever you are.
 **Where the numbers come from.** [hamqsl.com](https://www.hamqsl.com/), fetched
 in the background once an hour for as long as the program is running. This is
 the one exception to the rule that sdroxide's space-weather requests happen only
-while the [3D view](#6-solar-system-3d-view) is open: the band menu is always
+while the [3D view](#7-solar-system-3d-view) is open: the band menu is always
 there, so these have to be too. It stays one request an hour — the two share a
 cache, so with the 3D view open the second one comes back "not modified" —
 and hourly is the interval the publisher asks for.
@@ -942,7 +946,7 @@ the correction keeps being applied whether or not the window is open.
 
 **The picker** lists every satellite the station tracks — the amateur group
 subscription, anything you pasted into the TLE tab
-([5.9](#510-tle-satellites-and-their-frequencies)), and the curated set — with
+([6.10](#610-tle-satellites-and-their-frequencies)), and the curated set — with
 a search box and, once your grid locator is set, live elevation and the next
 pass for each. Pick one and its published links appear: transponders,
 repeaters, beacons, each with its passbands and mode, inverting transponders
@@ -975,7 +979,7 @@ computed uplink, and the pass in progress or the next one. Locks survive stale
 elements gracefully — corrections are suspended (never frozen) and resume by
 themselves when a TLE refresh brings a fresher set.
 
-The [3D view](#66-satellites) joins in: the locked bird is highlighted with a
+The [3D view](#76-satellites) joins in: the locked bird is highlighted with a
 line drawn from your QTH to it — the sightline your antenna points along —
 and with **AUTO** the camera flies to frame you and the satellite together and
 holds the shot through the pass. The pass window there gets a **LOCK ON**
@@ -1034,7 +1038,7 @@ the top of the main window as well.
 **Adding somebody else's station.** A radio in a tab does not have to be
 attached to this machine. **Settings → Remote** takes the address of an sdroxide
 server and gives it a tab of its own, exactly like a local radio
-([7.2](#72-connect-a-native-remote-client)) — the engine stays where the antenna
+([8.2](#82-connect-a-native-remote-client)) — the engine stays where the antenna
 is, and what crosses the network is the spectrum, the audio and the commands.
 Such a tab is closed from the roster like any other, which hangs up and changes
 nothing on the server.
@@ -1098,7 +1102,7 @@ WSJT-X) belong to each radio. Each radio's servers have their own
 configuration precisely so two radios can serve two copies of WSJT-X on two
 ports — which also means an additional radio's TCI server starts *disabled*,
 because the default port would collide with the first radio's; enable it and
-pick a free port in [§5.8.2](#582-built-in-tci-server).
+pick a free port in [§6.8.2](#682-built-in-tci-server).
 
 **Background tabs.** A hidden radio's waterfall freezes — the pixels are only
 drawn for the tab you are watching — and resumes with a clean gap when you
@@ -1119,16 +1123,16 @@ other streaming, and the transmitter belongs to the first receiver's radio:
 
 - **TCI** — a rig with two receivers (a SunSDR2DX) serves one radio on RX1
   and another on RX2, independently tunable, from one WebSocket. See
-  [§5.2.4](#524-tci-network-expertsdr3-and-thetis).
+  [§6.2.4](#624-tci-network-expertsdr3-and-thetis).
 - **HPSDR Protocol 2** — the board's DDCs are independently tunable
   receivers; run one radio per DDC on different bands from one Ethernet
   connection. (Protocol 1 boards have a single receiver.) See
-  [§5.2.3](#523-hpsdr-network-radios).
+  [§6.2.3](#623-hpsdr-network-radios).
 - **PlutoSDR** — a 2R2T-capable board (a Pluto+, or a rev. C unlocked to two
   channels) serves a second radio from its second receive chain. The AD9361's
   chains **share one local oscillator**, so this is a second *antenna* on the
   same spectrum — retune either radio and both move. See
-  [§5.2.7](#527-plutosdr-adalm-pluto).
+  [§6.2.7](#627-plutosdr-adalm-pluto).
 
 **One radio can receive for another.** A transceiver with no wideband output —
 a CAT rig on a sound card — can borrow another radio's receiver and use it as
@@ -1139,16 +1143,16 @@ transceiver, and you can listen to whichever of the two you prefer. A radio that
 has been lent out this way leaves the tab strip — its front end belongs to the
 radio that borrowed it — and stays in the roster in Settings → Radio, marked
 🔗, which is where it is configured and where the pairing is undone. See
-[§5.2.15](#5215-panadapter-borrowing-another-radios-receiver).
+[§6.2.15](#6215-panadapter-borrowing-another-radios-receiver).
 
 **A server serves every radio in the roster**, each on an address of its own —
-`--server` brings up the same radios the GUI would ([7.1](#71-start-the-server)).
+`--server` brings up the same radios the GUI would ([8.1](#81-start-the-server)).
 A native client that dials such a station gets **all of its radios as tabs**,
 the same as if they were plugged into this machine
-([7.2](#72-connect-a-native-remote-client)) — one connection per radio,
+([8.2](#82-connect-a-native-remote-client)) — one connection per radio,
 made for you. That is the same mechanism that lets one screen hold this
 machine's radios and somebody else's at the same time. A browser tab holds one
-radio at a time and picks it with `?radio=<id>` ([8.1](#81-serve-the-web-client)).
+radio at a time and picks it with `?radio=<id>` ([9.1](#91-serve-the-web-client)).
 
 ---
 
@@ -1190,7 +1194,7 @@ Every band is available in every mode — clicking a band without an underline
 jumps to that band's default frequency, also staying in the mode, and you tune
 from there. Where a mode's convention differs by region — PSK31 and RTTY on
 40 m, SSTV on 80 m and 40 m — the button uses the one for the **IARU region**
-set on the General tab ([5.1](#51-general-station-audio-and-remote-access)).
+set on the General tab ([6.1](#61-general-station-audio-and-remote-access)).
 
 Two more things hold across the modes. Your **callsign and grid** are one
 identity for the whole program: the General settings tab and the FT8/FT4/FT2 setup
@@ -1219,7 +1223,7 @@ left alone.
 
 The frequencies that differ by region — PSK31 and RTTY on 40 m, SSTV on 80 m and
 40 m — are not offered as a choice, because the **IARU region** setting
-([5.1](#51-general-station-audio-and-remote-access)) already says which one
+([6.1](#61-general-station-audio-and-remote-access)) already says which one
 applies to you. Set that and the list is your region's.
 
 An entry shown in **amber** is one your region's band plan does not put narrow
@@ -1281,7 +1285,7 @@ Click **SETUP** in the QSO area to open the **FT8 / FT4 / FT2 Setup** window:
 
 ![The FT8 / FT4 setup window](images/08-ft8-setup.png)
 
-These settings are saved to `digi.json` (see [configuration files](#12-configuration-files)).
+These settings are saved to `digi.json` (see [configuration files](#13-configuration-files)).
 
 #### 3.2.2 The operating panel
 
@@ -1502,7 +1506,7 @@ manual entries. You can:
   (contest id and sent/received serial numbers). If you've already worked that
   call on the band, a **⚠ WORKED BEFORE** badge appears. Press **LOOKUP** to
   fill name/QTH/grid from your callsign-lookup provider (see
-  [§9.2](#92-callsign-lookup)).
+  [§10.2](#102-callsign-lookup)).
 - **EDIT** / **DEL** — edit or delete an entry. Editing preserves fields the form
   doesn't show (resolved DXCC/zones, QSL status).
 - **IMPORT** — load QSOs from an ADIF (`.adi`) file. Imported records are
@@ -1517,7 +1521,7 @@ confirmed. Hover it for the per-service detail.
 
 Records also hold the fields used by lookup, upload and awards — DXCC entity,
 CQ/ITU zones, IOTA and POTA/SOTA references, and per-service QSL status. See
-[§9. Spotting, awards, and QSL upload](#9-spotting-awards-and-qsl-upload) for the
+[§9. Spotting, awards, and QSL upload](#10-spotting-awards-and-qsl-upload) for the
 one-click upload buttons and award tracking.
 
 The log is stored in `qso_log.json`.
@@ -1737,7 +1741,7 @@ receive decoder and the transmit compositor to that mode.
 Band buttons tune to that band's common SSTV calling frequency, staying in SSTV.
 14.230 MHz on 20 m, 21.340 on 15 m and 28.680 on 10 m are the same the world
 over; 80 m and 40 m split by region and follow the **IARU region** setting
-([5.1](#51-general-station-audio-and-remote-access)) — 3.730 and 7.165 in
+([6.1](#61-general-station-audio-and-remote-access)) — 3.730 and 7.165 in
 Region 1, 3.845 and 7.171 in Regions 2 and 3. Above HF, 144.500 on 2 m and
 432.500 on 70 cm, the narrow-band SSTV activity centre.
 
@@ -1917,7 +1921,7 @@ station sending several charts back to back.
   Once you have found yours it is remembered.
 
 **On the globe.** While you are tuned to a station in the list, the 3D solar
-view ([6](#6-solar-system-3d-view)) draws the path from your QTH to that
+view ([7](#7-solar-system-3d-view)) draws the path from your QTH to that
 transmitter, exactly as it draws the station you are working in FT8. Weather fax
 carries no callsign and no grid square, so this is the only thing that turns an
 anonymous chart into "this came 900 km across the North Sea" — and it makes the
@@ -2197,7 +2201,7 @@ would leave this one blank almost always.
 Above the map is the **PROP** button. It shades the map by where signals are
 actually getting through; pressing it reveals the rest of the controls —
 `ALL BANDS` or `ONE BAND`, which band, and the absolute path count the brightest
-cell stands for. [§6.8](#68-the-propagation-heat-map) explains what the
+cell stands for. [§7.8](#78-the-propagation-heat-map) explains what the
 shading means. The same picture, with more control over it, is on the 3D globe.
 
 Drag the strip under the map to resize it against the status pane.
@@ -2311,12 +2315,210 @@ care about is always better copied on the panel.
 
 > **Note:** the skimmers are a wideband feature and work only with true IQ/SDR
 > sources (SoapySDR, HPSDR, TCI). They are unavailable when a CAT radio is
-> feeding demodulated audio (see [settings](#5-settings)),
+> feeding demodulated audio (see [settings](#6-settings)),
 > because that mode has only a narrow audio slice rather than a wide IQ span.
 
 ---
 
-## 5. Settings
+## 5. ISM band decoder
+
+Around 868 MHz, Europe's licence-exempt ISM band is full of small unattended
+transmitters: weather and soil sensors, water and heat meters, doorbells,
+thermostats, alarm contacts. Each one wakes up, sends a few milliseconds of
+2-FSK, and goes back to sleep for a minute. The **ISM** button in the System
+module opens a window that reads them and lists each device it has heard, with
+its readings in real units.
+
+- **DECODING / OFF** switches the decoder on. It costs four downconverters and a
+  burst detector while it runs, so the ISM button stays lit — like SCAN and SAT —
+  whenever it is decoding, whether or not the window is open.
+- **sql** is how far above the channel's own noise floor a transmission has to
+  stand before it is decoded. The default `12 dB` is well below where these
+  protocols stop working, so it is not what limits sensitivity: it is what stops
+  the detector opening on noise. Lower it if you suspect you are missing a
+  distant sensor; raise it on a noisy site.
+- The family buttons — **WEATHER**, **METERS**, **HOME**, **LORA** — choose what
+  to listen for. Only **WEATHER** is implemented so far; the others are drawn
+  greyed out rather than hidden, because those devices are on the air whether or
+  not SDRoxide can read them yet.
+
+### 5.1 Where it listens, and where to tune
+
+The ISM channels are at fixed frequencies, so the decoder parks a receiver on
+each of them rather than searching the band:
+
+| Channel | What is on it |
+|---|---|
+| 868.300 MHz | Weather and soil sensors, wireless M-Bus mode S, KNX-RF, EnOcean, Homematic |
+| 868.420 MHz | Z-Wave (EU) |
+| 868.950 MHz | Wireless M-Bus modes T and C — most modern meters |
+| 869.525 MHz | Wireless M-Bus mode N, Homematic long range |
+
+Those four span about 1.4 MHz, and the decoder can only reach the ones inside the
+IQ your receiver is actually delivering. The window lists every channel with a
+lamp: green for one being listened to, and a reason beside any that is not —
+`outside the receiver's window` if you are tuned elsewhere, `not decoded yet` if
+nothing in this build reads it.
+
+**Tune to 868.880 MHz** and the whole plan fits, even on a receiver that hands
+over only ~2 MHz. If you are tuned away from the band the window says so and
+offers a **TUNE 868.880 MHz** button that does it for you.
+
+> **Note:** like the skimmers, this is a wideband feature. It needs a true IQ
+> source and is unavailable when a CAT radio is feeding demodulated audio.
+
+On an **RX-888**, 868 MHz is reached through its VHF tuner, and its wideband
+downconverter delivers 2.025 Msps — enough for the whole channel plan, but only
+just, which is why the centre frequency matters there.
+
+### 5.2 Reading the device list
+
+One row per device, not per transmission: these things repeat themselves for
+months, and the question is what is around you and what it is reading. Each row
+shows how long ago the device was last heard, the frequency measured **from the
+signal** (not the channel it was found on, so two sensors 40 kHz apart read as
+two frequencies), the protocol, the device's own identity, the signal strength,
+how many frames have been accepted from it, and the readings.
+
+- The **×N** count is worth attention. A device heard once is a checksum that
+  happened to pass; one heard fifty times is really there.
+- **Click a row** to tune the receiver to that device, so you can watch it on the
+  waterfall.
+- Devices are also labelled directly on the waterfall, in green, at the frequency
+  they were heard on. Those labels do not fade: a sensor that has gone quiet for
+  a minute is still where it was, and the window's age column is where "how long
+  ago" is answered.
+- The **bursts / decoded** line under the channel list is the honest measure of
+  what is happening. Many bursts and no decodes means the band is busy with
+  devices SDRoxide cannot read yet — which around 868 MHz it usually is.
+
+### 5.3 What is decoded so far
+
+**LaCrosse IT+** — the TX29-IT, TX35, TX35DTH-IT and the Conrad and TFA units
+that are the same radio in a different case. Temperature, humidity where the
+sensor has an element for it, and the battery state. Frames are accepted only
+when the length field, the CRC-8, the BCD temperature digits and the temperature
+range all agree, so a row in the list is a real reading rather than a lucky
+checksum.
+
+**Fine Offset** — the Fine Offset Electronics sensors, which are also sold as
+Ecowitt, Froggit, Ambient Weather, SwitchDoc and Misol. Every frame in this
+family carries *two* independent checks, a CRC-8 and a byte sum, and both must
+pass — which is what makes it safe to decode on a band this busy.
+
+- **WH51 / WN31 soil moisture** (and the SwitchDoc SM23): moisture percentage
+  and cell voltage.
+- **WH24 / WH65 / WS69 / HP1000 outdoor arrays**: temperature, humidity, wind
+  direction and rainfall. Wind *speed* and gust are deliberately left out — the
+  published reference capture contradicts itself on those two fields (it quotes a
+  gust below the average, which no anemometer reports), and rather than publish a
+  number derived from an inconsistency they are omitted until there is a capture
+  to settle it.
+- **Any other Fine Offset sensor** whose two checks pass is still listed, with its
+  model or family code and its serial but no readings — a WH57 lightning detector
+  or WH40 rain gauge will appear as "payload not decoded". That is not a guess: a
+  CRC and an independent sum both agreeing means it really is one of these
+  sensors, and knowing it is there is more use than silence.
+
+**Bresser** — the Weather Center 5-in-1 and 6-in-1 outdoor sensors, and the units
+rebadged from them (Froggit among others). Temperature, humidity, wind speed, gust
+and direction, and battery state, depending on which family and which of its
+alternating message types.
+
+- **6-in-1**: temperature, humidity and battery. Verified on air — the readings
+  matched the actual conditions exactly.
+- **5-in-1**: temperature, humidity, wind average, gust and direction. Rainfall is
+  left out: it is two BCD bytes whose digit order no published capture states a
+  value for, and a rain total with its digits reversed is worse than none.
+- A Bresser **rain gauge** shares the framing with a payload meaning something
+  else; it is listed as present without a reading.
+
+These sensors run at **8.2 kbaud** — less than half the Fine Offset rate — behind
+the same channel, preamble and sync word. That mattered more than it sounds: see
+the note below.
+
+Wireless M-Bus, Z-Wave, Homematic and LoRa recognition are not implemented yet.
+
+> **Why a sensor can be plainly visible and still not decode.** Each protocol
+> declares a symbol rate, and the bit slicer used to search only ±20 % around it.
+> A Bresser sensor at 8.2 kbaud therefore stayed invisible on the very channel it
+> shares with the 17.24 kbaud Fine Offset family — its sync word sitting in the
+> trace with nothing ever slicing at a rate that could see it. The slicer now also
+> tries the rate **measured from the burst itself**, which is what a sync word and
+> a CRC are for. If you are writing a new protocol module, this is why the
+> `sym` column in `ism_replay --survey` matters more than the nominal rate in any
+> datasheet.
+
+> **On encrypted meters:** when wireless M-Bus support arrives, most modern
+> German and Austrian meters will still only report their manufacturer, serial
+> and device type — their readings are AES-encrypted and SDRoxide holds no keys.
+> That is a useful meter inventory, but it is not a meter reading.
+
+### 5.4 Nothing is being decoded
+
+Work down this list; each step distinguishes two causes that look identical from
+the outside.
+
+1. **Is a channel live?** The channel list needs at least one green lamp. All grey
+   with "outside the receiver's window" means the dial is wrong — press the
+   **TUNE 868.880 MHz** button.
+2. **Is the gate opening?** The **bursts / decoded** line says. `0 bursts` means
+   nothing is reaching the threshold: lower **sql** towards 6 dB. A healthy count
+   with `0 decoded` means the band is busy with devices this build cannot read —
+   go to step 4.
+3. **Are your sensors even on these channels?** This is the common answer and the
+   one the panel cannot give you. The 868 MHz band is wide, and a great deal of
+   what fills it — the RFID readers at 865.6–867.6 MHz especially — is nowhere
+   near the four channels the sensor protocols use. Record and survey:
+
+   ```bash
+   sdroxide --record-iq band.iq            # 8 bytes a sample: 16 MB/s at 2 Msps
+   cargo run --release -p sdroxide-ism --example ism_replay -- band.iq 868880000 2025000 --survey
+   ```
+
+   `--survey` ignores the channel plan and tiles the *whole* window, finishing with
+   a histogram of where the bursts actually were. If the traffic is all at
+   866.5 MHz, no amount of tuning the sensor channels will help — and now you know.
+4. **What are they?** For each undecoded burst the survey prints the measured
+   deviation, symbol rate and envelope swing. Candidate frames (`cand`) above zero
+   means the right modulation and a frame format this build does not know;
+   `cand 0` means a modulation this chain does not handle at all, which is what
+   LoRa's chirps look like. Those columns are what a new protocol module gets
+   written from.
+
+### 5.5 Checking it without waiting for a sensor
+
+Two tools ship with the decoder. The first writes a synthetic 868 MHz band with
+four sensors whose readings are known, as an IQ file the radio can tune:
+
+```bash
+cargo run --release -p sdroxide-ism --example ism_iq -- band.iq 10
+cargo run --release -- --file band.iq --rate 2025000 --freq 868880000 --mode NFM
+```
+
+Switch the ISM window on and the four sensors should appear with the readings the
+generator printed.
+
+The second replays a real capture and reports **every** burst it finds, decoded
+or not — which is how you find out what your own neighbourhood is transmitting.
+Capture one with `--record-iq` (see [5.4](#54-nothing-is-being-decoded)), then:
+
+```bash
+cargo run --release -p sdroxide-ism --example ism_replay -- band.iq 868880000 2025000
+cargo run --release -p sdroxide-ism --example ism_replay -- band.iq 868880000 2025000 --survey
+```
+
+The first listens on the channel plan, as the radio does. The second tiles the
+whole window instead and reports traffic anywhere in it.
+
+The `cand` column is the useful one on an undecoded burst. Candidate frames mean
+the right modulation and a frame format this build does not know; no candidates
+at all means a modulation this chain does not handle, which is what LoRa's chirps
+look like.
+
+---
+
+## 6. Settings
 
 Everything that configures sdroxide lives in one window, opened with the
 **⚙ SETTINGS** button in the System module (the **⚙ SETUP** button in the SPOTS
@@ -2324,17 +2526,17 @@ window opens the same dialog on its Spots tab). Eleven tabs run across the top:
 
 | Tab | What it holds |
 | --- | --- |
-| **General** | Which version this is, your callsign, grid and IARU region, the sound devices, and who may connect remotely. [5.1](#51-general-station-audio-and-remote-access) |
-| **Radio** | Which rig sdroxide talks to, and how. [5.2](#52-radio-choosing-and-configuring-the-rig) |
-| **UI** | Frame rate, waterfall palette, spectrum background, 3D cloud rendering, and the spoken announcements. [5.3](#53-ui-display-preferences-and-voice-announcements) |
-| **Controls** | Keyboard, mouse and MIDI bindings. [5.4](#54-controls-keyboard-mouse-and-midi) |
-| **Spots** | DX cluster, POTA, SOTA and PSK Reporter feeds, and the broadcast station list. [5.5](#55-spots-spot-feeds) |
-| **FreeDV** | FreeDV Reporter (qso.freedv.org). [5.6](#56-freedv-freedv-reporter) |
-| **Uploads** | Callsign lookup, QSL upload, confirmation download. [5.7](#57-uploads-callsign-lookup-and-qsl-services) |
-| **Winlink** | The radio-email account, and whether it forwards over the internet or on the air. [5.8](#58-winlink-radio-email-account) |
-| **Servers** | Hamlib rigctld, the built-in TCI server, and the WSJT-X UDP broadcast. [5.9](#59-servers-letting-other-programs-drive-the-radio) |
-| **Remote** | The address of an sdroxide server elsewhere, and the button that connects to it. [7.2](#72-connect-a-native-remote-client) |
-| **TLE** | Satellites to track beyond the amateur set, and their frequencies. [5.10](#510-tle-satellites-and-their-frequencies) |
+| **General** | Which version this is, your callsign, grid and IARU region, the sound devices, and who may connect remotely. [6.1](#61-general-station-audio-and-remote-access) |
+| **Radio** | Which rig sdroxide talks to, and how. [6.2](#62-radio-choosing-and-configuring-the-rig) |
+| **UI** | Frame rate, waterfall palette, spectrum background, 3D cloud rendering, and the spoken announcements. [6.3](#63-ui-display-preferences-and-voice-announcements) |
+| **Controls** | Keyboard, mouse and MIDI bindings. [6.4](#64-controls-keyboard-mouse-and-midi) |
+| **Spots** | DX cluster, POTA, SOTA and PSK Reporter feeds, and the broadcast station list. [6.5](#65-spots-spot-feeds) |
+| **FreeDV** | FreeDV Reporter (qso.freedv.org). [6.6](#66-freedv-freedv-reporter) |
+| **Uploads** | Callsign lookup, QSL upload, confirmation download. [6.7](#67-uploads-callsign-lookup-and-qsl-services) |
+| **Winlink** | The radio-email account, and whether it forwards over the internet or on the air. [6.8](#68-winlink-radio-email-account) |
+| **Servers** | Hamlib rigctld, the built-in TCI server, and the WSJT-X UDP broadcast. [6.9](#69-servers-letting-other-programs-drive-the-radio) |
+| **Remote** | The address of an sdroxide server elsewhere, and the button that connects to it. [8.2](#82-connect-a-native-remote-client) |
+| **TLE** | Satellites to track beyond the amateur set, and their frequencies. [6.10](#610-tle-satellites-and-their-frequencies) |
 
 Most settings take effect the moment you change them. The ones that open or
 rebind a connection — the radio itself, the spot feeds, FreeDV Reporter, and the
@@ -2342,7 +2544,7 @@ two servers — have their own **APPLY** or **Apply / reconnect** button, noted 
 each section below, and so does **Winlink**, whose account is read by the next
 forwarding session rather than the moment you type it. Nothing here needs a restart.
 
-Settings are written to the per-user config directory ([§12](#12-configuration-files)):
+Settings are written to the per-user config directory ([§13](#13-configuration-files)):
 display preferences to `config.toml`, the radio to `radio.json`, key/mouse/MIDI
 bindings to `input.json`, feeds and credentials to `net.json`, the two servers
 to `rigctld.json`, `tciserver.json` and `wsjtx.json`, and the satellite
@@ -2356,7 +2558,7 @@ client what they say — so the **Radio**, **Spots**, **FreeDV**, **Uploads**,
 whether you are at the shack machine, on a native remote client or in a browser tab. (The Radio tab
 keeps back the parts that are about a *machine* rather than about the radio:
 which interface to open, and the buttons that scan a bus or test an address. See
-[7.4](#74-what-to-know).) `input.json` and the `[ui]` half of
+[8.4](#84-what-to-know).) `input.json` and the `[ui]` half of
 `config.toml` are the exception, and belong to the screen in front of you: a
 display preference and a knob on your desk have nothing to do with the radio in
 the other room — and so does the `[remote_server]` address on the **Remote**
@@ -2365,7 +2567,7 @@ arrives at. The rest of `config.toml` — including the `[remote_access]`
 sign-in — belongs to the engine's machine, which is why the **Remote access**
 section of the General tab is only shown there.
 
-### 5.1 General: station, audio and remote access
+### 6.1 General: station, audio and remote access
 
 ![The General tab: callsign, grid square, and your own speakers and microphone](images/settings-general.jpg)
 
@@ -2437,7 +2639,7 @@ happen to be sitting. It takes effect immediately — no APPLY, no restart.
 #### The band plan file
 
 The numbers behind all of that live in **`bandplan.json`** in the config
-directory ([§12](#12-configuration-files)), and they are yours to change. On
+directory ([§13](#13-configuration-files)), and they are yours to change. On
 first start sdroxide writes the built-in IARU tables there; from then on that
 file is the authority for every band edge, sub-segment and skimmer window in the
 program.
@@ -2509,7 +2711,7 @@ joins it when its open finishes. If the open fails, transmit carries silence and
 the log says which device refused.
 
 **Radio audio (sound card)** — a third section appears below those two, but
-*only when the radio interface is CAT / Audio* ([5.2.2](#522-cat-radios-serial-control--usb-audio)):
+*only when the radio interface is CAT / Audio* ([6.2.2](#622-cat-radios-serial-control--usb-audio)):
 every other backend carries its audio in-band and needs no sound card, which is
 why the screenshot above (taken with a TCI rig) does not show it.
 
@@ -2538,12 +2740,12 @@ symptom is silent receive and a "waiting for spectrum" panadapter). For a
 sound card dedicated to the radio, the reliable fix is to tell WirePlumber to
 stop managing that card, leaving it for sdroxide. Create a drop-in such as
 `~/.config/wireplumber/wireplumber.conf.d/51-radio.conf` that disables the
-card, then restart WirePlumber. See [troubleshooting](#13-troubleshooting).
+card, then restart WirePlumber. See [troubleshooting](#14-troubleshooting).
 
 **Remote access** — the **Username** and **Password** a remote client has to
 give before this station will let it operate: the browser page, another sdroxide
 started with `--connect`, and the 3D view's tab. See
-[§ 7.3 Sign-in](#73-sign-in-who-may-operate-the-station).
+[§ 7.3 Sign-in](#83-sign-in-who-may-operate-the-station).
 
 - Both boxes empty leaves the server **open** — anyone who can reach the port
   can operate the radio, transmit included. The tab says so in yellow.
@@ -2562,7 +2764,7 @@ Like every other password sdroxide stores — the cluster login, QRZ, eQSL — i
 kept in the clear, so `config.toml` is worth the same file permissions as the
 rest of your config directory.
 
-### 5.2 Radio: choosing and configuring the rig
+### 6.2 Radio: choosing and configuring the rig
 
 In the native application the very top of the tab carries the **radio
 roster** — one button per radio, with the same TX / warning / mute markers as
@@ -2577,51 +2779,51 @@ names itself after the interface selected below.
 radio. Everything below the selector changes to match the choice:
 
 - **SoapySDR** — a SoapySDR device (wideband IQ). The default, and listed only
-  when SoapySDR support is compiled in. See [5.2.1](#521-soapysdr-devices).
+  when SoapySDR support is compiled in. See [6.2.1](#621-soapysdr-devices).
 - **HPSDR (network)** — an OpenHPSDR (Hermes/Metis) Ethernet SDR on the LAN. See
-  [5.2.3](#523-hpsdr-network-radios).
+  [6.2.3](#623-hpsdr-network-radios).
 - **CAT / Audio** — a CAT-controlled radio with audio over a USB sound card. See
-  [5.2.2](#522-cat-radios-serial-control--usb-audio).
+  [6.2.2](#622-cat-radios-serial-control--usb-audio).
 - **TCI (network)** — a TCI server such as ExpertSDR3 or Thetis. See
-  [5.2.4](#524-tci-network-expertsdr3-and-thetis).
+  [6.2.4](#624-tci-network-expertsdr3-and-thetis).
 - **SmartSDR / FlexRadio (network)** — a FLEX-6000 or FLEX-8000 on the LAN. See
-  [5.2.6](#526-smartsdr-flexradio-network-radios).
+  [6.2.6](#626-smartsdr-flexradio-network-radios).
 - **Icom LAN (network)** — an Icom on its own Ethernet or WiFi port: IC-7300MK2,
   IC-705, IC-9700, IC-7610, IC-905, IC-R8600. Control, audio and the radio's
   spectrum scope over one network connection, with no serial cable and no sound
-  card. See [5.2.10](#5210-icom-lan-network-radios).
+  card. See [6.2.10](#6210-icom-lan-network-radios).
 - **RTL-SDR (USB)** — an RTL2832U dongle, driven by sdroxide's own USB driver
-  with no SoapySDR involved. See [5.2.5](#525-rtl-sdr-usb-dongles).
+  with no SoapySDR involved. See [6.2.5](#625-rtl-sdr-usb-dongles).
 - **RTL-SDR over rtl_tcp (network)** — the same dongle plugged into another
   machine — a Raspberry Pi at the antenna, say — and published with `rtl_tcp`.
-  See [5.2.11](#5211-rtl-sdr-over-rtl_tcp-network-dongles).
+  See [6.2.11](#6211-rtl-sdr-over-rtl_tcp-network-dongles).
 - **SpyServer (network)** — a receiver published with Airspy's `spyserver` or
   one of the servers that speak the same protocol: an Airspy, an Airspy HF+ or
   an RTL-SDR behind it. Wideband I/Q, receive only. See
-  [5.2.14](#5214-spyserver-network-receivers).
+  [6.2.14](#6214-spyserver-network-receivers).
 - **SpyServer VFO+FFT, low bandwidth (network)** — the same servers in the mode
   that fits down a WiFi or cellular link: a narrow I/Q stream that follows the
   dial, plus the server's own FFT of the whole band for the full-band strip.
-  See [5.2.14](#5214-spyserver-network-receivers).
+  See [6.2.14](#6214-spyserver-network-receivers).
 - **RX-888 (USB)** — an RX-888 / RX-888 Mk2 direct-sampling receiver, likewise
   driven directly over USB, with its firmware bundled and uploaded for it. On a
   Mk2 the built-in R828D tuner is driven too, so the receiver covers VHF and UHF
   as well as HF and switches between its two antenna ports on its own.
 - **Airspy HF+ (USB)** — an Airspy HF+ Dual, Discovery or Ranger, driven by
   sdroxide's own USB driver with no SoapySDR and no libairspyhf involved. See
-  [5.2.9](#529-airspy-hf-usb).
+  [6.2.9](#629-airspy-hf-usb).
 - **Airspy R2 / Mini (USB)** — an Airspy R2 or Mini, driven by sdroxide's own
   USB driver. A different receiver from the Airspy HF+ above, with its own
-  interface. See [5.2.13](#5213-airspy-r2--mini-usb).
+  interface. See [6.2.13](#6213-airspy-r2--mini-usb).
 - **HackRF One / Pro (USB)** — a HackRF One, HackRF Pro, Jawbreaker or rad1o,
   driven by sdroxide's own USB driver with no SoapySDR and no libhackrf
   involved. The one USB interface here that transmits, and half duplex. See
-  [5.2.12](#5212-hackrf-one--pro-usb).
+  [6.2.12](#6212-hackrf-one--pro-usb).
 - **SDRplay RSP (USB)** — any RSP, through the vendor's API service. See
-  [5.2.8](#528-sdrplay-rsp-usb).
+  [6.2.8](#628-sdrplay-rsp-usb).
 - **PlutoSDR (network)** — an ADALM-Pluto, driven by sdroxide's own IIOD client
   with no SoapySDR and no libiio involved. See
-  [5.2.7](#527-plutosdr-adalm-pluto).
+  [6.2.7](#627-plutosdr-adalm-pluto).
 
 There is no auto-detect: you pick the interface, and an interface that cannot be
 opened falls back to a silent source rather than guessing at another one.
@@ -2685,11 +2887,11 @@ Three things to know:
   card have moved. Putting that 8 kHz here retunes the radio instead, and the
   display comes out 8 kHz *wrong* rather than corrected. Use **I/Q centre
   offset** on the CAT tab
-  ([5.2.2](#522-cat-radios-serial-control--usb-audio)) for that.
+  ([6.2.2](#622-cat-radios-serial-control--usb-audio)) for that.
 - **Nor for a second radio watching this one's I.F. output.** That offset
   describes where a *different* receiver is listening, and belongs in the
   **Panadapter** section below
-  ([5.2.15](#5215-panadapter-borrowing-another-radios-receiver)).
+  ([6.2.15](#6215-panadapter-borrowing-another-radios-receiver)).
 
 This has been tested against sdroxide's own simulated front ends, not against a
 physical converter. If you have one, reports are welcome.
@@ -2728,7 +2930,7 @@ is the same side the device's own answer comes from. With a converter set they
 are shifted onto the dial along with everything else — and transmit is off
 regardless, as above.
 
-#### 5.2.1 SoapySDR devices
+#### 6.2.1 SoapySDR devices
 
 ![The Radio tab with the SoapySDR interface selected](images/settings-radio-soapysdr.jpg)
 
@@ -2758,7 +2960,7 @@ server, where nobody is at the machine to pick — use `--antenna` and
 A **remote client** gets this tab too, filled in from the server's own
 `radio.json` rather than from any file beside the screen: the gains, the
 antennas and every setting the interface has, applied to the running device and
-saved where the radio is ([7.4](#74-what-to-know)). What stays behind is the
+saved where the radio is ([8.4](#84-what-to-know)). What stays behind is the
 choice of interface and the buttons that scan a bus or test an address — those
 ask about a machine, and from a remote client it would be the wrong one.
 
@@ -2794,12 +2996,12 @@ would otherwise leave the usable span or come too close to the centre. Other
 interfaces (RTL-SDR, HPSDR, TCI, CAT) are unaffected: none of them puts the dial
 on a dirty LO.
 
-#### 5.2.2 CAT radios (serial control + USB audio)
+#### 6.2.2 CAT radios (serial control + USB audio)
 
 ![The Radio tab with the CAT / Audio interface selected](images/settings-radio-cat.jpg)
 
 A CAT radio is controlled over a serial port while its audio arrives over a USB
-sound card — chosen on the **General** tab ([5.1](#51-general-station-audio-and-remote-access)),
+sound card — chosen on the **General** tab ([6.1](#61-general-station-audio-and-remote-access)),
 separately from your computer's own speakers and microphone.
 
 **Sound format** — how the radio's audio is interpreted:
@@ -2810,7 +3012,7 @@ separately from your computer's own speakers and microphone.
   X6100.
 - **IQ (stereo)** — the radio sends a stereo IQ signal (I on the left channel, Q
   on the right). This gives a full panadapter but requires a **stereo** capture
-  device (see the note in [5.1](#51-general-station-audio-and-remote-access)).
+  device (see the note in [6.1](#61-general-station-audio-and-remote-access)).
 
   The radio's dial is the centre of that panadapter, so the two ways of tuning
   do different things. **Clicking** a signal already on screen — bare spectrum,
@@ -3125,11 +3327,11 @@ an HF-only FT-891 from an FT-991A on 70 cm or an IC-9700 on 23 cm. Rather than
 guess, it leaves every band live and lets the rig answer: ask a radio for a band
 it does not have and it simply declines over CAT, which sdroxide reports in the
 log. The real limits on transmit are your licence — the amateur-band gate, which
-follows your region ([5.1](#51-general-station-audio-and-remote-access)) — and
+follows your region ([6.1](#61-general-station-audio-and-remote-access)) — and
 the rig itself. If you would rather sdroxide held the dial to the radio you
 actually own, state an **RX range** and **TX range** at the top of this tab.
 
-#### 5.2.3 HPSDR (network radios)
+#### 6.2.3 HPSDR (network radios)
 
 ![The Radio tab with the HPSDR (network) interface selected](images/settings-radio-hpsdr.jpg)
 
@@ -3253,7 +3455,7 @@ going out.
 > transmitter is inhibited or its transmit FIFO under- or overran. Please attach
 > that output to a bug report.
 
-#### 5.2.4 TCI (network): ExpertSDR3 and Thetis
+#### 6.2.4 TCI (network): ExpertSDR3 and Thetis
 
 ![The Radio tab with the TCI (network) interface selected](images/settings-radio-tci.jpg)
 
@@ -3285,9 +3487,9 @@ region's allocation, and the rig declines anything it cannot do.
 
 > This is sdroxide acting as a TCI *client*. For the other direction — sdroxide
 > acting as the rig so WSJT-X and friends can drive it — see
-> [§ 5.8.2 Built-in TCI server](#582-built-in-tci-server).
+> [§ 5.8.2 Built-in TCI server](#682-built-in-tci-server).
 
-#### 5.2.5 RTL-SDR (USB dongles)
+#### 6.2.5 RTL-SDR (USB dongles)
 
 ![The Radio tab with the RTL-SDR interface selected](images/settings-radio-rtlsdr.jpg)
 
@@ -3382,7 +3584,7 @@ by itself when you plug it back in — no need to press Apply. A dongle left
 streaming by a program that was killed rather than closed is reset automatically
 on the next open, so it does not need physically replugging either.
 
-#### 5.2.6 SmartSDR (FlexRadio network radios)
+#### 6.2.6 SmartSDR (FlexRadio network radios)
 
 ![The Radio tab with the SmartSDR interface selected](images/settings-radio-smartsdr.jpg)
 
@@ -3441,7 +3643,7 @@ the radio simply declines the key-down.
 > `cargo run -p sdroxide-smartsdr --example sim`, then point this tab at
 > `127.0.0.1:4992`.
 
-#### 5.2.7 PlutoSDR (ADALM-Pluto)
+#### 6.2.7 PlutoSDR (ADALM-Pluto)
 
 ![The Radio tab with the PlutoSDR interface selected](images/settings-radio-plutosdr.jpg)
 
@@ -3601,7 +3803,7 @@ symptom to report if that ever fails.
 > the framing is wrong.
 
 
-#### 5.2.8 SDRplay RSP (USB)
+#### 6.2.8 SDRplay RSP (USB)
 
 The **SDRplay RSP (USB)** interface drives any RSP — RSP1, RSP1A, RSP1B, RSP2,
 RSPduo, RSPdx, RSPdx R2 — natively, with no SoapySDR in the path. Receive
@@ -3668,7 +3870,7 @@ in the log: raise the LNA state, lower the IF gain, or turn the AGC on. If the
 RSP is unplugged — or the service restarted under sdroxide — it notices within
 a few seconds and reconnects by itself when the device returns.
 
-#### 5.2.9 Airspy HF+ (USB)
+#### 6.2.9 Airspy HF+ (USB)
 
 > **Help wanted — this backend has not been verified against real hardware.**
 > It was written from Airspy's own reference implementation rather than on a
@@ -3754,7 +3956,7 @@ the DSP is where to look.
 If the receiver is unplugged, sdroxide notices within a few seconds and
 reconnects by itself when you plug it back in — no need to press Apply.
 
-#### 5.2.10 Icom LAN (network radios)
+#### 6.2.10 Icom LAN (network radios)
 
 The **Icom LAN (network)** interface drives an Icom over the Ethernet or WiFi
 port on the radio itself, using the same IP-remote protocol Icom's own RS-BA1
@@ -3830,7 +4032,7 @@ Transmit is unaffected by the choice: it is always audio the radio modulates.
 - **Displayed bandwidth** (AF only) — the width of the audio-band panadapter.
 - **CW keying** — as for a CAT rig. A radio *in* CW ignores the audio it is
   sent and keys its own transmitter, so **Rig keyer (CAT)** is what puts CW on
-  the air at the dial frequency ([§5.2.2](#522-cat-radios-serial-control--usb-audio)).
+  the air at the dial frequency ([§6.2.2](#622-cat-radios-serial-control--usb-audio)).
 - **Transmit buffer** — how much audio the radio holds before modulating. More
   survives a worse network, at the cost of transmit latency.
 - **Show the radio's spectrum scope** — stream the sweep into the full-band
@@ -3847,10 +4049,10 @@ Transmit is unaffected by the choice: it is always audio the radio modulates.
 > end-to-end against a simulator rather than a radio. If it misbehaves, the
 > **Copy diagnostic report** button produces everything a bug report needs.
 
-#### 5.2.11 RTL-SDR over rtl_tcp (network dongles)
+#### 6.2.11 RTL-SDR over rtl_tcp (network dongles)
 
 The **RTL-SDR over rtl_tcp (network)** interface is the dongle from
-[§5.2.5](#525-rtl-sdr-usb-dongles) on a *different machine* — typically a
+[§6.2.5](#625-rtl-sdr-usb-dongles) on a *different machine* — typically a
 Raspberry Pi at the foot of the mast, so the coax run is a metre instead of
 thirty. The far end runs `rtl_tcp`, which owns the dongle and performs every
 register write on sdroxide's behalf; this end sends five-byte commands and
@@ -3887,7 +4089,7 @@ because it is the same radio; only these differ:
   property of that hardware, so it is set here and not in the USB tab.
 
   The measured clock-error line that the USB interface prints
-  ([§5.2.5](#525-rtl-sdr-usb-dongles)) is **not** available over `rtl_tcp`, and
+  ([§6.2.5](#625-rtl-sdr-usb-dongles)) is **not** available over `rtl_tcp`, and
   the log says so instead of printing a figure. That measurement counts samples
   against elapsed time, which works because the dongle itself paces them; over a
   network it measures the buffering in between. Against a real `rtl_tcp` on
@@ -3970,7 +4172,7 @@ reduction is a **reduction**, so a bigger number is less signal.
 > (`ssh -L 1234:localhost:1234 pi@host`, then connect to `127.0.0.1:1234` here,
 > leaving `rtl_tcp` bound to localhost on the far end).
 
-#### 5.2.12 HackRF One / Pro (USB)
+#### 6.2.12 HackRF One / Pro (USB)
 
 A HackRF One or HackRF Pro — or a Jawbreaker or a rad1o — driven directly over
 USB by sdroxide's own pure-Rust driver. No SoapySDR, no libusb and no libhackrf,
@@ -4108,7 +4310,7 @@ With it on:
 > exact sequence around each key-down — which is the part a bug report needs and
 > the part nobody can reconstruct from a spectrum.
 
-#### 5.2.13 Airspy R2 / Mini (USB)
+#### 6.2.13 Airspy R2 / Mini (USB)
 
 An Airspy R2 or Airspy Mini, driven directly over USB by sdroxide's own
 pure-Rust driver. No SoapySDR, no libusb and no libairspy, so this interface is
@@ -4188,7 +4390,7 @@ the spur goes when you do.
 > double what it should be would show), and the first samples both as raw 12-bit
 > values and decoded as I/Q pairs.
 
-#### 5.2.14 SpyServer (network receivers)
+#### 6.2.14 SpyServer (network receivers)
 
 **SpyServer** is Airspy's own network server. It works with Airspy R2/Mini, 
 Airspy HF+, or RTL-SDR. Receive only.
@@ -4343,12 +4545,12 @@ demodulates its own.
 > run is reachable by anyone who can reach the port, and a public one sees your
 > address. Keep a private server on a trusted network or behind an SSH tunnel.
 
-#### 5.2.15 Panadapter: borrowing another radio's receiver
+#### 6.2.15 Panadapter: borrowing another radio's receiver
 
 A great many stations have a transceiver with no wideband output — CAT on a
 serial port, demodulated audio on a USB sound card — and an SDR sitting on the
 desk beside it. On its own the transceiver can only show a slice of its audio
-band mapped to RF ([5.2.2](#522-cat-radios-serial-control--usb-audio)). Give it
+band mapped to RF ([6.2.2](#622-cat-radios-serial-control--usb-audio)). Give it
 the SDR's receiver and the same tab gets the real thing: a wideband panadapter
 and waterfall you can click to tune, a sub receiver, the digital modes, the CW
 skimmer and the band-plan and spot overlays — while the dial, the mode, the
@@ -4383,9 +4585,9 @@ sent to either radio.
 
 **This is a third offset field, and the three do different things.** The
 **Converter** offset above retunes the radio itself, for hardware in the antenna
-line ([5.2](#52-radio-choosing-and-configuring-the-rig)). **I/Q centre offset**
+line ([6.2](#62-radio-choosing-and-configuring-the-rig)). **I/Q centre offset**
 on the CAT tab says where a rig's *own* sound-card output sits relative to its
-dial ([5.2.2](#522-cat-radios-serial-control--usb-audio)). This one says where a
+dial ([6.2.2](#622-cat-radios-serial-control--usb-audio)). This one says where a
 *different radio* is listening. Putting an I.F. in either of the other two puts
 the whole display out by that much instead of correcting it.
 
@@ -4398,14 +4600,14 @@ for all of them.
 
 These follow the mode the **radio reports**, not the mode named in sdroxide, so
 they stay right even when the two differ — which they routinely do, since
-**Digimode mode** ([5.2.2](#522-cat-radios-serial-control--usb-audio)) may leave
+**Digimode mode** ([6.2.2](#622-cat-radios-serial-control--usb-audio)) may leave
 the rig in plain USB for a digital mode. Changing mode retunes the receiver by
 the difference, so the band does not move on screen.
 
 **Invert spectrum** mirrors the receiver's span about its own centre, for a tap
 whose oscillator sits above the signal and hands the band over the wrong way
 round. The symptom is the one described in
-[5.2.2](#522-cat-radios-serial-control--usb-audio): a waterfall full of
+[6.2.2](#622-cat-radios-serial-control--usb-audio): a waterfall full of
 convincing signals that are all on the wrong side of the dial. Leave it off
 until you see that.
 
@@ -4443,7 +4645,7 @@ turn off blanking alone to watch your own signal while still not hearing it.
   its device. A station reached over the network cannot lend its receiver to a
   radio here, though a server can pair two of *its* radios and a client dialling
   in sees the result as one ordinary wideband radio
-  ([7.2](#72-connect-a-native-remote-client)).
+  ([8.2](#82-connect-a-native-remote-client)).
 - One receiver, one borrower. A radio already lent out is not offered to a
   second, and a radio that is itself borrowing one cannot be borrowed.
 - Transmit belongs entirely to the transceiver, including the transmit range,
@@ -4452,7 +4654,7 @@ turn off blanking alone to watch your own signal while still not hearing it.
 - Closing the receiver from the roster leaves the transceiver on the air: the
   pairing is dropped, with a line in the log saying so.
 
-### 5.3 UI: display preferences and voice announcements
+### 6.3 UI: display preferences and voice announcements
 
 ![The UI tab: frame rate, scroll/spectrum speed, palette, and spectrum background](images/settings-ui.jpg)
 
@@ -4463,7 +4665,7 @@ spoken announcements below them under `[speech]`:
   window size and is what you want; **Desktop**, **Tablet** and **Phone** force
   it, to see how the compact strips look without a phone to hand, or to keep the
   menus in a small desktop window rather than a strip wrapped over three rows.
-  See [8.4](#84-phones-and-tablets) for what each one shows.
+  See [9.4](#94-phones-and-tablets) for what each one shows.
 - **Theme** — the colour scheme for the whole UI: **Default** (the navy, cyan
   and hot pink every screenshot in this manual shows), **Light** (white panels
   and near-black text, for a bright shack or a screen read in daylight),
@@ -4510,13 +4712,13 @@ spoken announcements below them under `[speech]`:
   so a Large interface with a Small waterfall font still has larger frequency
   labels than a Medium one. Bear in mind that **Large** leaves the window fewer
   points to lay out in, so a small window may drop to the tablet control strip
-  ([8.4](#84-phones-and-tablets)) — force **Layout: Desktop** above if you would
+  ([9.4](#94-phones-and-tablets)) — force **Layout: Desktop** above if you would
   rather keep the full strip.
 
 Under **3D view**:
 
 - **Cloud rendering** — how the `CLOUDS` layer of the solar-system window
-  ([6](#6-solar-system-3d-view)) draws the weather. **Layered** stacks
+  ([7](#7-solar-system-3d-view)) draws the weather. **Layered** stacks
   slices through the troposphere and is the cheap option. **Volumetric** walks a
   ray through it instead, so the Sun casts the cloud tops onto the deck below and
   lightning glows out *through* the storm making it rather than only brightening
@@ -4590,14 +4792,14 @@ way an operator reads a dial, digit by digit after the decimal point, and always
 
 Keys for **Speak status**, **Repeat last announcement**, **Stop speaking** and
 **Announcements on/off** are on the Controls tab
-([5.4](#54-controls-keyboard-mouse-and-midi)) under **Speech**. They have no
+([6.4](#64-controls-keyboard-mouse-and-midi)) under **Speech**. They have no
 defaults; bind the ones you want.
 
 sdroxide also exposes its whole window to the platform screen reader — NVDA on
 Windows, Orca on Linux, VoiceOver on macOS — so the controls can be navigated
 and read as well as heard.
 
-### 5.4 Controls: keyboard, mouse and MIDI
+### 6.4 Controls: keyboard, mouse and MIDI
 
 Everything sdroxide can be told to do is an **action** — tune, PTT, change band,
 cycle noise reduction, open the logbook — and the **Controls** tab binds actions
@@ -4612,7 +4814,7 @@ An **accel** above zero makes a held key move further the longer you hold it. A
 **momentary** action (PTT, mute, split) is either *Hold* — asserted while the
 key is down — or *Toggle*, which flips on each press.
 
-#### 5.4.1 Keyboard
+#### 6.4.1 Keyboard
 
 ![The Controls tab, Keyboard section: the shortcut table with its action, step and accel columns](images/settings-controls-keyboard.jpg)
 
@@ -4621,7 +4823,7 @@ The table lists every shortcut, one per row: the key **Shortcut**, what it
 binding without deleting it. Click the shortcut button to rebind it, then press
 the key combination you want (Esc cancels). **+ Add shortcut** creates a row,
 **✕** removes one, and **Restore defaults** puts back the shipped set listed in
-[14](#14-appendix). Shortcuts are ignored while you are typing in a text field
+[15](#15-appendix). Shortcuts are ignored while you are typing in a text field
 or a control has keyboard focus.
 
 **Push-to-talk deserves a note.** No PTT key ships bound, on purpose: a
@@ -4635,7 +4837,7 @@ keyboard, and after the **Unkey a held PTT after** timeout at the bottom of the
 section (300 s by default, 0 disables it) — so alt-tabbing mid-over drops you
 back to receive rather than transmitting your office.
 
-#### 5.4.2 Panadapter mouse and mouse buttons
+#### 6.4.2 Panadapter mouse and mouse buttons
 
 ![The Controls tab, mouse section: wheel actions, tuning steps, and the mouse-button bindings](images/settings-controls-mouse.jpg)
 
@@ -4664,7 +4866,7 @@ F1 always opens this manual, even while you are typing, so it is not rebindable.
 While the manual is open, the arrow, Page and Home/End keys scroll it instead of
 running whatever you have bound them to, and Ctrl+F / F3 drive its search bar.
 
-#### 5.4.3 MIDI controller
+#### 6.4.3 MIDI controller
 
 ![The Controls tab, MIDI section: port selection, the live message readout, and the binding table](images/settings-controls-midi.jpg)
 
@@ -4702,16 +4904,16 @@ by itself when you plug it back in.
 > **Bindings live with the client.** They are stored in `input.json` on the
 > machine running the *user interface*, not the one running the radio — so a
 > knob plugged into your laptop works just as well against a remote engine
-> (`--connect`, [7](#7-remote-operation)). Keyboard and mouse bindings work in
+> (`--connect`, [8](#8-remote-operation)). Keyboard and mouse bindings work in
 > the browser client too; MIDI needs the native app.
 
-### 5.5 Spots: spot feeds
+### 6.5 Spots: spot feeds
 
 ![The Spots tab: DX cluster login and the POTA / SOTA / PSK Reporter feeds](images/15-settings-spots.jpg)
 
 The **Spots** tab turns on the feeds that put other stations on your panadapter
 and in the SPOTS window. What the spots then do — clicking one to work it, the
-filters, the world map — is [§9.1](#91-spot-feeds-dx-cluster-pota-sota-psk-reporter).
+filters, the world map — is [§10.1](#101-spot-feeds-dx-cluster-pota-sota-psk-reporter).
 
 - **Operator** — shown for reference only; your callsign and grid are set once
   on the **General** tab and used everywhere, including to log in to the DX
@@ -4729,7 +4931,7 @@ filters, the world map — is [§9.1](#91-spot-feeds-dx-cluster-pota-sota-psk-re
 
   RBN is not a spot feed and its spots do not appear in the SPOTS window: there
   are thousands a minute and they are measurements rather than invitations. They
-  go to the [propagation heat map](#68-the-propagation-heat-map), which is what
+  go to the [propagation heat map](#78-the-propagation-heat-map), which is what
   lets it show bands this radio is not listening to. Read that section for the
   one real caveat — RBN lines carry no locators, so paths are placed from
   country centres.
@@ -4742,10 +4944,10 @@ filters, the world map — is [§9.1](#91-spot-feeds-dx-cluster-pota-sota-psk-re
   whether it was downloaded, where your own station file lives, **Reload** to
   re-read it after an edit, and **Download schedule now** to refetch the season
   immediately. See
-  [§9.6](#96-broadcast-stations-on-longwave-and-shortwave).
+  [§10.6](#106-broadcast-stations-on-longwave-and-shortwave).
 
 FreeDV Reporter is a spot source too, but has its own tab —
-[5.6](#56-freedv-freedv-reporter).
+[6.6](#66-freedv-freedv-reporter).
 
 
 **WSPRnet.** Two independent halves, both using the callsign and grid from the
@@ -4760,13 +4962,13 @@ General tab:
   the WSPR panel with a `→`, and their reporters go on the map. See
   [§3.11](#311-wspr-weak-signal-propagation-reporter).
 
-### 5.6 FreeDV: FreeDV Reporter
+### 6.6 FreeDV: FreeDV Reporter
 
 ![The FreeDV tab: FreeDV Reporter station, server and reporting settings](images/settings-freedv.jpg)
 
 [FreeDV Reporter](https://qso.freedv.org/) is where FreeDV operators announce
 where they are listening and who they are hearing; sdroxide talks to it in both
-directions. What that gets you is [§9.5](#95-freedv-reporter-qsofreedvorg); the
+directions. What that gets you is [§10.5](#105-freedv-reporter-qsofreedvorg); the
 tab itself is:
 
 - **Enable** — connects while ticked. You are only *shown* to others while the
@@ -4787,13 +4989,13 @@ tab itself is:
   (`OE3JJS / JN78ve — SDRoxide 0.8.0`) and whether the connection is up.
 - **APPLY** connects or disconnects and saves.
 
-### 5.7 Uploads: callsign lookup and QSL services
+### 6.7 Uploads: callsign lookup and QSL services
 
 ![The Uploads tab: callsign lookup, eQSL / QRZ / Club Log upload, and LoTW confirmations](images/16-settings-uploads.jpg)
 
 The **Uploads** tab holds every online account the logbook uses. All of it is
 stored in plaintext in `net.json`. How the features behave is
-[§9.2](#92-callsign-lookup) and [§9.3](#93-uploading-qsos-eqsl-qrz-club-log-lotw);
+[§10.2](#102-callsign-lookup) and [§10.3](#103-uploading-qsos-eqsl-qrz-club-log-lotw);
 the fields are:
 
 - **Callsign lookup → Provider** — `QRZ.com` (needs a QRZ username and password
@@ -4812,11 +5014,11 @@ the fields are:
 At the bottom of the tab, **APPLY** saves everything above, and
 **SYNC CONFIRMATIONS** pulls your LoTW/eQSL confirmations into the log.
 
-### 5.8 Winlink: radio email account
+### 6.8 Winlink: radio email account
 
 Everything the Winlink mailbox needs to identify itself and decide where to
 forward. What the feature *does* — the MAIL window, composing, the packet
-panel — is [§10](#10-winlink-radio-email); this is the tab.
+panel — is [§11](#11-winlink-radio-email); this is the tab.
 
 All of it is stored in plaintext in `net.json`, **the account password
 included**, exactly as the QRZ, Club Log and LoTW credentials on the Uploads tab
@@ -4850,7 +5052,7 @@ automatically for many countries.
 - **Radio (packet)** — call an RMS gateway on the air. The radio has to be in
   **PACKET** or **PACKET-HF** and your station call (with an SSID) has to be set
   in the packet setup dialog; nothing transmits until it is. See
-  [§10](#10-winlink-radio-email).
+  [§11](#11-winlink-radio-email).
 
 Choosing **Radio (packet)** reveals the gateway fields:
 
@@ -4918,7 +5120,7 @@ network tab, the fields above are edited in a scratch copy until it is pressed �
 *so an account typed in and left unapplied will look saved and still fail with
 "set a Winlink callsign and password" when you press CONNECT.*
 
-### 5.9 Servers: letting other programs drive the radio
+### 6.9 Servers: letting other programs drive the radio
 
 The **Servers** tab makes sdroxide the radio for other software. Three sections
 share the tab, one above the other, and all can run at the same time.
@@ -4939,7 +5141,7 @@ two radios at once. Additional radios start with the TCI server disabled, since
 its default port is already taken by the first radio's: enable it and pick a
 free port here.
 
-#### 5.8.1 Hamlib rigctld server
+#### 6.8.1 Hamlib rigctld server
 
 ![The Servers tab, Hamlib rigctld section](images/settings-servers-hamlib.jpg)
 
@@ -4989,7 +5191,7 @@ that read the mode and periodically write it back — WSJT-X does — therefore
 cannot knock a running FT8 session out of its mode: setting the mode already
 reported changes nothing.
 
-#### 5.8.2 Built-in TCI server
+#### 6.8.2 Built-in TCI server
 
 ![The Servers tab, built-in TCI server section](images/settings-servers-tci.jpg)
 
@@ -5040,7 +5242,7 @@ A few things worth knowing:
 - **Receive pauses while you transmit**, unless the radio is full-duplex — the
   same as any other TCI rig.
 
-#### 5.8.3 WSJT-X UDP broadcast
+#### 6.8.3 WSJT-X UDP broadcast
 
 The logging ecosystem around FT8 — **GridTracker**, **JTAlert**, **N1MM+** and
 **Log4OM** — learns what a station is doing from the datagrams WSJT-X sends on
@@ -5062,10 +5264,10 @@ This one is **output only**: nothing is read from the socket, so no program on
 it can tune or key the radio. Programs that want to *drive* sdroxide use rigctld
 or the TCI server above.
 
-### 5.10 TLE: satellites and their frequencies
+### 6.10 TLE: satellites and their frequencies
 
 The **TLE** tab decides which satellites the tracker in the 3D view
-([6](#6-solar-system-3d-view)) follows, and what frequencies it shows for them.
+([7](#7-solar-system-3d-view)) follows, and what frequencies it shows for them.
 
 Out of the box it follows the **amateur radio** group and the **ISS**. Both are
 ordinary subscriptions, so unlike earlier versions they can be switched off,
@@ -5083,7 +5285,7 @@ what feeds the browser's 3D view. So this tab configures the same set of
 satellites from anywhere — the shack machine, a native remote client, or a
 browser tab — and **UPDATE NOW** asks the engine to do the fetching.
 
-#### 5.9.1 Subscriptions
+#### 6.9.1 Subscriptions
 
 ![The TLE subscriptions management](images/settings-tle1.jpg)
 
@@ -5146,11 +5348,11 @@ amateur group shows the curated few with rings and labels and everything else as
 dots behind `ALL SATS` — exactly as it behaved when it was built in.
 
 Subscriptions refresh **while the 3D view is open**, which is the same rule the
-rest of that window's network activity follows ([6](#6-solar-system-3d-view)).
+rest of that window's network activity follows ([7](#7-solar-system-3d-view)).
 **UPDATE NOW** fetches them all immediately without opening it. Fetched listings
 are cached on disk, so they survive a restart and keep working offline.
 
-#### 5.9.2 Pasted element sets
+#### 6.9.2 Pasted element sets
 
 ![The manual TLE input area](images/settings-tle2.jpg)
 
@@ -5171,12 +5373,12 @@ in by hand is a clear enough statement of interest. They also **override** a
 subscribed element set for the same satellite, so this is how you put a fresher
 ISS TLE in front of the one CelesTrak served this morning.
 
-#### 5.9.3 Frequencies
+#### 6.9.3 Frequencies
 
 ![The TLE frequency management](images/settings-tle3.jpg)
 
 These are the rows the pass table shows underneath a pass
-([6](#6-solar-system-3d-view)). Give a catalogue number and press **+
+([7](#7-solar-system-3d-view)). Give a catalogue number and press **+
 Satellite**: if the built-in table knows it, the entry starts as a copy of it,
 so correcting one frequency does not mean retyping the beacon and the
 transponder as well.
@@ -5193,7 +5395,7 @@ again.
 
 ---
 
-## 6. Solar system 3D view
+## 7. Solar system 3D view
 
 The **☀ 3D** button in the Display module opens the solar system in three
 dimensions — the Sun, the Earth and the Moon, the other seven planets and
@@ -5201,7 +5403,7 @@ eighteen of their moons — with live solar imagery, sunspot regions and
 coronal-mass-ejection trajectories. This enables operators to see if anything is
 on its way here, and when it will arrive.
 
-In the native app this is a second window. In the [web client](#8-web-operation) it
+In the native app this is a second window. In the [web client](#9-web-operation) it
 is a second browser tab, with the same controls, the same layers and the same
 QSO visualisation; there, the data below is fetched by the server and relayed to
 your browser rather than fetched by the browser itself. Several people may watch
@@ -5235,7 +5437,7 @@ QSO, the auroral oval, a satellite footprint crossing at 3 a.m.
 
 ![The Earth with the FT8 coastlines, the QTH ring and the sub-solar point](images/3d-earth.jpg)
 
-### 6.1 Navigating: the camera, targets and the auto tour
+### 7.1 Navigating: the camera, targets and the auto tour
 
 **Mouse:**
 
@@ -5267,7 +5469,7 @@ contact pulls back until both ends and the whole arc are in the picture. When
 the QSO ends the camera rejoins the tour at whichever viewpoint is nearest.
 Switching the `QSO` layer off leaves AUTO on its normal loop.
 
-### 6.2 The layers
+### 7.2 The layers
 
 **Layers** — `ORBITS` (orbital paths, sampled from the real ephemeris, so they
 are the true eccentric orbits), `CLOUDS`, `PLANETS`, `CME`, `SUN OBS`, `LABELS`,
@@ -5286,7 +5488,7 @@ The star field and the heliographic graticule (the solar rotation axis, equator
 and parallels) have no buttons: they are the backdrop and the coordinate frame
 everything else is read against, and are always drawn.
 
-### 6.3 The planets, moons and small bodies
+### 7.3 The planets, moons and small bodies
 
 **The PLANETS layer** adds the rest of the solar system: the seven other
 planets, eighteen major moons, and Saturn's and Uranus's rings. Names are shown
@@ -5383,7 +5585,7 @@ Outside 2026–2076 the arcs simply run on, which is a two-body extrapolation of
 perturbed orbit and decays quickly. Scrub the clock past either end and the info
 card says so rather than letting the body sit there looking authoritative.
 
-### 6.4 Clouds
+### 7.4 Clouds
 
 **The CLOUDS layer** puts the weather on the globe, live, from NOAA/NESDIS's
 Global Mosaic of Geostationary Satellite Imagery — GOES-East and GOES-West, both
@@ -5443,14 +5645,14 @@ mountain range. Altitudes are fractions of the radius the globe is *drawn* at,
 so the deck stays glued to the surface at any setting of the **body** scale.
 
 **Cloud rendering** on the UI settings tab
-([5.3](#53-ui-display-preferences-and-voice-announcements)) chooses how the deck
+([6.3](#63-ui-display-preferences-and-voice-announcements)) chooses how the deck
 is drawn. *Layered* stacks slices through the troposphere and is the cheap
 option. *Volumetric* walks a ray through it instead, so the Sun casts the cloud
 tops onto the deck below and a flash glows out *through* the storm making it
 rather than only brightening its outside — at several times the cost per pixel.
 Both draw the same weather.
 
-### 6.5 The aurora
+### 7.5 The aurora
 
 **The AURORA layer** puts the auroral oval on the globe, live, from NOAA's
 OVATION model — a 1°×1° grid of the probability of seeing aurora, issued every
@@ -5503,7 +5705,7 @@ geomagnetic latitude is also several degrees from geographic at most longitudes.
 The oval on the globe needs none of those caveats, so prefer it when the two
 seem to disagree.
 
-### 6.6 Satellites
+### 7.6 Satellites
 
 **The SATS layer** puts amateur-radio satellites in orbit around the globe, live,
 propagated with SGP4 from CelesTrak element sets. Ten popular ones are drawn by
@@ -5514,7 +5716,7 @@ a plain dot; the orbit rings stay on the curated few, because ninety rings at
 once is unreadable.
 
 Which satellites arrive at all is set in the **TLE** settings tab
-([5.9](#510-tle-satellites-and-their-frequencies)) — the amateur group and the
+([6.10](#610-tle-satellites-and-their-frequencies)) — the amateur group and the
 ISS are subscribed by default, and you can add the weather birds, the cubesats
 or your own element sets beside them. A set you paste in there is always drawn
 with its ring and label, and overrides a fetched one for the same satellite.
@@ -5584,12 +5786,12 @@ The built-in list covers the satellites drawn by default plus a few more, and it
 is reference data transcribed from the AMSAT list rather than anything derived
 from the element set — transponders do get switched and schedules do change. Add
 your own or correct a wrong one in the **TLE** settings tab
-([5.9](#510-tle-satellites-and-their-frequencies)), where your entries override
+([6.10](#610-tle-satellites-and-their-frequencies)), where your entries override
 the built-in table. They belong to the station, so the browser's 3D view shows
 them too — it is fed by the same engine — and a correction made at the shack
 machine is on screen in every open tab.
 
-### 6.7 Your QSOs on the globe
+### 7.7 Your QSOs on the globe
 
 **The QSO layer** puts your FT8/FT4/FT2 traffic on the globe. Every station decoded
 in the last two minutes is a white dot that fades as it ages — the same set the
@@ -5631,7 +5833,7 @@ to the arc's highest point in three dimensions rather than to a place on the
 screen, so it rides the arc as you turn the globe, with a leader down to the
 point it belongs to. It sits over that point where there is room and flips under
 it where there is not, and it wears whichever **Window style** you have chosen
-([5.3](#53-ui-display-preferences-and-voice-announcements)), like every other
+([6.3](#63-ui-display-preferences-and-voice-announcements)), like every other
 window and popup. In JS8 the card follows the arc to whoever the composer is
 aimed at, exactly as the arc itself does.
 
@@ -5650,7 +5852,7 @@ globe then is the hour being replayed, not the present, and the two are not
 mixed. The history is kept only while sdroxide runs, so a fresh start begins
 with an empty hour that fills as the decodes come in.
 
-### 6.8 The propagation heat map
+### 7.8 The propagation heat map
 
 ![Propagation heatmap](images/propagation.jpg)
 
@@ -5658,7 +5860,7 @@ with an empty hour that fills as the decodes come in.
 band, from every mode this station runs. Everything this station hears is
 evidence about the ionosphere, and it is all pooled into one picture: WSPR both
 ways, FT8/FT4/FT2 and JS8 decodes, and the logbook. With the
-[Reverse Beacon Network](#55-spots-spot-feeds) switched on, so is everything
+[Reverse Beacon Network](#65-spots-spot-feeds) switched on, so is everything
 *everyone else* hears. The **PROP** button above the flat map in the FT8 and WSPR
 operating panels draws the same thing under the panel map.
 
@@ -5703,7 +5905,7 @@ it. The legend gives the absolute path count the brightest cell stands for, so
 the colours are never relative without saying so.
 
 **The Reverse Beacon Network layer.** **RBN is on by default** (under
-[Settings → Spots](#55-spots-spot-feeds), and it needs only the callsign from
+[Settings → Spots](#65-spots-spot-feeds), and it needs only the callsign from
 the General tab). It reads the network of CW and RTTY skimmers that listen to
 whole bands continuously, worldwide, and feeds every spot they publish into this
 same field. That is the one thing that fills in the bands this radio is not on:
@@ -5729,7 +5931,7 @@ would bury every human spot in the window, and they are measurements rather than
 invitations to call anyone. Narrow the feed with a `set/filter` line in the RBN
 settings if you only care about one continent.
 
-**The `HEARD ≥` row.** The [propagation panel](#612-the-propagation-panel) gains
+**The `HEARD ≥` row.** The [propagation panel](#712-the-propagation-panel) gains
 a line under the ionosonde MUF: the highest frequency that has demonstrably got
 through near your QTH, normalised to a 3000 km path so short and long paths are
 comparable. It is a **floor**, not an estimate — the signal got through, so the
@@ -5767,11 +5969,11 @@ field: whatever the half-life is set to is how long a band lingers here after it
 shuts. The same caveat applies as to the map itself — a band nobody has listened
 to has no evidence and no bar, which the footer says out loud.
 
-The heat map is also relayed to the [browser's 3D tab](#8-web-operation), unlike
+The heat map is also relayed to the [browser's 3D tab](#9-web-operation), unlike
 the awards layer: it is live data about the station's own conditions, which is
 what that relay is for.
 
-### 6.9 The awards layer
+### 7.9 The awards layer
 
 **The AWARDS layer** paints your logbook's DXCC coverage on the Earth as a map
 of what is *missing*. Every entity in the bundled country file gets a marker at
@@ -5781,14 +5983,14 @@ once one has. The gaps are what stands out — an evening's chase has somewhere 
 aim. A key in the bottom-right corner counts the three states.
 
 It follows the band filter in the **AWARDS** window
-([§9.4](#94-award-tracking)), so setting that to `20m` repaints the globe as
+([§10.4](#104-award-tracking)), so setting that to `20m` repaints the globe as
 "what am I still missing on twenty". The layer needs the Earth to fill a fair
 part of the view before it draws — three hundred markers on a planet a few
 pixels across is noise, not information — and it is off by default. In the
 browser tab it is absent entirely: the logbook lives in the main window, and the
 relay carries live data rather than your records.
 
-### 6.10 The Sun
+### 7.10 The Sun
 
 **Sun** — which SDO product wraps the Sun:
 
@@ -5817,7 +6019,7 @@ fitted, and cones are coloured cyan through pink with increasing speed.
 
 ![CME trajectory cones seen from outside the Earth's orbit](images/3d-cme.jpg)
 
-### 6.11 Scale and time
+### 7.11 Scale and time
 
 **Scale** — the Earth is 23 000 times smaller than its distance from the Sun, so
 at true scale it is invisible whenever the Sun is in frame. `body` exaggerates
@@ -5852,14 +6054,14 @@ all, forwards and backwards.
 with the `±6h`/`±24h` buttons turns it yellow and relabels it `SIM`, denoting  
 that the time displayed is not the current real time.
 
-### 6.12 The propagation panel
+### 7.12 The propagation panel
 
 **Propagation panel** — top right, the numbers worth checking before you call CQ:
 
 | Row | What it is |
 | --- | --- |
 | `MUF` | Maximum usable frequency for a 3000 km path near your QTH, interpolated from the ionosonde network. Green above 24 MHz, cyan above 14, yellow below. |
-| `HEARD ≥` | The highest frequency that has demonstrably got through near your QTH, from what this station has actually decoded, normalised to a 3000 km path. A **floor**, not an estimate — see [§6.8](#68-the-propagation-heat-map). Only appears once two independent paths agree. |
+| `HEARD ≥` | The highest frequency that has demonstrably got through near your QTH, from what this station has actually decoded, normalised to a 3000 km path. A **floor**, not an estimate — see [§7.8](#78-the-propagation-heat-map). Only appears once two independent paths agree. |
 | `Kp / A` | Planetary geomagnetic indices. Green when quiet, yellow from Kp 4, pink from Kp 5 (a storm — polar paths degrade and aurora becomes possible). |
 | `F10.7` | 10.7 cm solar radio flux in solar flux units, the standard proxy for ionisation. Under about 90 the high bands stay shut; over 150 they open up. |
 | `X-ray` | Current GOES soft X-ray class. Turns pink at M class and above, which is when the D layer starts absorbing HF on the daylit side. |
@@ -5867,7 +6069,7 @@ that the time displayed is not the current real time.
 **Bands-open chart** — under the propagation numbers: one bar per band, showing
 how much of the world each band is getting through to right now, read off the
 same propagation field and with the same memory. See
-[§6.8](#68-the-propagation-heat-map) for what the bars measure and why it is
+[§7.8](#78-the-propagation-heat-map) for what the bars measure and why it is
 not a contact count.
 
 The line under the MUF says how far away the nearest contributing ionosonde is
@@ -5877,7 +6079,7 @@ a value drawn from sounders 3000 km away on the other side of it is a guess, and
 the panel says so rather than hiding it. When no sounder is in range it reads
 `no sounder`.
 
-### 6.13 Readouts and the CME arrival banner
+### 7.13 Readouts and the CME arrival banner
 
 **Readouts** — the card at the bottom left gives UTC, the sub-solar point, the
 solar disk's B0 and L0 angles, the Sun's elevation and azimuth from your QTH
@@ -5893,7 +6095,7 @@ Arrival is a straight-line constant-speed estimate from the fitted cone. Proper
 forecasts model the CME's drag against the solar wind and are typically good to 
 about ±6 hours; treat this the same way.
 
-### 6.14 Where the data comes from
+### 7.14 Where the data comes from
 
 Everything on this list is fetched **only while this window is open** —
 closing it stops the background fetcher entirely, and
@@ -5942,12 +6144,12 @@ global maps (Jupiter, Saturn); coastlines and borders from
 
 ---
 
-## 7. Remote operation
+## 8. Remote operation
 
 sdroxide can run as a headless server and be controlled from a second sdroxide
 instance (a native remote client) elsewhere on the network.
 
-### 7.1 Start the server
+### 8.1 Start the server
 
 ```
 sdroxide --server --port 4950
@@ -5958,7 +6160,7 @@ WebSocket control connection. The default port is **4950** and the default bind
 address is **all interfaces** (`0.0.0.0`).
 
 Set a username and password first — see
-[§ 7.3](#73-sign-in-who-may-operate-the-station). Without one the server is open
+[§ 7.3](#83-sign-in-who-may-operate-the-station). Without one the server is open
 to anyone who can reach the port, and says so in its log at startup.
 
 **A station with more than one radio** ([2.17](#217-running-more-than-one-radio))
@@ -5981,7 +6183,7 @@ and keeps trying to attach, the same way it would in the GUI.
 One *connection* operates one radio: the single-client rule is per radio, so
 two people can work two radios of the same station at once — and a native
 client makes one connection per radio by itself, so one operator gets the whole
-station in tabs ([7.2](#72-connect-a-native-remote-client)). A radio id that the
+station in tabs ([8.2](#82-connect-a-native-remote-client)). A radio id that the
 station does not have is refused with a 404 rather than quietly answered by a
 different radio.
 
@@ -5991,7 +6193,7 @@ transmit at a time, as in the shack. Note that each radio has its own
 built-in servers on more than one radio, give each a port of its own, or the
 second one to start finds the address taken.
 
-### 7.2 Connect a native remote client
+### 8.2 Connect a native remote client
 
 From the GUI, on any other machine running sdroxide: open **Settings →
 Remote**, enter the server's **Address** and **Port**, and press **CONNECT**.
@@ -6002,7 +6204,7 @@ between them, and ⊞ puts two side by side ([2.17](#217-running-more-than-one-r
 Your own radio keeps running while you work the remote one. To hang up, close
 the tab from the roster at the top of **Settings → Radio**; nothing on the
 server is changed by that. If the server asks for a username and password, its
-sign-in screen appears in the new tab ([7.3](#73-sign-in-who-may-operate-the-station)).
+sign-in screen appears in the new tab ([8.3](#83-sign-in-who-may-operate-the-station)).
 
 The address is remembered in `config.toml` on the machine you typed it on, so
 the next connection is one button. **Address** takes a host name, an IPv4 or
@@ -6033,7 +6235,7 @@ you typed; the others are named as the station names them.
 Each of those tabs is a connection of its own. **You still sign in once**: a
 station that asks for a password asks each connection separately, and the tabs
 behind the one you answered let themselves in with what you gave it, for as
-long as the program runs ([7.3](#73-sign-in-who-may-operate-the-station)). Each
+long as the program runs ([8.3](#83-sign-in-who-may-operate-the-station)). Each
 tab does carry its own audio and spectrum, though, so on a thin link close the
 radios you are not using: a tab you close stays closed until you dial the
 station again.
@@ -6041,7 +6243,7 @@ station again.
 To open just one radio of a station, name it in the address:
 `sdroxide --connect HOST:4950/ws/1`, or type the full `ws://HOST:4950/ws/1` in
 the **Address** box. `/radios` on the server says which id is which
-([7.1](#71-start-the-server)).
+([8.1](#81-start-the-server)).
 
 Either way, a remote client is the full sdroxide GUI running against the server:
 control, state, memories, meters, spectrum, FT8 decodes and logging, and skimmer
@@ -6049,11 +6251,11 @@ spots all work. Receive audio streams down (48 kHz mono), and your microphone is
 sent up to the server while you transmit. The remote client uses your local
 speakers and microphone for audio.
 
-### 7.3 Sign-in: who may operate the station
+### 8.3 Sign-in: who may operate the station
 
 The server can ask every remote client for a username and password. Set them on
 the machine the radio is attached to, either in **Settings → General → Remote
-access** ([5.1](#51-general-station-audio-and-remote-access)) or by hand in
+access** ([6.1](#61-general-station-audio-and-remote-access)) or by hand in
 `config.toml`:
 
 ```toml
@@ -6084,9 +6286,9 @@ in plain text either way).
 > password itself crosses in the clear over plain `ws://`. On anything but a
 > trusted LAN, run the server behind a VPN or an HTTPS reverse proxy — which is
 > also what the browser client needs before it will give you audio
-> ([8.3](#83-audio-needs-a-secure-context)).
+> ([9.3](#93-audio-needs-a-secure-context)).
 
-### 7.4 What to know
+### 8.4 What to know
 
 - **The radio's own settings travel.** **Settings → Radio** on a remote client
   shows the *server's* interface panel, read from the `radio.json` on the
@@ -6123,21 +6325,21 @@ in plain text either way).
 - **A sign-in is asked for again after a reconnect.** Each socket is challenged
   on its own; *remember* is what makes that invisible.
 - **No encryption.** The server speaks plain `ws://` and binds to all interfaces
-  by default. The sign-in ([7.3](#73-sign-in-who-may-operate-the-station))
+  by default. The sign-in ([8.3](#83-sign-in-who-may-operate-the-station))
   decides who may operate the radio, but nothing here is confidential in
   transit. Put the server behind a VPN or an HTTPS reverse proxy if it is
   reachable from an untrusted network.
 
 ---
 
-## 8. Web operation
+## 9. Web operation
 
 The same server serves a browser client, so you can operate from any device with
 a web browser.
 
 ![The web client in a browser](images/13-web-client.png)
 
-### 8.1 Serve the web client
+### 9.1 Serve the web client
 
 Builds that bundle the web UI (compiled with the `embed-web` feature, including
 the packaged binaries) serve it automatically:
@@ -6171,29 +6373,29 @@ trunk-built web directory:
 sdroxide --server --web-root path/to/sdroxide-web/dist
 ```
 
-### 8.2 What works in the browser
+### 9.2 What works in the browser
 
 The web client mirrors the native UI: tuning, mode and band changes, the
 panadapter and waterfall, receive audio, FT8/FT4/FT2, the logbook, memories, and
 meters. Microphone transmit is supported where the browser grants microphone
-access — see [audio needs a secure context](#83-audio-needs-a-secure-context)
+access — see [audio needs a secure context](#93-audio-needs-a-secure-context)
 below. **Settings → Radio** shows the server device's own settings panel — its
 gains, its antenna ports, and everything else its interface has, read from and
 written back to the `radio.json` on the machine the radio is attached to
-([7.4](#74-what-to-know)) — so you can swap feedline, wind an LNA back or take
+([8.4](#84-what-to-know)) — so you can swap feedline, wind an LNA back or take
 a dongle's AGC off from a phone. Which interface the server opens is reachable
 from here too: the Rescan and Discover buttons enumerate the *server's* buses
 and network, so you can pick another radio out of that list and press **Apply /
 reconnect**.
-The [solar system 3D view](#6-solar-system-3d-view) works too: **☀ 3D**
+The [solar system 3D view](#7-solar-system-3d-view) works too: **☀ 3D**
 opens it in a new tab, which connects to a separate read-only endpoint and so
 does not consume the single control connection — though it is challenged for the
 same sign-in, since it is shown your QTH and everything the station is decoding.
 The same single-client and sign-in notes as
-[remote operation](#7-remote-operation) apply, and nothing here is encrypted —
+[remote operation](#8-remote-operation) apply, and nothing here is encrypted —
 put the server behind HTTPS if it is reachable from an untrusted network.
 
-### 8.3 Audio needs a secure context
+### 9.3 Audio needs a secure context
 
 Browsers only hand out the two APIs the web client's audio is built on —
 `AudioWorklet` for playback and `getUserMedia` for the microphone — to pages in
@@ -6211,7 +6413,7 @@ non-secure origin says so in a banner across the top.
 
 This is a browser rule, not a server setting: sdroxide cannot opt out of it. To
 get audio from another machine, put the server behind an HTTPS reverse proxy (a
-[VPN](#7-remote-operation) or tunnel with TLS), or forward the port to your own
+[VPN](#8-remote-operation) or tunnel with TLS), or forward the port to your own
 machine so the browser sees `localhost`:
 
 ```
@@ -6223,14 +6425,14 @@ The native remote client (`sdroxide --connect`) has no such restriction — it
 uses your local sound devices directly and carries audio over the same
 WebSocket.
 
-### 8.4 Phones and tablets
+### 9.4 Phones and tablets
 
 The control strip is eight boxes of a fixed width. On a desktop they sit in a
 row; on a narrow screen they cannot shrink, only wrap, so the strip would eat
 the screen and the widest boxes would still run off the side of it. Below about
 1100 points wide the strip is replaced by menus, and below about 600 — or on
 anything shorter than 440 points, which is a phone held sideways — by a compact
-strip. **Settings → UI → Layout** ([5.3](#53-ui-display-preferences-and-voice-announcements)) forces a
+strip. **Settings → UI → Layout** ([6.3](#63-ui-display-preferences-and-voice-announcements)) forces a
 particular one; **Auto** is the default and picks from the window.
 
 The same rule applies to the native app, so dragging a desktop window narrow
@@ -6298,7 +6500,7 @@ stack one above the other instead of sharing the width.
 thing in that column and the only part of it that is neither the state of the
 contact nor a control that changes it, and on a tablet it was taking the room
 the transmit buttons needed. The same stations are still on the panadapter and
-in the [3D view](#6-solar-system-3d-view).
+in the [3D view](#7-solar-system-3d-view).
 
 Touch gestures on the waterfall:
 
@@ -6313,35 +6515,35 @@ Buttons, sliders and entry fields are all drawn larger on a touched layout, so a
 row of controls is a row of finger-sized targets rather than 22-point ones.
 
 Remember that **audio needs a secure context**
-([8.3](#83-audio-needs-a-secure-context)): a phone opening the server over plain
+([9.3](#93-audio-needs-a-secure-context)): a phone opening the server over plain
 HTTP on the LAN gets the waterfall and the controls but no sound at all.
 
 ---
 
-## 9. Spotting, awards, and QSL upload
+## 10. Spotting, awards, and QSL upload
 
 SDR Oxide features spots you can click to work, automatic callsign lookup, 
 one-click QSO upload, and award tracking. This chapter is about what they *do*;
-the settings behind them are on the **Spots** ([§5.5](#55-spots-spot-feeds)),
-**FreeDV** ([§5.6](#56-freedv-freedv-reporter)) and **Uploads**
-([§5.7](#57-uploads-callsign-lookup-and-qsl-services)) tabs of the Settings
+the settings behind them are on the **Spots** ([§6.5](#65-spots-spot-feeds)),
+**FreeDV** ([§6.6](#66-freedv-freedv-reporter)) and **Uploads**
+([§6.7](#67-uploads-callsign-lookup-and-qsl-services)) tabs of the Settings
 window, and they are surfaced by the **SPOTS** and **AWARDS** buttons in the
 System module. Your callsign and grid come from the **General** tab and are used
 by all of them.
 
 All of this runs on the machine with the radio (the server, in remote/web mode),
 so a browser or remote client uses it too. Credentials are stored in plaintext in
-`net.json` (see [§12](#12-configuration-files)).
+`net.json` (see [§13](#13-configuration-files)).
 
-### 9.1 Spot feeds (DX cluster, POTA, SOTA, PSK Reporter)
+### 10.1 Spot feeds (DX cluster, POTA, SOTA, PSK Reporter)
 
 > FreeDV Reporter is configured separately, on its own Settings tab — see
-> [§9.5](#95-freedv-reporter-qsofreedvorg).
+> [§10.5](#105-freedv-reporter-qsofreedvorg).
 
 ![Live spots as clickable markers on the panadapter, and the SPOTS window](images/14-spots-panel.jpg)
 
 Enable the feeds you want — DX cluster, POTA, SOTA, PSK Reporter — on the
-**Spots** tab of Settings ([§5.5](#55-spots-spot-feeds)) and press **APPLY**.
+**Spots** tab of Settings ([§6.5](#65-spots-spot-feeds)) and press **APPLY**.
 Spots then appear two ways:
 
 - **On the panadapter** — colour-coded, clickable boxes along the bottom of the
@@ -6377,12 +6579,12 @@ frequency, mode, and any grid/reference from the spot). If auto-lookup is on
 low so the signal lands in the CW passband. Broadcast stations only tune — they
 have no callsign to log or look up.
 
-### 9.2 Callsign lookup
+### 10.2 Callsign lookup
 
 Auto-fill operator details from an online callsign database — **QRZ.com** (needs
 an active XML-data subscription) or **HamQTH** (free). Pick the **Provider** and
 enter its credentials on the **Uploads** tab of Settings
-([§5.7](#57-uploads-callsign-lookup-and-qsl-services)).
+([§6.7](#67-uploads-callsign-lookup-and-qsl-services)).
 
 Tick **Auto-fill name/QTH/grid on spot click & QSO** to look a call up
 automatically when you click a spot, start an FT8 QSO, or finish typing a call in
@@ -6391,10 +6593,10 @@ it on demand. Lookups only fill fields you've left blank, so they never overwrit
 what you typed; results also enrich the matching logged QSO (name, grid, DXCC,
 zones).
 
-### 9.3 Uploading QSOs (eQSL, QRZ, Club Log, LoTW)
+### 10.3 Uploading QSOs (eQSL, QRZ, Club Log, LoTW)
 
 Enter your eQSL, QRZ Logbook and Club Log accounts on the **Uploads** tab
-([§5.7](#57-uploads-callsign-lookup-and-qsl-services)). Then either tick
+([§6.7](#67-uploads-callsign-lookup-and-qsl-services)). Then either tick
 **Auto-upload each new QSO** and the target service(s) to push every QSO as it is
 logged, or upload individual QSOs from the logbook with the per-row **UP**
 button. Each upload sets that QSO's status flag (the **↑** in the logbook), and
@@ -6410,7 +6612,7 @@ and matches them against the log to set the **✓** (confirmed) status, which dr
 worked-vs-confirmed in the awards view. (LoTW upload stays manual; only the
 confirmation download is automated.)
 
-### 9.4 Award tracking
+### 10.4 Award tracking
 
 ![The AWARDS window: DXCC / WAS / WAZ / grids, worked vs confirmed](images/18-awards.jpg)
 
@@ -6438,7 +6640,7 @@ band filter is the only thing that narrows what is counted, and it is a view, no
 a state.
 
 **On the globe** — the 3D view's `AWARDS` layer
-([§6](#6-solar-system-3d-view)) paints the same tally on the Earth as a "what am
+([§7](#7-solar-system-3d-view)) paints the same tally on the Earth as a "what am
 I still missing" heat map: every DXCC entity in the country file gets a marker at
 its nominal centre, orange and breathing where you have never worked it, amber
 where you have but it is unconfirmed, and a dim green dot once a QSL has come
@@ -6446,7 +6648,7 @@ back. A key in the bottom-right corner gives the counts. It follows the same ban
 filter as this window, so switching to `20m` here repaints the globe as "what is
 missing on twenty".
 
-### 9.5 FreeDV Reporter (qso.freedv.org)
+### 10.5 FreeDV Reporter (qso.freedv.org)
 
 [FreeDV Reporter](https://qso.freedv.org/) is where FreeDV operators announce
 where they are listening and who they are hearing. SDRoxide talks to it in both
@@ -6454,7 +6656,7 @@ directions: your station appears on the site, and everyone else's appears in
 SDRoxide as spots.
 
 Turn it on and point it at a server on the **FreeDV** tab of Settings
-([§5.6](#56-freedv-freedv-reporter)). You are only *shown* to others while the
+([§6.6](#66-freedv-freedv-reporter)). You are only *shown* to others while the
 radio is in **RADE** mode; in any other mode the connection stays up but your
 station is hidden, so the site never lists you as working FreeDV when you are
 actually on CW.
@@ -6474,7 +6676,7 @@ connects read-only for twenty seconds and prints the stations and events it saw.
 It uses the server's view role, so it needs no radio and never makes you visible
 to anyone.
 
-### 9.6 Broadcast stations on longwave and shortwave
+### 10.6 Broadcast stations on longwave and shortwave
 
 SDRoxide labels longwave and shortwave broadcast stations on the waterfall in
 orange, alongside the network spots — so a carrier on 225 kHz comes up as
@@ -6508,7 +6710,7 @@ current instead of shipping a snapshot that goes stale:
 
 - **On first run** it downloads the current season's schedule from
   [EiBi](https://www.eibispace.de/) in the background and caches it under
-  `broadcast/` in the config directory ([§12](#12-configuration-files)).
+  `broadcast/` in the config directory ([§13](#13-configuration-files)).
 - **At each season change** — the last Sunday in March and the last Sunday in
   October — the cache no longer matches the season SDRoxide is in, so the new
   file is fetched. The check happens at startup and once a day thereafter, and
@@ -6585,7 +6787,7 @@ Longwave and the HF standard-time stations are not in EiBi's file — it starts 
 
 ---
 
-## 10. Winlink radio email
+## 11. Winlink radio email
 
 **MAIL** in the system button area opens the mailbox. Winlink is the amateur
 store-and-forward email network: messages are held by a Common Message Server
@@ -6603,7 +6805,7 @@ password arrives as a service message; Winlink validates amateur licences
 automatically for many countries.
 
 Everything sdroxide needs is on **Settings → Winlink**, field by field in
-[§5.8](#58-winlink-radio-email-account): the account callsign and password, the
+[§6.8](#68-winlink-radio-email-account): the account callsign and password, the
 route (internet or radio), the gateway to call over the air, and the timer. Two
 of them catch people out — the password is **case-sensitive**, and the tab has
 its own **APPLY** button that has to be pressed before the account reaches the
@@ -6612,7 +6814,7 @@ mailbox.
 > **A connection refused before it starts.** Winlink's production servers accept
 > only client names registered with them. sdroxide is not registered yet, so the
 > **Client name** field on that tab is what gets an operator in for now; see
-> [§5.8](#58-winlink-radio-email-account).
+> [§6.8](#68-winlink-radio-email-account).
 
 ### Using it
 
@@ -6727,7 +6929,7 @@ sends them.
 
 ---
 
-## 11. Command-line reference
+## 12. Command-line reference
 
 | Option | Description |
 | --- | --- |
@@ -6753,11 +6955,14 @@ sends them.
 | `--width <CHARS>` | Console spectrum width in characters (default 100). |
 | `--freedv-reporter-probe <SECS>` | Connect to FreeDV Reporter read-only for SECS seconds and print what arrives. Uses the server's view role, so nothing is reported and you do not appear on the site. Needs no radio. |
 | `--freedv-reporter-host <HOST[:PORT]>` | FreeDV Reporter host for the probe (default `qso.freedv.org`). |
+| `--record-iq <PATH>` | Write every raw IQ sample the receiver delivers to PATH, in the same interleaved CF32 format `--file` reads back. For capturing a band to work on offline — see [5.4](#54-nothing-is-being-decoded). Large: 8 bytes a sample, so about 16 MB a second at 2 Msps, and it runs until you quit. Radio 0 only. |
 | `--oob-tx` | Allow transmit on **any** frequency the hardware supports, not just the amateur bands. See below. |
 
 **Testing without a radio:** `--siggen` (built-in signal generator), `--file`
 (replay an IQ recording), `--probe` (list SoapySDR devices), and `--console`
-(a text-mode waterfall) are handy for trying things out.
+(a text-mode waterfall) are handy for trying things out. `--record-iq` is the
+other half of `--file`: capture a band once and replay it as often as a decoder
+needs.
 
 ### Transmitting outside the amateur bands: `--oob-tx`
 
@@ -6795,7 +7000,7 @@ engine.
 
 ---
 
-## 12. Configuration files
+## 13. Configuration files
 
 sdroxide stores its settings under the per-user config directory:
 
@@ -6807,25 +7012,26 @@ sdroxide stores its settings under the per-user config directory:
 
 | File | Format | Contents |
 | --- | --- | --- |
-| `config.toml` | TOML | General settings: `device_args`, `sample_rate`, `cal_offset_db`, `spectrum_fft`, `spectrum_fps`, `server_bind`, `server_port`, `tx_ham_only`, `audio_output`, `audio_input`, `region` (`"R1"` / `"R2"` / `"R3"` — the IARU region every band plan follows, [§5.1](#51-general-station-audio-and-remote-access)), plus the `[ui]` display preferences (including `theme`, `button_style` and `window_style`), the `[speech]` announcement settings ([§5.3](#53-ui-display-preferences-and-voice-announcements)), the `[remote_access]` sign-in that server mode demands ([§7.3](#73-sign-in-who-may-operate-the-station), stored in plaintext) and the `[remote_server]` address the **Remote** tab dials ([§7.2](#72-connect-a-native-remote-client)). Belongs to the machine the engine runs on — except `[ui]`, `[speech]` and `[remote_server]`, which belong to the screen in front of you. |
+| `config.toml` | TOML | General settings: `device_args`, `sample_rate`, `cal_offset_db`, `spectrum_fft`, `spectrum_fps`, `server_bind`, `server_port`, `tx_ham_only`, `audio_output`, `audio_input`, `region` (`"R1"` / `"R2"` / `"R3"` — the IARU region every band plan follows, [§6.1](#61-general-station-audio-and-remote-access)), plus the `[ui]` display preferences (including `theme`, `button_style` and `window_style`), the `[speech]` announcement settings ([§6.3](#63-ui-display-preferences-and-voice-announcements)), the `[remote_access]` sign-in that server mode demands ([§8.3](#83-sign-in-who-may-operate-the-station), stored in plaintext) and the `[remote_server]` address the **Remote** tab dials ([§8.2](#82-connect-a-native-remote-client)). Belongs to the machine the engine runs on — except `[ui]`, `[speech]` and `[remote_server]`, which belong to the screen in front of you. |
 | `radio.json` | JSON | Which radio interface is selected and everything that configures it — the CAT/HPSDR/TCI/SmartSDR/RTL-SDR/rtl_tcp/SpyServer/RX-888/Airspy HF+/SDRplay/PlutoSDR sections, the converter offset and stated tuning ranges, and the radio's sound-card device names. |
 | `digi.json` | JSON | Digital-mode operator settings: your callsign and grid, FT8/FT4/FT2 TX period, auto-sequence and message templates, and the WSPR beacon's duty cycle, power and band-hop list. |
 | `memories.json` | JSON | Saved memory channels. |
 | `bandstacks.json` | JSON | Per-band memory of your last frequency/mode/filter (up to three per band). |
-| `bandplan.json` | JSON | The band plan itself, per IARU region: band edges, the CW/data/phone/beacon/all-modes sub-segments, and the PSK and RTTY skimmer windows — all in MHz. Written from the built-in IARU tables on first start and meant to be edited; narrow a band here and the transmit lockout narrows with it. Which region applies is `region` in `config.toml`. **RELOAD BAND PLAN** on the General tab applies an edit without a restart, and deleting the file restores the defaults. See [§5.1](#51-general-station-audio-and-remote-access). |
+| `bandplan.json` | JSON | The band plan itself, per IARU region: band edges, the CW/data/phone/beacon/all-modes sub-segments, and the PSK and RTTY skimmer windows — all in MHz. Written from the built-in IARU tables on first start and meant to be edited; narrow a band here and the transmit lockout narrows with it. Which region applies is `region` in `config.toml`. **RELOAD BAND PLAN** on the General tab applies an edit without a restart, and deleting the file restores the defaults. See [§6.1](#61-general-station-audio-and-remote-access). |
 | `session.json` | JSON | Where you left the radio: the dial frequency, the mode, the RX/TX antenna ports, the AF volume, RX gain, AGC mode, squelch and noise reduction, the TX drive/tune drive/mic gain, and the front end's own gain stages (the sliders on the Radio tab's device panel), restored the next time you start. Written by the engine as you tune, so `--freq`, `--mode`, `--antenna` and `--tx-antenna` override it for a run without changing it. Gain stages are remembered by name: one your current front end does not have is kept, not thrown away, so switching back to the radio it belongs to brings it back, and a figure past what this device offers is clamped to its range. |
 | `qso_log.json` | JSON | The logbook (digital and manual QSOs, with contest/QSL fields). |
 | `net.json` | JSON | Network cockpit: DX cluster / POTA / SOTA / PSK / FreeDV Reporter / WSPRnet feed settings, and callsign-lookup / eQSL / QRZ / Club Log / LoTW credentials (stored in plaintext). |
-| `winlink/` | directory | The Winlink mailbox: `inbox/`, `outbox/`, `sent/` and `archive/`, one `.b2f` file per message holding it exactly as it rides the wire ([§10](#10-winlink-radio-email)). The account settings live in `net.json`, password included, in plaintext. |
+| `winlink/` | directory | The Winlink mailbox: `inbox/`, `outbox/`, `sent/` and `archive/`, one `.b2f` file per message holding it exactly as it rides the wire ([§11](#11-winlink-radio-email)). The account settings live in `net.json`, password included, in plaintext. |
 | `tciserver.json` | JSON | Built-in TCI server: enabled, bind address, port, advertised device name, whether clients may transmit, and the client limit. |
 | `rigctld.json` | JSON | Built-in Hamlib rigctld server: enabled, bind address, port, reported rig name, whether clients may transmit, and the client limit. |
 | `wsjtx.json` | JSON | WSJT-X UDP broadcast: enabled, destination host and port, and the name clients see. |
 | `scanner.json` | JSON | The scanner: memories or a range, the range and channel step, the level that counts as busy, the dwell, how it resumes, and which memories to skip. |
 | `skimmer.json` | JSON | Skimmers: which of CW / PSK / RTTY run, and each one's spot squelch in dB. Restored at startup; a narrowband (audio-mode) radio still forces them off without disturbing what you picked. |
+| `ism.json` | JSON | ISM decoder: whether it runs, which device families it listens for, and the burst threshold in dB. Restored at startup, and — like `skimmer.json` — a narrowband (audio-mode) radio forces it off without disturbing what you picked. |
 | `input.json` | JSON | Control inputs: keyboard bindings, panadapter mouse behaviour, mouse-button bindings, and the MIDI controller mapping. Belongs to the machine running the user interface, not the engine. |
-| `remote_login.json` | JSON | A sign-in to *somebody else's* server that you asked this client to remember ([§7.3](#73-sign-in-who-may-operate-the-station)). Written only when the **Remember on this device** box is ticked, holds the password in plaintext, and deleted when you untick it or the server refuses it. Belongs to the user interface, like `input.json`; the browser client keeps the same thing in local storage instead. |
+| `remote_login.json` | JSON | A sign-in to *somebody else's* server that you asked this client to remember ([§8.3](#83-sign-in-who-may-operate-the-station)). Written only when the **Remember on this device** box is ticked, holds the password in plaintext, and deleted when you untick it or the server refuses it. Belongs to the user interface, like `input.json`; the browser client keeps the same thing in local storage instead. |
 | `satellites.json` | JSON | Satellite additions for the 3D tracker: subscribed element-set listings, element sets pasted in by hand, and frequency entries that override the built-in table. Belongs to the engine, like `net.json`: the listings are fetched and cached where the radio is, so remote and browser clients track the same satellites. |
-| `broadcast_stations.json` | JSON | *Your own* broadcast stations and corrections, merged over the downloaded schedule ([§9.6](#96-broadcast-stations-on-longwave-and-shortwave)). Never written by sdroxide, and absent until you create it. |
+| `broadcast_stations.json` | JSON | *Your own* broadcast stations and corrections, merged over the downloaded schedule ([§10.6](#106-broadcast-stations-on-longwave-and-shortwave)). Never written by sdroxide, and absent until you create it. |
 | `broadcast/` | CSV | The broadcasting season's schedule as downloaded from eibispace.de, one file per season. Managed by sdroxide: refetched when the season changes, and safe to delete. |
 | `sstv_messages.json` | JSON | The overlay message stored for each of the five SSTV transmit slots. |
 | `voice_names.json` | JSON | The label given to each of the ten voice-keyer slots. |
@@ -6841,12 +7047,12 @@ sdroxide stores its settings under the per-user config directory:
 Every file has sensible defaults, so a missing or partial file always loads. You
 normally edit these through the GUI rather than by hand.
 
-### 11.1 Choosing the radio interface without a GUI
+### 12.1 Choosing the radio interface without a GUI
 
 Settings → Radio is the normal way to configure an interface, and a remote or
 browser client can use all of it — including *which* interface to open, because
 the device lists it is chosen from are enumerated on the machine the radio is
-plugged into and sent to the client ([7.4](#74-what-to-know)). What follows is
+plugged into and sent to the client ([8.4](#84-what-to-know)). What follows is
 for the times there is no client either: a first boot with nothing configured, a
 container image, a machine being provisioned. Picking the interface by hand
 means writing `radio.json`, so here is what it contains.
@@ -6890,7 +7096,7 @@ to its default, and a partial file is normal rather than a special case.
 The per-interface object is only read when `backend` names it, so leaving the
 others out — or leaving them configured for a radio you have unplugged — changes
 nothing. The keys of each are the settings on that interface's tab in
-[§5.2](#52-radio-choosing-and-configuring-the-rig), and the defaults are what the
+[§6.2](#62-radio-choosing-and-configuring-the-rig), and the defaults are what the
 tab shows before you touch it. `"pluto"`, for example, takes `address`,
 `sample_rate_hz`, `rf_bandwidth_hz`, `rx_gain_db`, `agc` (`"Manual"`,
 `"SlowAttack"`, `"FastAttack"` or `"Hybrid"`), `tx_gain_db`, `rx_port`,
@@ -6942,7 +7148,7 @@ fall back to the config directory.
 
 ---
 
-## 13. Troubleshooting
+## 14. Troubleshooting
 
 **"Waiting for spectrum" and no receive audio (CAT radio).**
 The radio's capture device could not be opened. Common causes:
@@ -7059,7 +7265,7 @@ directions. Only a K4 runs above that.
 
 **CW transmits nothing.**
 Set **CW keying** to **Rig keyer (CAT)** on the Radio tab — see
-[5.2.2](#522-cat-radios-serial-control--usb-audio). A rig in CW
+[6.2.2](#622-cat-radios-serial-control--usb-audio). A rig in CW
 ignores audio sent to its sound card, so it can only be keyed from text. On
 Yaesu also check that CW memory 1 is free to be overwritten; on Kenwood, that
 break-in is on (sdroxide only asserts it when the rig has reported CW, because
@@ -7119,7 +7325,7 @@ is how to force the steady path on a GPU sdroxide does not know about.
 
 ---
 
-## 14. Appendix
+## 15. Appendix
 
 ### Keyboard shortcuts
 
@@ -7167,10 +7373,10 @@ The search is case-insensitive, so `wspr` and `WSPR` find the same things.
 
 These are the **defaults**. Every one of them can be rebound — and PTT, band
 changes, filter width and much else bound to keys, mouse buttons or a MIDI
-controller — on the **Controls** tab; see [5.4](#54-controls-keyboard-mouse-and-midi).
+controller — on the **Controls** tab; see [6.4](#64-controls-keyboard-mouse-and-midi).
 F1 is the exception: it always opens the manual, so it is not rebindable.
 
-The spoken-announcement actions ([5.3](#53-ui-display-preferences-and-voice-announcements))
+The spoken-announcement actions ([6.3](#63-ui-display-preferences-and-voice-announcements))
 ship with no default keys, since any choice would take a key somebody is already
 using. Bind them under **Speech** on the Controls tab:
 
@@ -7186,7 +7392,7 @@ using. Bind them under **Speech** on the Controls tab:
 | Mode | Description |
 | --- | --- |
 | LSB / USB | Lower / upper sideband voice. |
-| CW | Morse (continuous wave). Decoded on a waterfall cursor, with type-ahead keyboard sending — see [2.13](#214-cw-decoding-and-keyboard-sending). |
+| CW | Morse (continuous wave). Decoded on a waterfall cursor, with type-ahead keyboard sending — see [2.14](#214-cw-decoding-and-keyboard-sending). |
 | AM | Amplitude modulation. |
 | SAM | Synchronous AM. |
 | NFM / WFM | Narrow / wide FM. WFM decodes broadcast stereo and RDS/RBDS automatically. |
@@ -7219,4 +7425,4 @@ have are not offered.
 
 `Classic` (PowerSDR-style), `Viridis`, `Gray`, `Icom` (Icom-style palette,
 peaking at red with no white blow-out), `Neon`, `Synthwave`, `Matrix`, and
-`Tron`. Chosen on the **UI** tab of the Settings window ([5.3](#53-ui-display-preferences-and-voice-announcements)).
+`Tron`. Chosen on the **UI** tab of the Settings window ([6.3](#63-ui-display-preferences-and-voice-announcements)).

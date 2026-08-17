@@ -22,6 +22,7 @@ mod modulator;
 mod nb;
 mod nco;
 mod nnr;
+pub mod noisefloor;
 mod notch;
 mod nr;
 mod olivia;

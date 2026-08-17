@@ -268,6 +268,14 @@ pub enum RadioEvent {
     /// A snapshot everywhere except [`crate::RdsData::groups`], which is a delta
     /// — see the type for why the diagnostics log is not resent whole.
     Rds(crate::RdsData),
+    /// Every ISM device heard since the decoder started, re-sent as a whole table
+    /// a couple of times a second. A snapshot, not a delta — see
+    /// [`crate::IsmReport`] for why the decoder reports devices rather than
+    /// bursts.
+    IsmReports(Vec<crate::IsmReport>),
+    /// Which ISM channels are being listened to, and what the gate is seeing.
+    /// Sent alongside the reports so an empty table can explain itself.
+    IsmStatus(crate::IsmStatus),
 }
 
 /// Snapshot of the frontend's switchable sound devices (native clients).

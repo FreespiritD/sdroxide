@@ -555,4 +555,7 @@ pub enum Command {
         vfo: Vfo,
         hz: f64,
     },
+    /// Which ISM decoders run and how hard they squelch. The engine persists this
+    /// and echoes it back in [`crate::RadioState`], so there is no apply step.
+    SetIsmConfig(crate::IsmSettings),
 }

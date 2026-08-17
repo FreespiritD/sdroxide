@@ -383,6 +383,24 @@ impl SdroxideApp {
     /// Runs every frame, so it clones only what survives the filters rather than
     /// building a merged list first — the layout pass sorts by screen position
     /// itself, so the output need not be in frequency order.
+    /// The ISM devices to label on the waterfall.
+    ///
+    /// Every device currently in the table, formatted the same way the ISM
+    /// window's rows are so the two agree. There is deliberately no fade and no
+    /// age cut: these transmitters sleep for a minute at a time between frames,
+    /// so anything that faded on silence would spend most of its life invisible,
+    /// and a label saying where a meter is stays true while it is asleep.
+    pub(in crate::app) fn ism_overlay(&self) -> Vec<crate::widgets::spectrum_view::IsmLabel> {
+        self.ism_reports
+            .iter()
+            .map(|r| crate::widgets::spectrum_view::IsmLabel {
+                freq_hz: r.freq_hz,
+                text: format!("{} {}  {}", r.fmt_kind(), r.device, r.fmt_readings()),
+                encrypted: r.encrypted,
+            })
+            .collect()
+    }
+
     pub(in crate::app) fn net_overlay(&self, now_utc: i64) -> (Vec<Spot>, Vec<f32>) {
         let max_age = self.net_cfg_edit.spot_max_age_secs.max(60) as i64;
         let mut spots = Vec::new();

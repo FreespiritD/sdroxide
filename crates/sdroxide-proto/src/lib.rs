@@ -357,7 +357,15 @@ use sdroxide_types::{
 /// setting the dial (`Command::SetVfo` — the readout, a memory, an external
 /// controller), which are the same thing on an SDR and are not on a rig whose
 /// own synthesiser is the centre of what we capture.
-pub const PROTO_VERSION: u16 = 62;
+///
+/// **63** — the ISM decoder. `RadioState` gained an `ism` block, which puts it in
+/// *every* state broadcast, so this is not an append a v62 client can survive:
+/// it would run off the end of the first state message it received. The new
+/// `ServerMsg::IsmReports` / `IsmStatus` and `Command::SetIsmConfig` are appended
+/// last as usual. `IsmSettings` carries its per-family switches as a bitmask
+/// rather than a fixed-length array precisely so that the *next* protocol family
+/// added does not force this bump again.
+pub const PROTO_VERSION: u16 = 63;
 const VERSION_BYTE: u8 = 0x12;
 
 #[derive(Debug, thiserror::Error)]
@@ -677,6 +685,11 @@ pub enum ServerMsg {
     /// receiver. A snapshot, except for the group log inside it, which is a
     /// delta the client accumulates — see [`sdroxide_types::RdsData`].
     Rds(sdroxide_types::RdsData),
+    /// Every ISM device heard, as a whole table. A snapshot — see
+    /// [`sdroxide_types::IsmReport`].
+    IsmReports(Vec<sdroxide_types::IsmReport>),
+    /// Which ISM channels are live, and what the burst gate is seeing.
+    IsmStatus(sdroxide_types::IsmStatus),
 }
 
 /// One radio in a station's roster, as a client sees it.

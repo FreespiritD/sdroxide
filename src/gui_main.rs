@@ -59,6 +59,7 @@ fn build_controller(
         primary,
         tx_gate: Some(gate.clone()),
         store_sync: Some(sync.clone()),
+        record_iq: boot.record_iq.clone(),
     };
     let handles = start_engine(boot.source, boot.caps, cfg);
     LocalController::new(
@@ -121,6 +122,9 @@ pub fn run_multi(
             initial_antenna: (None, None),
             reopen: Some(crate::reopen_factory_for(&c, store.clone(), slot.id)),
             store,
+            // A radio added at runtime is never the capture target: `--record-iq`
+            // names one file, and two bands interleaved into it are neither.
+            record_iq: None,
         };
         let ctrl =
             build_controller(boot, &settings, tx_ham_only, false, &factory_gate, &factory_sync);

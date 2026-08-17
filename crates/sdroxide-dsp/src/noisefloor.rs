@@ -1,18 +1,23 @@
-//! Per-region noise-floor estimation, shared by the CW and PSK/RTTY skimmers.
+//! Per-region noise-floor estimation for anything that scans an STFT for
+//! signals: the CW and PSK/RTTY skimmers, and the ISM burst gate.
 //!
-//! Both want the same thing from their STFT: a per-bin estimate of the *noise*
-//! power, robust to the signals sitting in it. The estimator is the median of
-//! each ~64-bin region, scaled to a mean. Signals are narrow and sparse, so a
-//! region's median bin is a noise bin however strong or persistent the signals
-//! in that region are — which is what stops a carrier inflating the very floor
-//! that is supposed to reveal it.
+//! They all want the same thing from their transform: a per-bin estimate of the
+//! *noise* power, robust to the signals sitting in it. The estimator is the
+//! median of each ~64-bin region, scaled to a mean. Signals are narrow and
+//! sparse, so a region's median bin is a noise bin however strong or persistent
+//! the signals in that region are — which is what stops a carrier inflating the
+//! very floor that is supposed to reveal it.
+//!
+//! It lives here rather than in one of the callers because the second caller
+//! would otherwise have copied it, and a copy of this particular function is
+//! how the positive-feedback bug it exists to prevent comes back.
 
 /// |FFT|² of Gaussian noise is exponential, whose median is `ln 2`·mean; scale
 /// the region median back up to estimate the mean noise the thresholds expect.
 ///
 /// The factor is `1 / ln 2`, which is `log₂ e` — hence the constant, rather
 /// than the rounded literal the two skimmers each used to carry.
-pub(crate) const MEDIAN_TO_MEAN: f32 = std::f32::consts::LOG2_E;
+pub const MEDIAN_TO_MEAN: f32 = std::f32::consts::LOG2_E;
 
 /// The smoothing coefficient that reproduces a per-frame `alpha` when the floor
 /// is only updated once every `every` frames.
@@ -22,7 +27,7 @@ pub(crate) const MEDIAN_TO_MEAN: f32 = std::f32::consts::LOG2_E;
 /// coefficient that decays that far in a single step leaves the floor's time
 /// constant *in seconds* exactly where it was — only the number of times it is
 /// recomputed changes.
-pub(crate) fn stride_alpha(alpha: f32, every: u32) -> f32 {
+pub fn stride_alpha(alpha: f32, every: u32) -> f32 {
     1.0 - (1.0 - alpha).powi(every as i32)
 }
 
@@ -37,7 +42,7 @@ pub(crate) fn stride_alpha(alpha: f32, every: u32) -> f32 {
 /// selects exactly the same element while getting an `Ord` selection with no
 /// comparator closure and no `partial_cmp` NaN fallback, on a path that runs
 /// tens of thousands of times a second.
-pub(crate) fn update_regions(
+pub fn update_regions(
     floor: &mut [f32],
     power: &[f32],
     scratch: &mut Vec<u32>,

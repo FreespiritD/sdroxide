@@ -48,7 +48,7 @@ const REGION_BINS: usize = 64;
 /// three quarters of their input, so re-running the region medians every frame
 /// mostly re-reads noise it has already measured. Updating once per
 /// `FFT_SIZE / HOP` frames costs a quarter as much and draws each estimate from
-/// independent samples; [`crate::noise::stride_alpha`] keeps the floor's time
+/// independent samples; [`sdroxide_dsp::noisefloor::stride_alpha`] keeps the floor's time
 /// constant in seconds unchanged.
 const FLOOR_EVERY: u32 = (FFT_SIZE / HOP) as u32;
 /// A peak must be the strongest bin within ±this window to count — enforces a
@@ -207,7 +207,7 @@ pub struct CwSkimmer {
     noise: Vec<f32>,
     /// Reused scratch for the per-region median (one region's power values).
     /// Scratch for the per-region median floor estimate (one region's power, as
-    /// bit patterns — see [`crate::noise::update_regions`]).
+    /// bit patterns — see [`sdroxide_dsp::noisefloor::update_regions`]).
     med_scratch: Vec<u32>,
     /// Reused per-frame scratch (avoids re-allocating every frame).
     cands: Vec<(f32, i64)>,
@@ -498,12 +498,12 @@ impl CwSkimmer {
         if self.frames % FLOOR_EVERY == 0 {
             let smooth = if self.frames < WARMUP { 0.3 } else { 0.05 };
             let mut med = std::mem::take(&mut self.med_scratch);
-            crate::noise::update_regions(
+            sdroxide_dsp::noisefloor::update_regions(
                 &mut self.noise,
                 &self.power,
                 &mut med,
                 REGION_BINS,
-                crate::noise::stride_alpha(smooth, FLOOR_EVERY),
+                sdroxide_dsp::noisefloor::stride_alpha(smooth, FLOOR_EVERY),
                 false,
             );
             self.med_scratch = med;

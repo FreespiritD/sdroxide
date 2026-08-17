@@ -22,6 +22,7 @@
 pub(in crate::app) mod awards;
 pub(in crate::app) mod bands;
 pub(in crate::app) mod frame;
+pub(in crate::app) mod ism;
 pub(in crate::app) mod logbook;
 pub(in crate::app) mod net;
 pub(in crate::app) mod panels;
@@ -256,6 +257,16 @@ pub struct SdroxideApp {
     /// silently closing up.
     rds_next_seq: u64,
     show_scanner: bool,
+    /// The ISM decoder window, opened from the ISM chip in the system row.
+    show_ism: bool,
+    /// Every 868 MHz device the engine has heard, newest first. A whole-table
+    /// snapshot from the engine, so this is replaced rather than merged.
+    ism_reports: Vec<sdroxide_types::IsmReport>,
+    /// Where the decoder is listening and what its gates are seeing.
+    ism_status: Option<sdroxide_types::IsmStatus>,
+    /// How the device list is ordered, and which way round.
+    ism_sort: ism::IsmSort,
+    ism_sort_desc: bool,
     show_settings: bool,
     /// Voice keyer: the engine's slot list and what it is doing, the window's
     /// open state, and the one slot label being typed into (only the focused
@@ -827,6 +838,11 @@ impl SdroxideApp {
             rds_log: std::collections::VecDeque::new(),
             rds_next_seq: 0,
             show_scanner: false,
+            show_ism: false,
+            ism_reports: Vec::new(),
+            ism_status: None,
+            ism_sort: ism::IsmSort::default(),
+            ism_sort_desc: true,
             show_settings: false,
             voice: sdroxide_types::VoiceStatus::default(),
             show_voice: false,

@@ -23,6 +23,7 @@ use sdroxide_dsp::{
     MonoResampler, Nco, NeuralNr, NoiseBlanker, ParametricEq, SpecBleachNr, SpectralNr,
     SpectrumAnalyzer, StereoResampler, channel_target, make_demod, make_modulator,
 };
+use sdroxide_ism::{IsmAction, IsmController};
 use sdroxide_rigctld::{RigState, RigctldController};
 use sdroxide_skimmer::{SkimmerAction, SkimmerController};
 use sdroxide_tci::server::{ServerRequest, TciServerController, TciStateSnapshot};
@@ -153,6 +154,16 @@ pub struct EngineConfig {
     /// This engine's radio id: names the DSP thread and prefixes recording
     /// filenames, so two radios recording in the same second don't collide.
     pub instance: u32,
+    /// Write every raw IQ sample the receiver delivers to this file, as
+    /// interleaved little-endian `f32` pairs — the format [`crate::FileSource`]
+    /// reads back.
+    ///
+    /// For capturing a band to work on offline: what a decoder does with a real
+    /// signal is not a question a synthetic one can answer, and a capture is the
+    /// only way to ask it twice. Written from the DSP thread with no buffering
+    /// beyond the OS's, and at 2 Msps it is 16 MB a second, so it is a
+    /// deliberate command-line act rather than anything the UI can start.
+    pub record_iq: Option<std::path::PathBuf>,
     /// Whether this engine runs the station-wide network services (spot feeds,
     /// the rotator client). Exactly one engine per process should — they hold
     /// logins and sockets that must not be duplicated per radio.
@@ -181,6 +192,7 @@ impl Default for EngineConfig {
             primary: true,
             tx_gate: None,
             store_sync: None,
+            record_iq: None,
         }
     }
 }
@@ -1243,6 +1255,25 @@ struct Engine {
     /// `state.skimmer`, which is the *live* setting and is forced off on an
     /// audio-mode source — this is what a wideband source gets restored to.
     skim_cfg: sdroxide_types::SkimmerSettings,
+    /// ISM decoder: its own decimation of the raw IQ onto the 868 MHz channel
+    /// plan, plus a worker thread, present only while the decoder is enabled.
+    ///
+    /// A second window rather than a share of the skimmer's: that one is 192 kHz
+    /// wide and pinned to the hardware centre, and the ISM plan needs about
+    /// 1.5 MHz placed on 868.9 MHz.
+    ism_ddc: Option<Ddc>,
+    ism: Option<IsmController>,
+    ism_buf: Vec<Complex32>,
+    /// Where the ISM window is currently centred, so a retune can tell whether it
+    /// has to move.
+    ism_center_hz: f64,
+    /// The operator's persisted ISM preference, kept apart from `state.ism` for
+    /// the same reason as `skim_cfg`.
+    ism_cfg: sdroxide_types::IsmSettings,
+    /// Open capture file for `--record-iq`, and the interleaving scratch it is
+    /// written from.
+    iq_rec: Option<std::io::BufWriter<std::fs::File>>,
+    iq_rec_buf: Vec<u8>,
     /// The operator's persisted scanner settings. What the scanner is *doing*
     /// lives in `state.scan`, which every client already receives.
     scan_cfg: sdroxide_types::ScannerConfig,
@@ -1561,6 +1592,27 @@ fn engine_thread(
     } else {
         skim_cfg
     };
+    // Opened before the stream starts, so a bad path is a startup error rather
+    // than a surprise several minutes into a capture.
+    let iq_rec = match engine_cfg.record_iq.as_ref() {
+        Some(path) => match std::fs::File::create(path) {
+            Ok(f) => {
+                info!(path = %path.display(), "recording raw IQ");
+                Some(std::io::BufWriter::with_capacity(1 << 20, f))
+            }
+            Err(e) => {
+                warn!(path = %path.display(), "cannot open the IQ capture file: {e}");
+                None
+            }
+        },
+        None => None,
+    };
+    let ism_cfg = sdroxide_config::load_ism_config();
+    state.ism = if audio_mode {
+        sdroxide_types::IsmSettings::OFF // wideband-only, like the skimmers
+    } else {
+        ism_cfg
+    };
 
     // Read before the DSP below rather than with the rest of the session
     // further down: the remembered decimation decides what rate the analyzer
@@ -1723,6 +1775,13 @@ fn engine_thread(
         skim_buf: Vec::new(),
         skim_view: None,
         skim_cfg,
+        ism_ddc: None,
+        ism: None,
+        ism_buf: Vec::new(),
+        ism_center_hz: 0.0,
+        ism_cfg,
+        iq_rec,
+        iq_rec_buf: Vec::new(),
         scan_cfg,
         scan: None,
         scan_db: Vec::new(),
@@ -1822,6 +1881,7 @@ fn engine_thread(
     engine.sync_digi_mode();
     if !audio_mode {
         engine.sync_skimmer(); // starts if any kind is enabled in the saved config
+        engine.sync_ism(); // likewise, from ism.json
     }
     // Start any enabled network spot feeds from the persisted config. The
     // operator identity comes from the digi config — one identity for the whole
@@ -1953,6 +2013,7 @@ fn engine_thread(
         engine.poll_digi();
         engine.poll_voice();
         engine.poll_skimmer();
+        engine.poll_ism();
         engine.poll_scanner();
         engine.poll_tci_server();
         engine.poll_rigctld();
@@ -2302,6 +2363,33 @@ impl Engine {
             ddc.process(iq, &mut self.skim_buf);
             if let Some(sk) = self.skimmer.as_ref() {
                 sk.on_rx_iq(&self.skim_buf);
+            }
+        }
+        // The raw capture, before any of the lanes below take their own
+        // decimation of it — this is what `FileSource` will read back, so it has
+        // to be exactly what the receiver delivered.
+        if let Some(w) = self.iq_rec.as_mut() {
+            use std::io::Write;
+            self.iq_rec_buf.clear();
+            self.iq_rec_buf.reserve(iq.len() * 8);
+            for z in iq {
+                self.iq_rec_buf.extend_from_slice(&z.re.to_le_bytes());
+                self.iq_rec_buf.extend_from_slice(&z.im.to_le_bytes());
+            }
+            // A capture that cannot be written is worth one complaint and then
+            // silence: failing per block would fill the log faster than the disk.
+            if let Err(e) = w.write_all(&self.iq_rec_buf) {
+                warn!("IQ capture write failed, stopping the recording: {e}");
+                self.iq_rec = None;
+            }
+        }
+        // ...and the ISM decoder from its own, wider decimation onto the 868 MHz
+        // channel plan.
+        if let Some(ddc) = self.ism_ddc.as_mut() {
+            self.ism_buf.clear();
+            ddc.process(iq, &mut self.ism_buf);
+            if let Some(d) = self.ism.as_ref() {
+                d.on_rx_iq(&self.ism_buf);
             }
         }
         // Feed TCI clients: the same clean tap the digital decoders use (so
@@ -2722,6 +2810,10 @@ impl Engine {
             sk.set_center(center);
         }
         self.sync_skimmer_view();
+        // The ISM window does *not* follow the hardware centre: its channels are
+        // at fixed frequencies, so it stays on them for as long as the new span
+        // still reaches, and only slides when it has to.
+        self.sync_ism_window();
         // Re-seat the DDCs on the new centre. Without this the main receiver
         // keeps the offset it had against the old one, which is exactly how a
         // rig-initiated retune ends up demodulating somewhere the readout does
@@ -4048,6 +4140,21 @@ impl Engine {
                 }
             }
 
+            // ISM decoder.
+            SetIsmConfig(cfg) => {
+                self.state.ism = cfg;
+                // Remembered before `sync_ism` may force the live state off on an
+                // audio-mode source, so a swap back restores what was chosen.
+                self.ism_cfg = cfg;
+                if let Err(e) = sdroxide_config::save_ism_config(&cfg) {
+                    warn!("saving ISM config: {e}");
+                }
+                self.sync_ism();
+                if let Some(d) = self.ism.as_ref() {
+                    d.set_config(cfg);
+                }
+            }
+
             // Network cockpit (no RadioState change → return before the State
             // emit below).
             SetNetworkConfig(cfg) => {
@@ -4532,6 +4639,94 @@ impl Engine {
                     let _ = self.event_tx.send(RadioEvent::SkimmerSpots(spots));
                 }
             }
+        }
+    }
+
+    /// Target width of the ISM decoder's window.
+    ///
+    /// Wide enough to hold the whole 868 MHz channel plan with the unusable band
+    /// edges allowed for, and no wider: every extra hertz is decimation the engine
+    /// pays for on every block. On a front end that delivers less than this the
+    /// `Ddc` decimates by one and the window is simply whatever the receiver gives
+    /// — which is the RX-888's VHF case, where the wideband downconverter hands
+    /// over 2.025 Msps and the plan fits inside its flat portion.
+    fn ism_window_target_hz(&self) -> f64 {
+        (sdroxide_ism::span_hz() / sdroxide_ism::USABLE_FRACTION).min(self.state.sample_rate)
+    }
+
+    /// Construct or tear down the ISM decoder, and keep its window on the channel
+    /// plan as the front end retunes.
+    ///
+    /// Unlike the skimmer's window, which sits on the hardware centre and never
+    /// moves, this one is placed as close to 868.9 MHz as the receiver's span
+    /// allows: the channels are at fixed frequencies, so a window centred
+    /// anywhere else reaches fewer of them.
+    fn sync_ism(&mut self) {
+        // Wideband-only, for the same reason as the skimmers: a CAT rig on a
+        // sound card hands over demodulated audio, not a 1.5 MHz span. Correcting
+        // the state means the UI says so instead of showing a request the engine
+        // quietly dropped.
+        if self.audio_mode {
+            self.state.ism = sdroxide_types::IsmSettings::OFF;
+        }
+        let want = self.state.ism.any_enabled();
+        match (want, self.ism.is_some()) {
+            (true, false) => {
+                let target = self.ism_window_target_hz();
+                let rate = Ddc::rate_for(self.state.sample_rate, target);
+                let center = sdroxide_ism::window_center_hz(
+                    self.state.center_hz,
+                    self.state.sample_rate,
+                    rate,
+                );
+                let mut ddc = Ddc::new(self.state.sample_rate, target);
+                ddc.set_offset_hz(center - self.state.center_hz);
+                let out_rate = ddc.out_rate();
+                self.ism = Some(IsmController::new(center, out_rate, self.state.ism));
+                self.ism_ddc = Some(ddc);
+                self.ism_center_hz = center;
+                info!(rate = out_rate, center, "ISM decoder started");
+            }
+            (false, true) => {
+                self.ism = None;
+                self.ism_ddc = None;
+                self.ism_buf.clear();
+                info!("ISM decoder stopped");
+            }
+            (true, true) => self.sync_ism_window(),
+            _ => {}
+        }
+    }
+
+    /// Re-place the window after a retune or a sample-rate change.
+    ///
+    /// Rebuilding the decoder outright would throw away the device table, which is
+    /// the one thing an operator watching a band accumulates over minutes. So the
+    /// mixer moves and the worker is told; it rebuilds only its channels.
+    fn sync_ism_window(&mut self) {
+        let Some(ddc) = self.ism_ddc.as_mut() else { return };
+        let rate = ddc.out_rate();
+        let center =
+            sdroxide_ism::window_center_hz(self.state.center_hz, self.state.sample_rate, rate);
+        if (center - self.ism_center_hz).abs() < 1.0 {
+            return;
+        }
+        ddc.set_offset_hz(center - self.state.center_hz);
+        self.ism_center_hz = center;
+        if let Some(d) = self.ism.as_ref() {
+            d.set_window(center, rate);
+        }
+    }
+
+    /// Drain the ISM decoder's device table and status and forward them.
+    fn poll_ism(&mut self) {
+        let Some(d) = self.ism.as_ref() else { return };
+        for action in d.poll() {
+            let ev = match action {
+                IsmAction::Reports(r) => RadioEvent::IsmReports(r),
+                IsmAction::Status(s) => RadioEvent::IsmStatus(s),
+            };
+            let _ = self.event_tx.send(ev);
         }
     }
 
@@ -6606,6 +6801,13 @@ impl Engine {
         self.skimmer = None;
         self.skim_ddc = None;
         self.skim_buf.clear();
+        // The ISM decoder's window is a decimation of a rate that has just
+        // changed, so its chain goes too — but the device table it has built up
+        // over the last few minutes is worth more than the rebuild costs, so
+        // `sync_ism` is what puts it back rather than a teardown here.
+        self.ism_ddc = None;
+        self.ism = None;
+        self.ism_buf.clear();
         // Dropped outright rather than left to `sync_tci_iq`'s own comparison:
         // two device rates can snap to the same client rate, and it would then
         // keep a decimation chain built for the rate we have just left.
@@ -6614,6 +6816,7 @@ impl Engine {
         self.tci_iq_ilv.clear();
         self.sync_digi_mode();
         self.sync_skimmer();
+        self.sync_ism();
         self.sync_audio_tap();
         self.sync_tci_iq();
         info!(factor, rate = self.state.sample_rate, "front-end decimation");
@@ -6911,6 +7114,7 @@ impl Engine {
         self.sync_digi_mode();
         if !self.audio_mode {
             self.sync_skimmer();
+            self.sync_ism();
         }
         // Re-derive the TCI streams at the new device rate and push a fresh
         // state burst, so connected clients follow the swap.
@@ -8000,6 +8204,7 @@ impl Engine {
                     sk.set_center(center_hz);
                 }
                 self.sync_skimmer_view();
+                self.sync_ism_window();
                 true
             }
             Err(e) => {
