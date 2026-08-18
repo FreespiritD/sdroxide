@@ -96,10 +96,21 @@ pub enum Backend {
     /// a property, or a cellular modem. Appended last, for the same reason as
     /// `SmartSdr` above.
     SpyServerVfo,
+    /// An ELAD FDM-DUO, FDM-S2 or FDM-S1, driven directly over USB by the
+    /// native pure-Rust driver — no libusb, no gr-elad, no SoapySDR module.
+    ///
+    /// The FDM-DUO is three USB devices in one radio and this interface drives
+    /// all three at once: wideband I/Q from ELAD's own vendor interface, rig
+    /// control over the CAT serial port ([`CatFamily::Elad`], configured in the
+    /// same place every other CAT rig is), and transmit audio out through the
+    /// radio's USB sound card. The S1 and S2 have only the first of the three
+    /// and come up receive-only. Appended last, for the same reason as
+    /// `SmartSdr` above.
+    Elad,
 }
 
 impl Backend {
-    pub const ALL: [Backend; 17] = [
+    pub const ALL: [Backend; 18] = [
         Backend::Auto,
         Backend::Soapy,
         Backend::Cat,
@@ -117,6 +128,7 @@ impl Backend {
         Backend::Airspy,
         Backend::HackRf,
         Backend::SdrPlay,
+        Backend::Elad,
     ];
     pub fn label(self) -> &'static str {
         match self {
@@ -137,6 +149,7 @@ impl Backend {
             Backend::Airspy => "Airspy R2 / Mini (USB)",
             Backend::HackRf => "HackRF One / Pro (USB)",
             Backend::SdrPlay => "SDRplay RSP (USB)",
+            Backend::Elad => "ELAD FDM-DUO / FDM-S (USB)",
             Backend::None => "Not configured",
         }
     }
@@ -242,6 +255,19 @@ pub enum CatFamily {
     /// Kenwood profile can drive: DATA is a mode here instead of a flag, and
     /// the two disagree about what keys the transmitter.
     Elecraft,
+    /// FDM-DUO and FDM-DUOr.
+    ///
+    /// Another Kenwood dialect, and a thinner one than Elecraft's: ELAD
+    /// describes it as "proprietary commands and also a subset of the TS-480
+    /// set", and past the dial and the mode the subset runs out. The meters,
+    /// the filter, the power and the split are all ELAD's own commands on
+    /// ELAD's own scales, so the Kenwood profile would drive the frequency and
+    /// then read every needle wrong.
+    ///
+    /// This is the *control* half of an FDM-DUO. Its wideband I/Q arrives on a
+    /// separate USB interface that this family knows nothing about — see
+    /// [`Backend::Elad`], which drives both at once.
+    Elad,
     /// Not a radio at all: an already-running Hamlib `rigctld`, over TCP.
     ///
     /// The catch-all. Every profile above drives one manufacturer's rigs
@@ -259,12 +285,13 @@ pub enum CatFamily {
 }
 
 impl CatFamily {
-    pub const ALL: [CatFamily; 6] = [
+    pub const ALL: [CatFamily; 7] = [
         CatFamily::Xiegu,
         CatFamily::Icom,
         CatFamily::Yaesu,
         CatFamily::Kenwood,
         CatFamily::Elecraft,
+        CatFamily::Elad,
         CatFamily::Rigctld,
     ];
 
@@ -280,6 +307,7 @@ impl CatFamily {
             CatFamily::Yaesu => "Yaesu",
             CatFamily::Kenwood => "Kenwood",
             CatFamily::Elecraft => "Elecraft",
+            CatFamily::Elad => "ELAD",
             CatFamily::Rigctld => "Hamlib rigctld (network)",
         }
     }
@@ -441,6 +469,45 @@ impl KenwoodSend {
         match self {
             KenwoodSend::Ts2000 => "TS-2000 style (TX;)",
             KenwoodSend::Ts590 => "TS-590 style (TX1;)",
+        }
+    }
+}
+
+/// Where an ELAD FDM-DUO takes its transmit audio from — the rig's `TI`
+/// command, and menu 32 `TX IN` at the front panel.
+///
+/// A setting rather than an assumption because the radio remembers it across
+/// power cycles and both mistakes are silent. A DUO left on `MIC` transmits the
+/// microphone no matter what sdroxide puts into its sound card — a digital-mode
+/// over that goes out as room noise. One forced to `USB` behind an operator who
+/// wanted the microphone takes their voice away with nothing on screen to say
+/// where it went.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum EladTxInput {
+    /// `TI1;` — the USB audio port, which is where sdroxide's transmit audio
+    /// goes. The default, because it is the setting that makes this interface
+    /// work at all.
+    #[default]
+    UsbAudio,
+    /// `TI0;` — the microphone jack. For an operator who talks into the radio
+    /// and uses sdroxide for everything else.
+    Mic,
+    /// `TI2;` — the rig decides: the microphone for a PTT press on the
+    /// microphone, the USB port for a CAT or RTS key-down.
+    Auto,
+    /// Send no `TI` at all and leave whatever the radio was set to.
+    Leave,
+}
+
+impl EladTxInput {
+    pub const ALL: [EladTxInput; 4] =
+        [EladTxInput::UsbAudio, EladTxInput::Mic, EladTxInput::Auto, EladTxInput::Leave];
+    pub fn label(self) -> &'static str {
+        match self {
+            EladTxInput::UsbAudio => "USB audio",
+            EladTxInput::Mic => "Microphone",
+            EladTxInput::Auto => "Auto",
+            EladTxInput::Leave => "Leave as set on the radio",
         }
     }
 }
@@ -678,6 +745,12 @@ pub struct CatConfig {
     pub rigctld_addr: String,
     /// Which `TX` command keys a Kenwood.
     pub kenwood_send: KenwoodSend,
+    /// Where an ELAD FDM-DUO takes its transmit audio from, asserted when the
+    /// port opens. Defaulted so a config written before this existed still
+    /// loads — see the note on [`KenwoodSend::Ts2000`] for what a failed
+    /// deserialise costs.
+    #[serde(default)]
+    pub elad_tx_input: EladTxInput,
     pub format: SoundFormat,
     /// Conjugate the sound card's I/Q, mirroring the panadapter about the
     /// tuned frequency. Only read for [`SoundFormat::Iq`]: demod audio is real
@@ -798,6 +871,7 @@ impl Default for CatConfig {
             icom_model: IcomModel::default(),
             rigctld_addr: default_rigctld_addr(),
             kenwood_send: KenwoodSend::default(),
+            elad_tx_input: EladTxInput::default(),
             format: SoundFormat::default(),
             invert_spectrum: false,
             iq_offset_hz: 0.0,
@@ -2121,6 +2195,112 @@ impl AirspyHfDevice {
             None => format!("{}  [no serial — first match only]", self.name),
         }
     }
+}
+
+/// One ELAD receiver from a USB enumeration.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EladDevice {
+    /// The serial number read out of the device's EEPROM, when one could be
+    /// read. Not the USB `iSerial` string: ELAD's devices do not carry one, so
+    /// this is `None` from an enumeration and filled in only once the device
+    /// has been opened.
+    pub serial: Option<String>,
+    /// Which model, from the USB product id.
+    pub name: String,
+    /// The USB product id, so the selection UI can say what it is holding
+    /// before anything has been opened.
+    pub pid: u16,
+    /// The address on the bus (`bus-port.port…`), which is the only thing that
+    /// tells two of the same model apart without opening them.
+    pub path: String,
+}
+
+impl EladDevice {
+    /// One-line label for the selection UI.
+    pub fn label(&self) -> String {
+        match &self.serial {
+            Some(s) => format!("{}  (serial {s})", self.name),
+            // Not a defect: ELAD keeps the serial in EEPROM rather than in the
+            // USB descriptor, so an unopened device genuinely has nothing to
+            // pin. The bus address is what is left, and it changes when the
+            // cable moves.
+            None => format!("{}  (at {})", self.name, self.path),
+        }
+    }
+}
+
+/// The complex sample rates an ELAD DDC delivers, in Hz.
+///
+/// **Not commandable.** Nothing sdroxide knows how to send changes this — ELAD's
+/// own `gr-elad` never sets it either, and the FDM-DUO has no front-panel menu
+/// for it — so this list is what the *stream can be*, not what it can be told to
+/// be. See [`EladConfig::sample_rate_hz`].
+pub const ELAD_SAMPLE_RATES: [u32; 6] =
+    [192_000, 384_000, 768_000, 1_536_000, 3_072_000, 6_144_000];
+
+/// The rate an ELAD device is assumed to be in until told otherwise: the one
+/// `gr-elad` defaults to, and the one the FDM-DUO's own specification quotes for
+/// its I/Q channel.
+pub const ELAD_DEFAULT_RATE_HZ: u32 = 192_000;
+
+/// The attenuator's depth in dB. One pad, in or out.
+pub const ELAD_ATTENUATOR_DB: f64 = 12.0;
+
+/// ELAD FDM-DUO / FDM-S1 / FDM-S2 (USB) backend configuration.
+///
+/// The DUO's rig control is *not* here: it reuses [`RadioConfig::cat`] with
+/// [`CatFamily::Elad`], so the serial port, PTT method, poll rate and mode
+/// control are configured in the one place every other CAT radio's are. Leaving
+/// that serial path empty is how an S1 or S2 — which has no CAT port — comes up
+/// receive-only. Transmit audio likewise goes out through
+/// [`RadioConfig::radio_audio_out`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EladConfig {
+    /// Pin a device by its EEPROM serial; empty means "the first one found".
+    pub serial: String,
+    /// What rate the DDC stream is *read as*, in Hz — one of
+    /// [`ELAD_SAMPLE_RATES`].
+    ///
+    /// This is the one setting here that is not a command. No request this
+    /// driver knows how to send programs the decimation, so the device arrives
+    /// at whatever rate it powered up in or was last left in by ELAD's own
+    /// software, and this says which one that is. Get it wrong and the samples
+    /// are still samples — the panadapter is simply the wrong width and every
+    /// frequency inside it is scaled — so the driver measures the throughput
+    /// once the stream is running and says so if the two disagree.
+    ///
+    /// It also selects how the samples are *shaped*: every rate up to 3072 kHz
+    /// delivers 32-bit words, and 6144 kHz delivers 16-bit ones. That half is a
+    /// real decode difference, not a scale factor, so a wrong guess there is
+    /// noise rather than a wrong number.
+    pub sample_rate_hz: u32,
+    /// The 12 dB input attenuator.
+    pub attenuator: bool,
+    /// Whether the pre-selection filters are in circuit. Off bypasses them,
+    /// which is the wider view and the worse one for strong out-of-band
+    /// signals.
+    pub preselector: bool,
+}
+
+impl Default for EladConfig {
+    fn default() -> Self {
+        EladConfig {
+            serial: String::new(),
+            sample_rate_hz: ELAD_DEFAULT_RATE_HZ,
+            attenuator: false,
+            preselector: true,
+        }
+    }
+}
+
+impl EladConfig {
+    /// Gain-element name for the attenuator — the one real gain this hardware
+    /// has, so it is what the main window's Gain slider drives.
+    pub const ATT_ELEMENT: &'static str = "ATT";
+    /// Pseudo-element for the pre-selection filters. Deliberately absent from
+    /// `DeviceCaps::gains`, so only this backend's own settings tab draws it.
+    pub const LPF_ELEMENT: &'static str = "LPF";
 }
 
 /// Airspy HF+ (USB) backend configuration. Receive only.
@@ -3745,6 +3925,9 @@ pub struct RadioConfig {
     /// Another roster radio used as this one's receiver. Appended last, like
     /// every other field here: the layout is positional.
     pub panadapter: PanadapterConfig,
+    /// ELAD FDM-DUO / FDM-S. Appended after `panadapter` because the layout is
+    /// positional and every field is only ever added at the end.
+    pub elad: EladConfig,
 }
 
 #[cfg(test)]
@@ -3765,6 +3948,36 @@ mod tests {
         let loaded: CatConfig = serde_json::from_value(before.into()).unwrap();
         assert_eq!(loaded.iq_rate_hz, 48_000);
         assert_eq!(loaded, CatConfig::default(), "and nothing else moved");
+    }
+
+    /// Appending a family-specific field must not cost every existing operator
+    /// their interface selection. serde fails a `RadioConfig` whole, and the
+    /// default backend would then go and grab whatever hardware it found first
+    /// — see the note on [`KenwoodSend::Ts2000`].
+    #[test]
+    fn a_config_from_before_the_elad_family_still_loads() {
+        let before = serde_json::to_value(CatConfig::default()).unwrap();
+        let mut before = before.as_object().unwrap().clone();
+        assert!(before.remove("elad_tx_input").is_some(), "the field is in the written form");
+
+        let loaded: CatConfig = serde_json::from_value(before.into()).unwrap();
+        assert_eq!(loaded.elad_tx_input, EladTxInput::UsbAudio);
+        assert_eq!(loaded, CatConfig::default(), "and nothing else moved");
+    }
+
+    /// Every family the combo box offers has to reach a profile. The array
+    /// length is hard-coded, so a variant added without touching it silently
+    /// disappears from the dialog instead of failing to build.
+    #[test]
+    fn every_cat_family_is_offered_and_labelled() {
+        assert_eq!(CatFamily::ALL.len(), 7);
+        for f in CatFamily::ALL {
+            assert!(!f.label().is_empty(), "{f:?}");
+        }
+        assert!(CatFamily::ALL.contains(&CatFamily::Elad));
+        // ELAD is a serial family: the FDM-DUO's CAT port is an FTDI bridge,
+        // not a socket.
+        assert!(!CatFamily::Elad.is_network());
     }
 
     /// The offset is a position inside the digitised window, so what may be

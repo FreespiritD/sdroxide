@@ -31,6 +31,7 @@ pub fn probe(req: DeviceProbe) -> ProbeAnswer {
         DeviceProbe::Airspy => ProbeAnswer::Airspy(sdroxide_airspy::list()),
         DeviceProbe::HackRf => ProbeAnswer::HackRf(sdroxide_hackrf::list()),
         DeviceProbe::SdrPlay => ProbeAnswer::SdrPlay(sdroxide_sdrplay::list()),
+        DeviceProbe::Elad => ProbeAnswer::Elad(sdroxide_elad::list()),
         DeviceProbe::Soapy => ProbeAnswer::Soapy(soapy_devices()),
         DeviceProbe::Hpsdr => ProbeAnswer::Hpsdr(sdroxide_hpsdr::discover_default()),
         DeviceProbe::SmartSdr => ProbeAnswer::SmartSdr(crate::smartsdr_source::discover()),
@@ -122,6 +123,11 @@ fn report(kind: ReportKind) -> String {
         }),
         ReportKind::HackRf => sdroxide_hackrf::diagnostics().unwrap_or_else(|| {
             "No HackRF session has run yet — press Apply / reconnect first.".to_string()
+        }),
+        ReportKind::Elad => sdroxide_elad::diagnostics().unwrap_or_else(|| {
+            "No ELAD session has run yet — press Apply / reconnect first, or \
+             run `cargo run -p sdroxide-elad --example probe`."
+                .to_string()
         }),
     }
 }

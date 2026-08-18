@@ -4,7 +4,7 @@ SDRoxide is a PowerSDR/Thetis-style software-defined-radio transceiver. It gives
 you a panadapter and waterfall, dual VFOs, a full set of receive and transmit
 controls, FT8/FT4/FT2 digital modes with an integrated logbook, a wideband CW
 skimmer, and the ability to drive either a SoapySDR device or a CAT-controlled
-radio (such as a Xiegu, Icom, Yaesu, Kenwood, or Elecraft) with audio over a USB
+radio (such as a Xiegu, Icom, Yaesu, Kenwood, Elecraft, or ELAD) with audio over a USB
 sound card. The
 same interface runs as a native desktop application, streams to a web browser,
 or connects to a remote sdroxide server.
@@ -2848,7 +2848,7 @@ release PTT teaches you nothing and lets you carry on transmitting into it. See
 trip; in `config.toml` the pair are `swr_guard` and `swr_limit`.
 
 It needs a rig that measures SWR and reports it over CAT or TCI — the Icom CI-V
-dialect, the Yaesu/Kenwood/Elecraft dialects, `rigctld`, and TCI. On anything
+dialect, the Yaesu/Kenwood/Elecraft/ELAD dialects, `rigctld`, and TCI. On anything
 that never sends a figure (any IQ radio: HackRF, Pluto, RTL-SDR, an HPSDR
 board) the setting is simply inert, which is why it costs nothing to leave on.
 
@@ -2983,6 +2983,10 @@ radio. Everything below the selector changes to match the choice:
 - **PlutoSDR (network)** — an ADALM-Pluto, driven by sdroxide's own IIOD client
   with no SoapySDR and no libiio involved. See
   [6.2.7](#627-plutosdr-adalm-pluto).
+- **ELAD FDM-DUO / FDM-S (USB)** — an ELAD FDM-DUO, FDM-DUOr, FDM-S2 or FDM-S1,
+  driven by sdroxide's own USB driver. On an FDM-DUO this one interface covers
+  the whole radio: the wideband receiver, the CAT control link and the transmit
+  sound card. See [6.2.16](#6216-elad-fdm-duo--fdm-s-usb).
 
 There is no auto-detect: you pick the interface, and an interface that cannot be
 opened falls back to a silent source rather than guessing at another one.
@@ -3294,17 +3298,20 @@ is recording at all. Raising the rate raises that ceiling with it.
 
 - **Serial port** — the radio's CAT serial port. On Linux, USB-style ports
   (`/dev/ttyACM*`, `/dev/ttyUSB*`) are listed first.
-- **CAT family** — `Xiegu`, `Icom`, `Yaesu`, `Kenwood`, `Elecraft`, or
-  `Hamlib rigctld (network)`. The five native profiles drive one manufacturer's
-  rigs each; the sixth talks to an already-running Hamlib daemon and covers
+- **CAT family** — `Xiegu`, `Icom`, `Yaesu`, `Kenwood`, `Elecraft`, `ELAD`, or
+  `Hamlib rigctld (network)`. The six native profiles drive one manufacturer's
+  rigs each; the seventh talks to an already-running Hamlib daemon and covers
   everything else, less well (see **rigctld address** below).
 
-  Three of the native ones speak ASCII commands ending in `;` and look
+  Four of the native ones speak ASCII commands ending in `;` and look
   interchangeable, but they are not. A Kenwood driven as a Yaesu rejects every
   retune and *keys up without unkeying*, because `TX0;` — Yaesu's unkey — is a transmit command on
   a Kenwood. An Elecraft driven as a Kenwood tunes and keys correctly and then
   goes out on the wrong sideband in every digital mode, because DATA is a
-  *mode* there (`MD6`/`MD9`) rather than a flag beside one. Pick the right one.
+  *mode* there (`MD6`/`MD9`) rather than a flag beside one. An ELAD driven as a
+  Kenwood tunes and keys and then reads every meter wrong, because its S-meter,
+  its SWR and its power control are all ELAD's own commands on ELAD's own
+  scales. Pick the right one.
 - **rigctld address** (Hamlib rigctld only) — `host:port` of a running Hamlib
   `rigctld`. `127.0.0.1:4532` is the daemon's own default, on this machine.
   Start one with, for example, `rigctld -m 2028 -r /dev/ttyUSB0 -s 38400`, where
@@ -3536,6 +3543,27 @@ setup and for radios whose keyer sdroxide cannot drive.
 > the frequency working too, so it is rarely the answer here. When the radio
 > answers the key-down with a refusal, sdroxide says so in the log: *the radio
 > refused the transmit command*.
+
+> **Note (ELAD):** this family is the FDM-DUO and FDM-DUOr. Set **Baud** to
+> match menu 70 `CAT BAUD` on the radio, which ships at 38400. The rig's own
+> S-meter and SWR are read (`SM` and `WR`) and its transmit power appears on the
+> Drive slider as the nine fixed steps the radio has — 0.3, 0.5, 1, 1.2, 1.5, 2,
+> 3, 4 and 5 W — rather than as a continuous control. **Transmit input** beside
+> the family selects where the radio takes transmit audio from: leave it on
+> `USB audio` unless you talk into the radio's own microphone.
+>
+> There is no DATA mode on an FDM-DUO, so digital modes go out as plain USB or
+> LSB and which input the radio transmits is the **Transmit input** setting
+> rather than anything the mode says. There is no text keyer either — `SW` plays
+> one of the ten messages stored in the radio — so the CW panel cannot key it
+> over CAT; use the radio's own key or paddle, or menu 37 `CW IN` set to
+> `Key+DTR`.
+>
+> If your FDM-DUO's *receive* USB cable is also plugged in, the **ELAD FDM-DUO /
+> FDM-S (USB)** interface ([6.2.16](#6216-elad-fdm-duo--fdm-s-usb)) drives the
+> whole radio at once — a real wideband panadapter instead of an audio-band
+> slice — and covers this CAT link itself. This family is for a DUO reached by
+> its CAT cable alone. Neither has been verified against a radio.
 
 > **Note:** RIT, XIT and split are driven over the same serial link, by moving
 > the radio's dial — see [2.6](#26-rit-and-xit). Set them in sdroxide rather than
@@ -4897,6 +4925,113 @@ turn off blanking alone to watch your own signal while still not hearing it.
   sample rate are still its own, and are set on its page.
 - Closing the receiver from the roster leaves the transceiver on the air: the
   pairing is dropped, with a line in the log saying so.
+
+#### 6.2.16 ELAD FDM-DUO / FDM-S (USB)
+
+An ELAD FDM-DUO, FDM-DUOr, FDM-S2 or FDM-S1, driven directly over USB by
+sdroxide's own pure-Rust driver. No SoapySDR, no libusb and no gr-elad, so this
+interface is in every build variant on every platform.
+
+All three are direct-sampling receivers: a 122.88 MHz ADC (61.44 MHz on the
+FDM-S1) behind a switchable low-pass bank and a 12 dB pad, with an FPGA
+down-converter delivering one wideband I/Q channel. The FDM-S2 covers
+10 kHz–54 MHz and the FDM-S1 10 kHz–30 MHz, both receive only. The FDM-DUO is a
+5 W transceiver wrapped around the same receiver.
+
+**One radio, three USB devices.** An FDM-DUO's rear panel has three USB sockets
+and they are three separate devices to the computer:
+
+| Socket | What it is | What sdroxide does with it |
+|---|---|---|
+| **RX** | ELAD's own vendor interface | The wideband I/Q — the panadapter, the demodulators, the skimmers |
+| **CAT** | An FTDI serial bridge | The dial, the mode, PTT, the S-meter, the SWR, the transmit power |
+| **USB Audio** | A USB sound card | Transmit audio out of sdroxide and into the radio |
+
+This one interface drives all three, so there is nothing to pair up and no
+second radio tab. An FDM-S1 or FDM-S2 has only the first of them.
+
+**Permissions.** Linux needs the packaged udev rule for the receive interface —
+see "ELAD permissions" in the README. The CAT port needs nothing installed; it
+is an ordinary `/dev/ttyUSB*`, so if that is what is refused the answer is the
+`dialout` group rather than the rule file. Windows needs the receive interface
+bound to WinUSB with [Zadig](https://zadig.akeo.ie/), which stops ELAD's own
+FDM-SW2 from seeing it until the driver is put back. macOS needs nothing.
+
+**Device.** Rescan lists what is on the bus, by model and by where it is plugged
+in. There is no serial number in the list: ELAD keeps the serial in the device's
+EEPROM rather than in its USB descriptor, so reading one would mean claiming
+every ELAD on the bus — including one that is streaming.
+
+**Sample rate — read carefully, because this one is not a command.** The
+down-converter delivers 192, 384, 768, 1536, 3072 or 6144 kHz, and **nothing
+sdroxide can send selects between them**. ELAD's own GNU Radio module does not
+set it either, and the FDM-DUO has no front-panel menu for it, which together
+say the decimation is programmed by ELAD's Windows software through a request
+that has never been published.
+
+So the device arrives at whatever rate it powered up in — 192 kHz on a fresh
+FDM-DUO — or whatever FDM-SW2 last left it in, and this setting says which one
+that is. Set it wrong and you still get samples: the panadapter is simply the
+wrong width, with every frequency inside it scaled to match. sdroxide measures
+the real throughput a couple of seconds after the stream starts and tells you on
+screen when the two disagree, naming the rate to pick. The one exception is
+6144 kHz, where the samples themselves are half as wide — a wrong guess there is
+noise rather than a mis-scaled spectrum.
+
+**Attenuator and pre-selection filters.** The pad is the same control as the main
+window's Gain slider. The filters are the low-pass bank in front of the ADC:
+bypassing them gives the widest view and the worst behaviour near strong
+out-of-band signals, so leave them in unless you are deliberately listening
+outside the filtered range.
+
+**Rig control (FDM-DUO only).** Set the serial port and the baud rate to match
+menu 70 `CAT BAUD` on the radio, which ships at **38400**. With the port set you
+get everything a CAT radio gives: the dial follows the front-panel knob and vice
+versa, the mode, PTT, the radio's own S-meter and SWR, and its transmit power on
+the Drive slider (nine fixed steps from 0.3 W to 5 W, which is what the radio
+has rather than a continuous control).
+
+Leave the port **empty** and an FDM-DUO is still usable on its receive cable
+alone: the driver tunes, changes mode and keys through the CAT gateway on the
+same USB interface. What you give up is everything that needs an *answer* — the
+S-meter, the SWR, the power readback, and any notice that somebody has touched
+the front panel. That is also the setting for an FDM-S1 or FDM-S2, which have no
+CAT port at all.
+
+**Transmit input** is the radio's `TI` command, menu 32 `TX IN` at the front
+panel, asserted when the port opens. **USB audio** is what makes transmit work
+here — the radio sends what sdroxide puts into its sound card. A radio left on
+**Microphone** transmits the room instead, with nothing on screen to say so,
+which is why this is a visible setting rather than an assumption. Pick the
+radio's own USB Audio device beside it, or under Settings → General → Radio
+audio.
+
+**The dial is not the panadapter centre.** Unlike a CAT radio feeding audio, this
+front end hands over a whole down-converter window, so the dial moves inside it
+in software the way it does on any other SDR here. The transceiver's own VFO is
+put where sdroxide will *transmit* — the dial in ordinary use, the transmit
+frequency under split or XIT — and it is put there while receiving, so the radio
+is already on frequency when the key goes down.
+
+**CW is keyed by the radio's own key or paddle.** The FDM-DUO has no command
+that accepts text — its `SW` command plays one of the ten messages stored *in
+the radio* — so the CW panel cannot key it over CAT. Menu 37 `CW IN` set to
+`Key+DTR` is the other route, using the CAT cable's DTR line as a straight key.
+
+> **Not verified against hardware.** The whole of this backend — the USB
+> protocol, the tuning arithmetic, the calibration map and the CAT dialect — is
+> written from ELAD's own [gr-elad](https://github.com/ELADIT/gr-elad) GNU Radio
+> module and from the FDM-DUO manual's CAT chapter. Nobody has run it against a
+> radio. If it misbehaves, **Copy diagnostic report** on the Radio tab puts
+> every command exchanged with the device on the clipboard; `cargo run -p
+> sdroxide-elad --example probe` does the same from a terminal and also settles
+> what rate the device is really in.
+>
+> Two things in particular want checking by the first person who can: whether
+> the down-converter feeding this USB interface is independent of the receiver
+> the transceiver uses for its own audio, and whether the stream survives a
+> transmit cycle. The second is assumed *not* to hold — receive stops for the
+> length of an over — which is the safe way to be wrong.
 
 ### 6.3 UI: display preferences and voice announcements
 

@@ -22,8 +22,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AirspyDevice, AirspyHfDevice, HackRfDevice, HpsdrDevice, IcomNetConfig, PlutoDevice,
-    RtlSdrDevice, Rx888Device, SdrPlayDevice, SmartSdrDevice, SoapyDeviceInfo,
+    AirspyDevice, AirspyHfDevice, EladDevice, HackRfDevice, HpsdrDevice, IcomNetConfig,
+    PlutoDevice, RtlSdrDevice, Rx888Device, SdrPlayDevice, SmartSdrDevice, SoapyDeviceInfo,
 };
 
 /// A question about the machine the radio is attached to.
@@ -63,6 +63,11 @@ pub enum DeviceProbe {
     /// The RSPs the SDRplay API service reports. Brief — the service answers
     /// from its own device table — and safe while one is streaming.
     SdrPlay,
+    /// ELAD FDM-DUO / FDM-S1 / FDM-S2 on the USB bus, same contract as
+    /// [`DeviceProbe::RtlSdr`]. These carry no USB serial string — ELAD keeps
+    /// the serial in EEPROM, which needs the device opened — so the entries are
+    /// named by model and bus address.
+    Elad,
     /// The SoapySDR enumeration. Unlike the USB lists this one is not free: it
     /// loads every installed SoapySDR module and asks each to scan, which on a
     /// bundle install means probing several buses. Asked on demand only.
@@ -143,6 +148,7 @@ pub enum ReportKind {
     Airspy,
     HackRf,
     Pluto,
+    Elad,
 }
 
 /// What the machine with the radio on it answered.
@@ -163,6 +169,7 @@ pub enum ProbeAnswer {
     Airspy(Vec<AirspyDevice>),
     HackRf(Vec<HackRfDevice>),
     SdrPlay(Vec<SdrPlayDevice>),
+    Elad(Vec<EladDevice>),
     Soapy(Vec<SoapyDeviceInfo>),
     Hpsdr(Vec<HpsdrDevice>),
     SmartSdr(Vec<SmartSdrDevice>),

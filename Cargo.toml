@@ -72,6 +72,7 @@ sdroxide-airspy = { path = "crates/sdroxide-airspy" }
 sdroxide-hackrf = { path = "crates/sdroxide-hackrf" }
 sdroxide-pluto = { path = "crates/sdroxide-pluto" }
 sdroxide-sdrplay = { path = "crates/sdroxide-sdrplay" }
+sdroxide-elad = { path = "crates/sdroxide-elad" }
 sdroxide-spyserver = { path = "crates/sdroxide-spyserver" }
 sdroxide-net = { path = "crates/sdroxide-net" }
 sdroxide-winlink = { path = "crates/sdroxide-winlink" }
@@ -127,6 +128,7 @@ sdroxide-airspy.workspace = true
 sdroxide-hackrf.workspace = true
 sdroxide-pluto.workspace = true
 sdroxide-sdrplay.workspace = true
+sdroxide-elad.workspace = true
 sdroxide-spyserver.workspace = true
 sdroxide-ui = { workspace = true, features = ["remote"] }
 # `accesskit` is one of eframe's defaults, and turning the defaults off
@@ -182,6 +184,7 @@ assets = [
     ["packaging/linux/60-sdroxide-airspyhf.rules", "usr/lib/udev/rules.d/", "644"],
     ["packaging/linux/60-sdroxide-hackrf.rules", "usr/lib/udev/rules.d/", "644"],
     ["packaging/linux/60-sdroxide-airspy.rules", "usr/lib/udev/rules.d/", "644"],
+    ["packaging/linux/60-sdroxide-elad.rules", "usr/lib/udev/rules.d/", "644"],
     ["packaging/icons/sdroxide.svg", "usr/share/icons/hicolor/scalable/apps/sdroxide.svg", "644"],
     ["packaging/icons/sdroxide-16.png", "usr/share/icons/hicolor/16x16/apps/sdroxide.png", "644"],
     ["packaging/icons/sdroxide-24.png", "usr/share/icons/hicolor/24x24/apps/sdroxide.png", "644"],

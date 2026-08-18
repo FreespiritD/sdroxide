@@ -1,0 +1,20 @@
+[package]
+name = "sdroxide-elad"
+version.workspace = true
+edition.workspace = true
+
+# Native-only ELAD FDM-DUO / FDM-S1 / FDM-S2 support over USB. Pure Rust via
+# `nusb` — no libusb, no gr-elad, no SoapySDR module, no C dependency at all.
+# Must never be a dependency of any wasm-targeted crate.
+[dependencies]
+sdroxide-types.workspace = true
+# For `Complex32`, which the trace decodes the first bulk block into.
+sdroxide-dsp.workspace = true
+crossbeam-channel.workspace = true
+rtrb.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+nusb.workspace = true
+
+[dev-dependencies]
+tracing-subscriber.workspace = true

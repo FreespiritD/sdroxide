@@ -8,6 +8,10 @@
 /// Icom CI-V framing and parsing. Public because the Icom LAN backend tunnels
 /// the same protocol over UDP and must not carry a second copy of it.
 pub mod civ;
+/// ELAD framing. Public for the same reason [`civ`] is: the native ELAD backend
+/// tunnels these commands through the FDM-DUO's USB interface and must not
+/// carry a second copy of them.
+pub mod elad;
 mod elecraft;
 mod kenwood;
 mod rigctld;
@@ -387,6 +391,7 @@ fn make_protocol(cfg: &CatConfig) -> Box<dyn Protocol> {
         CatFamily::Yaesu => Box::new(yaesu::Yaesu::new()),
         CatFamily::Kenwood => Box::new(kenwood::Kenwood::new(cfg.kenwood_send)),
         CatFamily::Elecraft => Box::new(elecraft::Elecraft::new()),
+        CatFamily::Elad => Box::new(elad::Elad::new(cfg.elad_tx_input)),
         CatFamily::Rigctld => Box::new(rigctld::Rigctld::new()),
     }
 }

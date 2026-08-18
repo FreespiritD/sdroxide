@@ -42,8 +42,8 @@ pub(in crate::app) fn settings_cat_tab(
     can_probe: bool,
 ) {
     use sdroxide_types::{
-        CatFamily, CwKeying, DigiMode, IcomModel, KenwoodSend, LineState, ModeControl, Parity,
-        PttMethod, SoundFormat, StopBits,
+        CatFamily, CwKeying, DigiMode, EladTxInput, IcomModel, KenwoodSend, LineState, ModeControl,
+        Parity, PttMethod, SoundFormat, StopBits,
     };
     let Some(cfg) = radio_edit.as_mut() else {
         ui.label("Waiting for the configuration of the machine the radio is attached to.");
@@ -317,6 +317,48 @@ pub(in crate::app) fn settings_cat_tab(
                  Note the baud rates above: the K3, K3S, KX3 and KX2 go no \
                  faster than 38400, and a rig set below the rate chosen here \
                  answers nothing at all.",
+            );
+            ui.end_row();
+        }
+
+        if cfg.cat.family == CatFamily::Elad {
+            ui.label("Transmit input").on_hover_text(
+                "Where the radio takes its transmit audio from — the rig's TI \
+                 command, which is menu 32 \"TX IN\" at the front panel. \
+                 Asserted when the port opens.\n\n\
+                 \"USB audio\" is what makes this interface work: the FDM-DUO \
+                 transmits what sdroxide puts into its USB sound card. A radio \
+                 left on \"Microphone\" sends the room instead, and nothing on \
+                 screen says so.\n\n\
+                 \"Auto\" lets the rig choose — the microphone for a PTT press \
+                 on the microphone, the USB port for a CAT or RTS key-down.\n\n\
+                 \"Leave as set on the radio\" sends no TI at all, for an \
+                 operator who sets this at the front panel.",
+            );
+            enum_combo(
+                ui,
+                "eladtxin",
+                &mut cfg.cat.elad_tx_input,
+                &EladTxInput::ALL,
+                EladTxInput::label,
+            );
+            ui.end_row();
+
+            ui.label("Radio");
+            ui.label(RichText::new("FDM-DUO · FDM-DUOr").weak()).on_hover_text(
+                "One profile covers both. There is nothing to pick here — the \
+                 radio names itself when the port opens.\n\n\
+                 This is the CAT half only: it drives the dial, the mode, PTT, \
+                 the S-meter, the SWR and the transmit power over the rig's \
+                 CAT USB port, and takes audio from its USB Audio port. The \
+                 FDM-DUO's third USB port carries wideband I/Q, which this \
+                 interface does not read — select the ELAD interface above for \
+                 that.\n\n\
+                 Note the baud rate: menu 70 \"CAT BAUD\" on the radio must \
+                 match, and it ships at 38400.\n\n\
+                 CW is keyed by the radio's own key or paddle. The FDM-DUO has \
+                 no command that accepts text, so the CW panel cannot key it \
+                 over CAT.",
             );
             ui.end_row();
         }
@@ -2813,6 +2855,325 @@ fn push_gain(cmds: &mut Vec<Command>, element: &str, db: f64) {
 /// a real receiver, so the first people to use it are the ones who can say
 /// whether it works.
 #[allow(clippy::too_many_arguments)]
+/// ELAD FDM-DUO / FDM-S1 / FDM-S2.
+///
+/// One tab for what is physically three USB devices, which is why it reaches
+/// into three config blocks: `elad` for the receiver, `cat` for the
+/// transceiver's serial control link (the same block the CAT / Audio interface
+/// uses, so a DUO already working there keeps its port and baud rate), and — by
+/// pointing at the General tab — `radio_audio_out` for transmit audio.
+#[allow(clippy::too_many_arguments)]
+pub(in crate::app) fn settings_elad_tab(
+    ui: &mut egui::Ui,
+    devices: &[sdroxide_types::EladDevice],
+    serial_ports: &[String],
+    audio_outputs: Option<&[String]>,
+    radio_edit: &mut Option<sdroxide_types::RadioConfig>,
+    rescan: &mut bool,
+    copy_report: &mut bool,
+    can_probe: bool,
+    cmds: &mut Vec<Command>,
+) {
+    use sdroxide_types::{
+        ELAD_ATTENUATOR_DB, ELAD_SAMPLE_RATES, EladConfig, EladTxInput, ModeControl, PttMethod,
+    };
+    let Some(cfg) = radio_edit.as_mut() else {
+        ui.label("Waiting for the configuration of the machine the radio is attached to.");
+        return;
+    };
+
+    // What rebuilds the session. The rate is in here even though nothing is
+    // commanded by it: the engine builds its whole downconversion chain around
+    // `IqSource::sample_rate`, so reading the stream differently means opening
+    // the source again.
+    let before = (
+        cfg.elad.serial.clone(),
+        cfg.elad.sample_rate_hz,
+        cfg.cat.serial.path.clone(),
+        cfg.cat.serial.baud,
+    );
+
+    egui::Grid::new("elad-grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+        ui.label("Device");
+        probe_only(ui, can_probe, |ui| {
+            ui.horizontal(|ui| {
+                if ui
+                    .button("Rescan")
+                    .on_hover_text(
+                        "Re-list the USB bus. No device is opened, so this is safe \
+                         to press while receiving.",
+                    )
+                    .clicked()
+                {
+                    *rescan = true;
+                }
+                let shown = if cfg.elad.serial.is_empty() {
+                    "— first one found —".to_string()
+                } else {
+                    cfg.elad.serial.clone()
+                };
+                ComboBox::from_id_salt("elad_dev").width(300.0).selected_text(shown).show_ui(
+                    ui,
+                    |ui| {
+                        if devices.is_empty() {
+                            ui.label(RichText::new("no devices — press Rescan").weak());
+                        }
+                        ui.selectable_value(
+                            &mut cfg.elad.serial,
+                            String::new(),
+                            "— first one found —",
+                        );
+                        // Nothing here can be pinned by serial: ELAD keeps the
+                        // number in the device's EEPROM rather than in its USB
+                        // descriptor, so listing it would mean claiming every
+                        // device on the bus — including one that is streaming.
+                        // The entries name the model and where it is plugged in.
+                        for d in devices {
+                            ui.label(RichText::new(d.label()).weak());
+                        }
+                    },
+                );
+            });
+        });
+        ui.end_row();
+
+        ui.label("Sample rate").on_hover_text(
+            "How the receiver's stream is READ — not what the receiver is told \
+             to do.\n\n\
+             Nothing sdroxide can send selects the ELAD's decimation. The device \
+             arrives at whatever rate it powered up in or was last left in by \
+             ELAD's own software (192 kHz on a fresh FDM-DUO), and this setting \
+             says which one that is. Get it wrong and the panadapter is simply \
+             the wrong width, with every frequency inside it scaled to match.\n\n\
+             The stream's real rate is measured a couple of seconds after it \
+             starts, and a mismatch is reported on screen. Takes effect on Apply.",
+        );
+        ui.horizontal(|ui| {
+            let shown = format!("{:.0} kHz", cfg.elad.sample_rate_hz as f64 / 1e3);
+            ComboBox::from_id_salt("elad_rate").width(150.0).selected_text(shown).show_ui(
+                ui,
+                |ui| {
+                    for r in ELAD_SAMPLE_RATES {
+                        // The top rate is not just a wider window: the samples
+                        // themselves are half as wide, so picking it wrongly
+                        // produces noise rather than a mis-scaled spectrum.
+                        let label = if r >= 6_144_000 {
+                            format!("{:.0} kHz  (16-bit samples)", r as f64 / 1e3)
+                        } else {
+                            format!("{:.0} kHz", r as f64 / 1e3)
+                        };
+                        if ui.selectable_label(cfg.elad.sample_rate_hz == r, label).clicked() {
+                            cfg.elad.sample_rate_hz = r;
+                        }
+                    }
+                },
+            );
+            ui.add(
+                egui::Label::new(
+                    RichText::new("what the device is in, not what it is told").weak(),
+                )
+                .wrap(),
+            );
+        });
+        ui.end_row();
+
+        ui.label("Attenuator").on_hover_text(
+            "The receiver's input pad — one step, in or out. The same control as \
+             the main window's Gain slider.",
+        );
+        let mut att = cfg.elad.attenuator;
+        if ui.checkbox(&mut att, format!("{ELAD_ATTENUATOR_DB:.0} dB pad in")).changed() {
+            cfg.elad.attenuator = att;
+            push_gain(cmds, EladConfig::ATT_ELEMENT, if att { -ELAD_ATTENUATOR_DB } else { 0.0 });
+        }
+        ui.end_row();
+
+        ui.label("Pre-selection filters").on_hover_text(
+            "The low-pass bank in front of the ADC. Bypassing it gives the widest \
+             view and the worst behaviour near strong out-of-band signals — a \
+             broadcast transmitter a few miles away will put images across the \
+             band. Leave it on unless you are deliberately listening outside the \
+             filtered range.",
+        );
+        let mut lpf = cfg.elad.preselector;
+        if ui.checkbox(&mut lpf, "Filters in circuit").changed() {
+            cfg.elad.preselector = lpf;
+            push_gain(cmds, EladConfig::LPF_ELEMENT, f64::from(u8::from(lpf)));
+        }
+        ui.end_row();
+    });
+
+    ui.add_space(8.0);
+    ui.label(RichText::new("Rig control — FDM-DUO only").strong());
+    ui.label(
+        RichText::new(
+            "The transceiver's CAT USB port, which is a separate cable from the \
+             receive one. Leave the port unset on an FDM-S1 or FDM-S2, which have \
+             none — and on an FDM-DUO you would rather drive through its receive \
+             cable alone, where it can still be tuned and keyed but no meter can \
+             be read.",
+        )
+        .weak(),
+    );
+
+    egui::Grid::new("elad-cat-grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+        ui.label("Serial port");
+        let shown = if cfg.cat.serial.path.is_empty() {
+            "— none (USB control only) —".to_string()
+        } else {
+            cfg.cat.serial.path.clone()
+        };
+        probe_only(ui, can_probe, |ui| {
+            ComboBox::from_id_salt("elad_serport").width(260.0).selected_text(shown).show_ui(
+                ui,
+                |ui| {
+                    ui.selectable_value(
+                        &mut cfg.cat.serial.path,
+                        String::new(),
+                        "— none (USB control only) —",
+                    );
+                    for p in serial_ports {
+                        if ui.selectable_label(&cfg.cat.serial.path == p, p).clicked() {
+                            cfg.cat.serial.path = p.clone();
+                        }
+                    }
+                },
+            );
+        });
+        ui.end_row();
+
+        ui.label("Baud")
+            .on_hover_text("Must match menu 70 \"CAT BAUD\" on the radio, which ships at 38400.");
+        ComboBox::from_id_salt("elad_baud").selected_text(cfg.cat.serial.baud.to_string()).show_ui(
+            ui,
+            |ui| {
+                // The four the FDM-DUO's own menu offers, and only those:
+                // anything else is a rate the radio will not answer at.
+                for b in [9600u32, 38400, 57600, 115200] {
+                    if ui.selectable_label(cfg.cat.serial.baud == b, b.to_string()).clicked() {
+                        cfg.cat.serial.baud = b;
+                    }
+                }
+            },
+        );
+        ui.end_row();
+
+        ui.label("PTT method").on_hover_text(
+            "How transmit is keyed. \"CAT\" sends the radio's own TX command and \
+             needs nothing set up on the rig; RTS needs menu 54 \"PTT\" set to \
+             PTT+RTS.",
+        );
+        enum_combo(ui, "elad_ptt", &mut cfg.cat.ptt, &PttMethod::ALL, PttMethod::label);
+        ui.end_row();
+
+        ui.label("Transmit input").on_hover_text(
+            "Where the radio takes its transmit audio from — the rig's TI command, \
+             which is menu 32 \"TX IN\" at the front panel. Asserted when the port \
+             opens.\n\n\
+             \"USB audio\" is what makes transmit work here: the FDM-DUO sends \
+             what sdroxide puts into its USB sound card. A radio left on \
+             \"Microphone\" sends the room instead, and nothing on screen says so.",
+        );
+        enum_combo(
+            ui,
+            "elad_txin",
+            &mut cfg.cat.elad_tx_input,
+            &EladTxInput::ALL,
+            EladTxInput::label,
+        );
+        ui.end_row();
+
+        ui.label("Mode control");
+        enum_combo(
+            ui,
+            "elad_modectl",
+            &mut cfg.cat.mode_control,
+            &ModeControl::ALL,
+            ModeControl::label,
+        );
+        ui.end_row();
+
+        ui.label("Poll rate").on_hover_text(
+            "How often the radio is asked what it is doing — its dial, its mode \
+             and its meters. Turn the rig's own VFO knob and the readout follows \
+             within one poll.",
+        );
+        ui.add(DragValue::new(&mut cfg.cat.poll_hz).speed(0.5).range(0.5..=20.0).suffix(" Hz"));
+        ui.end_row();
+
+        ui.label("Transmit audio");
+        match audio_outputs {
+            Some(outs) => {
+                let shown =
+                    cfg.radio_audio_out.clone().unwrap_or_else(|| "— system default —".to_string());
+                ComboBox::from_id_salt("elad_txaudio")
+                    .width(300.0)
+                    .selected_text(shown)
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut cfg.radio_audio_out, None, "— system default —");
+                        for o in outs {
+                            ui.selectable_value(&mut cfg.radio_audio_out, Some(o.clone()), o);
+                        }
+                    })
+                    .response
+                    .on_hover_text(
+                        "The FDM-DUO's own USB Audio port. Left on the system default \
+                     it is almost never the radio — it is the machine's speakers.",
+                    );
+            }
+            None => {
+                ui.label(RichText::new("press Rescan to list the sound cards").weak());
+            }
+        }
+        ui.end_row();
+
+        ui.label("");
+        probe_only(ui, can_probe, |ui| {
+            if ui
+                .button("Copy diagnostic report")
+                .on_hover_text(
+                    "Copies the last session's trace to the clipboard, for a bug \
+                     report: every command exchanged with the device, and the \
+                     first bytes of the sample stream.",
+                )
+                .clicked()
+            {
+                *copy_report = true;
+            }
+        });
+        ui.end_row();
+    });
+
+    ui.add_space(4.0);
+    ui.label(
+        RichText::new(
+            "ELAD support has not been verified against real hardware. If it \
+             misbehaves, please attach the diagnostic report to a bug report.",
+        )
+        .color(crate::theme::YELLOW()),
+    );
+    ui.label(
+        RichText::new(
+            "CW is keyed by the radio's own key or paddle: the FDM-DUO has no \
+             command that accepts text, so the CW panel cannot key it.",
+        )
+        .weak(),
+    );
+
+    if (
+        cfg.elad.serial.clone(),
+        cfg.elad.sample_rate_hz,
+        cfg.cat.serial.path.clone(),
+        cfg.cat.serial.baud,
+    ) != before
+    {
+        // No `apply` flag here: the interface row's own Apply is what reopens
+        // the source, and these four are the settings that need it.
+        ui.add_space(4.0);
+        ui.label(RichText::new("Press Apply to reopen the radio.").weak());
+    }
+}
+
 pub(in crate::app) fn settings_airspyhf_tab(
     ui: &mut egui::Ui,
     devices: &[sdroxide_types::AirspyHfDevice],

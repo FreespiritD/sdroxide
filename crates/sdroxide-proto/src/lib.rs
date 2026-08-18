@@ -365,7 +365,13 @@ use sdroxide_types::{
 /// last as usual. `IsmSettings` carries its per-family switches as a bitmask
 /// rather than a fixed-length array precisely so that the *next* protocol family
 /// added does not force this bump again.
-pub const PROTO_VERSION: u16 = 63;
+///
+/// **64** — the ELAD backend. `Backend`, `DeviceProbe`, `ProbeAnswer` and
+/// `ReportKind` each gained a variant and `RadioConfig` an `elad` block. All
+/// appends, but a v63 client asked to decode the new `Backend::Elad` — or handed
+/// a `RadioConfig` with one more field on the end — has nowhere to put it, and
+/// the config is what a client reads to draw the settings dialog.
+pub const PROTO_VERSION: u16 = 64;
 const VERSION_BYTE: u8 = 0x12;
 
 #[derive(Debug, thiserror::Error)]

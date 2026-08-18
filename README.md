@@ -1,7 +1,7 @@
 # SDR Oxide
 
 A PowerSDR/Thetis-style software-defined-radio transceiver client in Rust, with
-pluggable radio backends (**SoapySDR**, **OpenHPSDR**, **TCI**, **SmartSDR**, **Icom LAN**, and **CAT**), an
+pluggable radio backends (**SoapySDR**, **OpenHPSDR**, **TCI**, **SmartSDR**, **Icom LAN**, **ELAD**, and **CAT**), an
 [egui](https://github.com/emilk/egui) GUI, and a cyberpunk theme. It runs as a **native desktop application** and, from the same
 binary, as a **server that streams the same UI to a web browser** over
 WebSocket. It includes an integrated, persistent **logbook**, many digital modes like **FT8/FT4/FT2**
@@ -42,7 +42,8 @@ One binary, three ways to run it:
   RX-888 (native support), SDRplay RSP (native, via the vendor API service),
   SmartSDR (FlexRadio - experimental!), PlutoSDR (native support, experimental!),
   Icom LAN / RS-BA1 protocol (experimental!), HackRF (native support, RX
-  verified / TX unmeasured), Airspy R2/Mini (native support, experimental!)
+  verified / TX unmeasured), Airspy R2/Mini (native support, experimental!),
+  ELAD FDM-DUO / FDM-S1 / FDM-S2 (native support, experimental!)
 - **Panadapter** — GPU (wgpu) waterfall + spectrum line, wheel-zoom around the
   cursor, drag-to-pan, per-digit frequency readout, selectable colormaps,
   peak-hold, and **auto-contrast** ("FIT", on by default) that keeps the display
@@ -531,6 +532,35 @@ starting sdroxide before the rig is fine:
   RSPdx HDR mode are available on the Radio tab, and only the rows the selected
   model actually supports are shown.
 
+- **ELAD FDM-DUO / FDM-S (USB)** — an ELAD FDM-DUO, FDM-DUOr, FDM-S2 or FDM-S1,
+  driven directly over USB by a pure-Rust driver — no libusb, no gr-elad, no
+  SoapySDR module. All three are direct-sampling receivers (a 122.88 MHz ADC,
+  61.44 on the S1) with an FPGA down-converter delivering one wideband I/Q
+  channel; the S2 and S1 are receive-only, 10 kHz–54 MHz and 10 kHz–30 MHz.
+
+  An **FDM-DUO is three USB devices** and this one interface drives all of them:
+  the vendor interface for I/Q, the CAT serial port for rig control, and the
+  radio's USB Audio port for transmit audio. Set the CAT port on the same tab
+  and the dial, the mode, PTT, the S-meter, the SWR and the transmit power all
+  work; leave it empty and the DUO is still tuned and keyed through its *receive*
+  cable alone, using the CAT gateway on that interface — everything that needs an
+  answer from the radio is what you give up. CW is keyed by the radio's own key
+  or paddle: the FDM-DUO has no command that accepts text.
+
+  **The sample rate cannot be commanded.** The DDC delivers 192, 384, 768, 1536,
+  3072 or 6144 kHz and no request this driver knows selects between them — ELAD's
+  own GNU Radio module does not set it either, and the radio has no menu for it.
+  The device arrives in whatever mode it was left in (192 kHz on a fresh DUO) and
+  the Sample rate setting says how the stream is *read*; sdroxide measures the
+  real throughput a couple of seconds in and tells you on screen if the two
+  disagree. See "ELAD permissions" under Building for the Linux udev rule.
+
+  **Not verified against hardware.** The whole backend is written from ELAD's own
+  [gr-elad](https://github.com/ELADIT/gr-elad) and the FDM-DUO manual's CAT
+  chapter. **Copy diagnostic report** on the Radio tab dumps every command
+  exchanged with the device, and `cargo run -p sdroxide-elad --example probe`
+  does the same from a terminal.
+
 - **PlutoSDR (network)** — an ADALM-Pluto, driven directly over the **IIOD**
   protocol its on-board daemon serves. **No SoapySDR and no libiio**, so it
   works in every build including the standard `.msi` and `.dmg`. Wideband IQ
@@ -564,8 +594,9 @@ starting sdroxide before the rig is fine:
   `RUST_LOG=sdroxide_hpsdr=debug sdroxide` for connection/RX diagnostics (see the
   user manual, §5.4).
 
-- **CAT / Audio** — a CAT-controlled rig (Icom/CI-V, Yaesu, Xiegu) with audio
-  over a USB sound card, as either demodulated mono audio or stereo IQ.
+- **CAT / Audio** — a CAT-controlled rig (Icom/CI-V, Kenwood, Yaesu, Elecraft,
+  Xiegu, ELAD, or anything Hamlib's `rigctld` drives) with audio over a USB
+  sound card, as either demodulated mono audio or stereo IQ.
 
 - **TCI** — a TCI (Transceiver Control Interface) server such as ExpertSDR3 
   over WebSocket (default `127.0.0.1:50001`): wideband IQ receive plus 
@@ -587,11 +618,11 @@ starting sdroxide before the rig is fine:
   which is this backend's widest span.
 
 The wideband-IQ backends (RTL-SDR over USB or rtl_tcp, RX-888, Airspy HF+,
-Airspy R2/Mini, SDRplay, HackRF, SoapySDR, HPSDR, TCI, SmartSDR, PlutoSDR)
+Airspy R2/Mini, SDRplay, HackRF, ELAD, SoapySDR, HPSDR, TCI, SmartSDR, PlutoSDR)
 drive the full panadapter, the CW/PSK/RTTY skimmers, and internal demodulation;
 a CAT rig feeding demodulated audio shows only a narrow audio-band slice.
-RTL-SDR, RX-888, Airspy HF+, Airspy R2/Mini and SDRplay are receive-only; the
-others can transmit — the HackRF half duplex, the PlutoSDR either way (half
+RTL-SDR, RX-888, Airspy HF+, Airspy R2/Mini, SDRplay and the ELAD FDM-S are
+receive-only; the others can transmit — the HackRF half duplex, the PlutoSDR either way (half
 duplex by default, full duplex on a board with real Ethernet behind it), the
 rest while still receiving.
 
@@ -995,6 +1026,31 @@ non-root user.
 bind WinUSB by itself, so this normally needs nothing. A radio that has been
 through [Zadig](https://zadig.akeo.ie/) for something else may need Zadig again
 to put it back on WinUSB.
+
+**macOS.** Nothing to do.
+
+### ELAD permissions
+
+Same situation again — direct USB access, no vendor package.
+
+**Linux.** Install the packaged udev rule and replug the device:
+
+```sh
+sudo cp packaging/linux/60-sdroxide-elad.rules /usr/lib/udev/rules.d/
+sudo udevadm control --reload
+```
+
+The `.deb` installs this for you. The rule covers the FDM-DUO (`1721:061a`), the
+FDM-S2 (`061c`) and the FDM-S1 (`0610`) — the *receive* interface only. An
+FDM-DUO's other two USB ports need nothing installed: its CAT port is an FTDI
+bridge the in-tree `ftdi_sio` driver already handles (it appears as
+`/dev/ttyUSB*`, and access to that is the `dialout` group, not this file), and
+its audio port is an ordinary USB audio device.
+
+**Windows.** ELAD's own driver package binds the receive interface to their
+Cypress driver, which only their software can use. Bind it to WinUSB with
+[Zadig](https://zadig.akeo.ie/) instead — note that this stops FDM-SW2 seeing
+the device until the driver is put back.
 
 **macOS.** Nothing to do.
 

@@ -1,0 +1,543 @@
+//! The handle the rest of the program holds, and the accounting behind it.
+//!
+//! Same shape as [`sdroxide_airspyhf::AirspyHfHandle`]: one blocking thread owns
+//! the device, control goes in over a crossbeam channel, samples come back out
+//! through an `rtrb` ring of interleaved `f32`.
+
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
+
+use crossbeam_channel::Sender;
+use rtrb::{Consumer, Producer, RingBuffer};
+use sdroxide_types::EladConfig;
+
+use crate::error::Result;
+use crate::protocol::Model;
+use crate::trace::Trace;
+
+/// How often the stream thread emits a throughput line.
+const STATS_INTERVAL: Duration = Duration::from_secs(2);
+
+/// How long the stream must run before the measured rate is worth reporting.
+/// Below this the host's own scheduling and the ring filling up dominate.
+const RATE_SETTLE: Duration = Duration::from_secs(2);
+
+/// How far the measured rate may differ from the configured one before the
+/// operator is told. Wide enough that jitter and a busy machine cannot trip it,
+/// narrow enough that the gaps between the real rates — each is twice the last
+/// — are all far outside it.
+const RATE_TOLERANCE: f64 = 0.10;
+
+/// A control message for the stream thread.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum Ctrl {
+    Center(f64),
+    Attenuator(bool),
+    Preselector(bool),
+    /// An ASCII CAT command for the FDM-DUO, through the USB gateway.
+    Cat(String),
+    Shutdown,
+}
+
+/// Control messages accumulated over one pass of the thread loop.
+///
+/// Dragging the panadapter emits hundreds of `Center` messages a second and a
+/// retune is a control transfer plus — on a DUO — a CAT write with a busy-wait
+/// in front of it. Applying each in turn would put the thread permanently
+/// behind the operator's hand *and* starve the completion drain, so the whole
+/// channel is collapsed into this and each field applied once, last value wins.
+#[derive(Debug, Default, PartialEq)]
+pub(crate) struct Pending {
+    pub center: Option<f64>,
+    pub attenuator: Option<bool>,
+    pub preselector: Option<bool>,
+    /// **Not** coalesced. Each CAT command is its own instruction to the radio
+    /// and they are not interchangeable — collapsing a queue of them to the
+    /// last would drop everything but the most recent.
+    pub cat: Vec<String>,
+    pub shutdown: bool,
+}
+
+impl Pending {
+    pub(crate) fn absorb(&mut self, c: Ctrl) {
+        match c {
+            Ctrl::Center(v) => self.center = Some(v),
+            Ctrl::Attenuator(v) => self.attenuator = Some(v),
+            Ctrl::Preselector(v) => self.preselector = Some(v),
+            Ctrl::Cat(s) => self.cat.push(s),
+            Ctrl::Shutdown => self.shutdown = true,
+        }
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        *self == Pending::default()
+    }
+}
+
+/// Throughput and health accounting.
+pub(crate) struct RxStats {
+    nominal_hz: f64,
+    /// When the first sample arrived, and the sample count since then.
+    ///
+    /// Deliberately *not* the thread start: identifying and configuring the
+    /// device is a dozen control transfers before the first sample appears, and
+    /// counting that dead time against the sample total biases the measured
+    /// rate low — which here would be read as the configured rate being wrong.
+    first_iq: Option<Instant>,
+    since: Instant,
+    win_samples: u64,
+    win_dropped: u64,
+    win_errors: u64,
+    total_samples: u64,
+    total_dropped: u64,
+    total_errors: u64,
+    stalls: u64,
+    /// Whether the rate check has already been made. Once only: it is a
+    /// statement about the device, not a running condition.
+    rate_checked: bool,
+}
+
+impl RxStats {
+    pub(crate) fn new(nominal_hz: f64) -> RxStats {
+        RxStats {
+            nominal_hz,
+            first_iq: None,
+            since: Instant::now(),
+            win_samples: 0,
+            win_dropped: 0,
+            win_errors: 0,
+            total_samples: 0,
+            total_dropped: 0,
+            total_errors: 0,
+            stalls: 0,
+            rate_checked: false,
+        }
+    }
+
+    pub(crate) fn on_iq(&mut self, pairs: usize) {
+        self.win_samples += pairs as u64;
+        match self.first_iq {
+            // Start the clock at the first block and do not count that block:
+            // it spans an unknown interval reaching back into device setup.
+            None => self.first_iq = Some(Instant::now()),
+            Some(_) => self.total_samples += pairs as u64,
+        }
+    }
+
+    pub(crate) fn on_dropped(&mut self, pairs: usize) {
+        self.win_dropped += pairs as u64;
+        self.total_dropped += pairs as u64;
+    }
+
+    pub(crate) fn on_error(&mut self) {
+        self.win_errors += 1;
+        self.total_errors += 1;
+    }
+
+    pub(crate) fn on_stall(&mut self) {
+        self.stalls += 1;
+        self.on_error();
+    }
+
+    /// The rate the stream is actually arriving at, once enough of it has.
+    pub(crate) fn measured_hz(&self) -> Option<f64> {
+        let dt = self.first_iq?.elapsed();
+        if dt < RATE_SETTLE || self.total_samples == 0 {
+            return None;
+        }
+        Some(self.total_samples as f64 / dt.as_secs_f64())
+    }
+
+    /// Check the stream's real rate against the one it is being read as, once.
+    ///
+    /// This exists because nothing this driver knows how to send programs the
+    /// DDC's decimation: the configured rate is a guess at the state the device
+    /// was left in, and the throughput is the only evidence available either
+    /// way. A guess that is wrong is not subtle — the rates are octaves apart —
+    /// but it is *silent*, because a stream read at the wrong rate is still a
+    /// perfectly healthy-looking panadapter of the wrong width.
+    ///
+    /// Returns a sentence for the operator when the two disagree.
+    pub(crate) fn check_rate(&mut self, trace: &Trace) -> Option<String> {
+        if self.rate_checked {
+            return None;
+        }
+        let measured = self.measured_hz()?;
+        self.rate_checked = true;
+        trace.measured_rate(self.nominal_hz, measured);
+        if self.nominal_hz <= 0.0 {
+            return None;
+        }
+        let err = (measured / self.nominal_hz - 1.0).abs();
+        if err <= RATE_TOLERANCE {
+            return None;
+        }
+        // Name the rate on the list it is nearest to, because that is the one
+        // the operator has to pick — not the raw measurement, which never lands
+        // exactly on any of them.
+        let nearest = sdroxide_types::ELAD_SAMPLE_RATES
+            .iter()
+            .copied()
+            .min_by(|a, b| {
+                let d = |r: u32| (r as f64 - measured).abs();
+                d(*a).partial_cmp(&d(*b)).unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .unwrap_or(sdroxide_types::ELAD_DEFAULT_RATE_HZ);
+        Some(format!(
+            "the stream is arriving at about {:.0} kHz but is being read as {:.0} kHz — \
+             the device is most likely in its {:.0} kHz mode. Nothing sdroxide can send \
+             changes the decimation, so set the sample rate in Settings → Radio to {:.0} kHz \
+             to match (or use ELAD's own software once to put the device in the mode you want).",
+            measured / 1000.0,
+            self.nominal_hz / 1000.0,
+            nearest as f64 / 1000.0,
+            nearest as f64 / 1000.0,
+        ))
+    }
+
+    pub(crate) fn summary(&self) -> String {
+        let rate = match self.measured_hz() {
+            Some(hz) => format!("{hz:.0} sps measured against {:.0} configured", self.nominal_hz),
+            None => "rate not measured".to_string(),
+        };
+        format!(
+            "{} samples, {} dropped, {} transfer errors, {} endpoint stalls; {rate}",
+            self.total_samples, self.total_dropped, self.total_errors, self.stalls,
+        )
+    }
+
+    pub(crate) fn tick(&mut self, trace: &Trace) {
+        let dt = self.since.elapsed();
+        if dt < STATS_INTERVAL {
+            return;
+        }
+        let ksps = self.win_samples as f64 / dt.as_secs_f64() / 1000.0;
+        if self.win_dropped > 0 || self.win_errors > 0 {
+            let line = format!(
+                "ELAD RX: {} samples ({ksps:.1} ksps) over {:.2}s; \
+                 {} sample(s) DROPPED (RX ring full — the DSP thread is not keeping up; \
+                 try a lower sample rate), {} transfer error(s); totals {} dropped / {} errors",
+                self.win_samples,
+                dt.as_secs_f64(),
+                self.win_dropped,
+                self.win_errors,
+                self.total_dropped,
+                self.total_errors,
+            );
+            tracing::warn!("{line}");
+            trace.note(line);
+        } else {
+            tracing::debug!(
+                "ELAD RX: {} samples ({ksps:.1} ksps) over {:.2}s; total {}",
+                self.win_samples,
+                dt.as_secs_f64(),
+                self.total_samples,
+            );
+        }
+        self.since = Instant::now();
+        self.win_samples = 0;
+        self.win_dropped = 0;
+        self.win_errors = 0;
+    }
+}
+
+/// Push interleaved I/Q into the RX ring, keeping I and Q paired.
+///
+/// All-or-nothing: if the ring cannot take the whole block it is dropped whole.
+/// Pushing what fits would leave the ring one float out of step, swapping I with
+/// Q for the rest of the session — a mirrored, unusable spectrum that reads like
+/// a driver bug rather than the overrun it is.
+pub(crate) fn push_iq(rx: &mut Producer<f32>, iq: &[f32], stats: &mut RxStats) {
+    let Ok(mut chunk) = rx.write_chunk(iq.len()) else {
+        stats.on_dropped(iq.len() / 2);
+        return;
+    };
+    let (head, tail) = chunk.as_mut_slices();
+    head.copy_from_slice(&iq[..head.len()]);
+    tail.copy_from_slice(&iq[head.len()..]);
+    chunk.commit_all();
+}
+
+/// Shared state the stream thread publishes and the handle reads.
+pub(crate) struct Shared {
+    pub alive: AtomicBool,
+    /// Milliseconds since the thread started, at the last sample delivered.
+    pub last_rx_ms: AtomicU64,
+}
+
+impl Shared {
+    pub(crate) fn new() -> Shared {
+        Shared { alive: AtomicBool::new(true), last_rx_ms: AtomicU64::new(0) }
+    }
+}
+
+/// An open ELAD device.
+pub struct EladHandle {
+    rx: Consumer<f32>,
+    ctrl: Sender<Ctrl>,
+    shared: Arc<Shared>,
+    opened_at: Instant,
+    join: Option<JoinHandle<()>>,
+    trace: Trace,
+    /// Warnings raised after the open handshake — currently the sample-rate
+    /// mismatch, which cannot be known until samples have been flowing for a
+    /// couple of seconds.
+    late_warning: Arc<std::sync::Mutex<Option<String>>>,
+
+    /// Description for logs and the UI, filled in by the thread at open time.
+    pub label: String,
+    pub model: Model,
+    pub serial: Option<String>,
+    pub hw_version: Option<(u8, u8)>,
+    pub firmware: Option<(u8, u8)>,
+    pub sample_rate_hz: f64,
+    /// Warnings gathered while opening, for `IqSource::open_status`.
+    pub warnings: Vec<String>,
+}
+
+impl EladHandle {
+    /// Open a device and start streaming.
+    ///
+    /// The device is opened and configured on the stream thread, not here, so
+    /// that every control transfer in the process happens on one thread — see
+    /// the invariant in [`crate::usb`]. This call blocks until that has either
+    /// succeeded or failed.
+    pub fn open(cfg: &EladConfig, center_hz: f64) -> Result<EladHandle> {
+        crate::stream::spawn(cfg, center_hz)
+    }
+
+    /// Whether the stream thread is still running.
+    pub fn is_alive(&self) -> bool {
+        self.shared.alive.load(Ordering::Relaxed)
+    }
+
+    /// How long the device has gone without delivering samples, measured from
+    /// the last block or — if none ever arrived — from when it was opened.
+    ///
+    /// A stream that never starts matters as much as one that stops, so it has
+    /// to age the same way.
+    pub fn silent_for(&self) -> Duration {
+        let since_open = self.opened_at.elapsed();
+        let last = Duration::from_millis(self.shared.last_rx_ms.load(Ordering::Relaxed));
+        since_open.saturating_sub(last)
+    }
+
+    /// A warning the stream thread raised after the open returned, taken once.
+    pub fn take_late_warning(&self) -> Option<String> {
+        self.late_warning.lock().unwrap_or_else(|e| e.into_inner()).take()
+    }
+
+    pub fn trace(&self) -> &Trace {
+        &self.trace
+    }
+
+    /// Drain interleaved I,Q floats into `out`. Always returns an even count,
+    /// so the stream can never come out of alignment. Zero means nothing is
+    /// available yet.
+    pub fn rx_read(&mut self, out: &mut [f32]) -> usize {
+        let take = self.rx.slots().min(out.len()) & !1;
+        let mut n = 0;
+        while n < take {
+            match self.rx.pop() {
+                Ok(v) => {
+                    out[n] = v;
+                    n += 1;
+                }
+                Err(_) => break,
+            }
+        }
+        n
+    }
+
+    fn send(&self, c: Ctrl) {
+        // A closed channel means the thread has exited; `needs_reopen` will
+        // pick that up from `is_alive`, so there is nothing useful to do here.
+        let _ = self.ctrl.send(c);
+    }
+
+    pub fn set_center_hz(&self, hz: f64) {
+        self.send(Ctrl::Center(hz));
+    }
+
+    pub fn set_attenuator(&self, on: bool) {
+        self.send(Ctrl::Attenuator(on));
+    }
+
+    pub fn set_preselector(&self, on: bool) {
+        self.send(Ctrl::Preselector(on));
+    }
+
+    /// Send an ASCII CAT command to an FDM-DUO through the USB gateway.
+    ///
+    /// Ignored on an S1 or S2, which have no such command set. This is the path
+    /// that works with no serial cable plugged in; where one is, the ordinary
+    /// `sdroxide_cat` link is richer — it can *read*, which this cannot.
+    pub fn send_cat(&self, cmd: impl Into<String>) {
+        if self.model == Model::Duo {
+            self.send(Ctrl::Cat(cmd.into()));
+        }
+    }
+
+    /// Stop the stream thread and let the device go, without dropping the
+    /// handle.
+    ///
+    /// The engine needs this before it can build a replacement front-end: the
+    /// USB interface is claimed exclusively and a second claim is refused even
+    /// from this same process, so a device that has not let go is one that
+    /// cannot be reopened. Blocks until the thread has closed the device.
+    ///
+    /// Afterwards the handle is inert rather than invalid: [`Self::rx_read`]
+    /// drains what is left in the ring and then returns nothing, control
+    /// messages go nowhere, and [`Self::is_alive`] is false — which is what
+    /// makes `EladSource::needs_reopen` true. Idempotent.
+    pub fn release(&mut self) {
+        let _ = self.ctrl.send(Ctrl::Shutdown);
+        if let Some(j) = self.join.take() {
+            let _ = j.join();
+        }
+    }
+
+    pub(crate) fn from_parts(
+        rx: Consumer<f32>,
+        ctrl: Sender<Ctrl>,
+        shared: Arc<Shared>,
+        join: JoinHandle<()>,
+        trace: Trace,
+        late_warning: Arc<std::sync::Mutex<Option<String>>>,
+        info: crate::stream::DeviceInfo,
+    ) -> EladHandle {
+        EladHandle {
+            rx,
+            ctrl,
+            shared,
+            opened_at: Instant::now(),
+            join: Some(join),
+            trace,
+            late_warning,
+            label: info.label,
+            model: info.model,
+            serial: info.serial,
+            hw_version: info.hw_version,
+            firmware: info.firmware,
+            sample_rate_hz: info.sample_rate_hz,
+            warnings: info.warnings,
+        }
+    }
+}
+
+impl Drop for EladHandle {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
+/// Size the RX ring for a sample rate — half a second of interleaved floats,
+/// rounded up to a power of two, capped so the top rate does not reserve an
+/// absurd block. Same formula as the RTL-SDR and Airspy HF+ backends.
+pub(crate) fn ring_for(rate_hz: f64) -> (Producer<f32>, Consumer<f32>) {
+    let cap = ((rate_hz * 2.0 * 0.5) as usize).next_power_of_two().max(1 << 16);
+    RingBuffer::<f32>::new(cap)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Dragging the dial emits hundreds of messages a second and a retune costs
+    /// a control transfer plus a CAT write. Only the last value can matter.
+    #[test]
+    fn pending_keeps_only_the_last_value_of_each_field() {
+        let mut p = Pending::default();
+        assert!(p.is_empty());
+        for hz in [7_000_000.0, 7_050_000.0, 7_074_000.0] {
+            p.absorb(Ctrl::Center(hz));
+        }
+        p.absorb(Ctrl::Attenuator(true));
+        p.absorb(Ctrl::Attenuator(false));
+        assert_eq!(p.center, Some(7_074_000.0));
+        assert_eq!(p.attenuator, Some(false));
+        assert!(!p.is_empty());
+        // Fields nobody set stay unset, so `apply` does not touch the hardware
+        // for settings that did not change.
+        assert_eq!(p.preselector, None);
+    }
+
+    /// CAT commands are instructions, not a value: each one says something
+    /// different and collapsing the queue would drop all but the last.
+    #[test]
+    fn cat_commands_queue_rather_than_coalesce() {
+        let mut p = Pending::default();
+        p.absorb(Ctrl::Cat("MD2;".into()));
+        p.absorb(Ctrl::Cat("FA00014074000;".into()));
+        p.absorb(Ctrl::Cat("TX;".into()));
+        assert_eq!(p.cat, vec!["MD2;", "FA00014074000;", "TX;"]);
+    }
+
+    /// Shutdown must survive anything that arrives after it in the same batch,
+    /// or a busy dial could keep the thread alive past a release.
+    #[test]
+    fn shutdown_is_sticky() {
+        let mut p = Pending::default();
+        p.absorb(Ctrl::Shutdown);
+        p.absorb(Ctrl::Center(7_074_000.0));
+        p.absorb(Ctrl::Attenuator(true));
+        assert!(p.shutdown);
+    }
+
+    /// An odd ring capacity would eventually split an I/Q pair across the wrap.
+    #[test]
+    fn the_ring_holds_at_least_half_a_second_and_an_even_number_of_floats() {
+        for rate in sdroxide_types::ELAD_SAMPLE_RATES {
+            let (p, _c) = ring_for(rate as f64);
+            let cap = p.buffer().capacity();
+            assert_eq!(cap % 2, 0, "{rate}");
+            assert!(cap as f64 >= rate as f64 * 2.0 * 0.5, "{rate}: {cap} floats");
+        }
+    }
+
+    /// A partial push would leave the ring one float out of step and swap I
+    /// with Q for the rest of the session.
+    #[test]
+    fn push_iq_drops_whole_blocks_rather_than_splitting_a_pair() {
+        let (mut prod, mut cons) = RingBuffer::<f32>::new(8);
+        let mut stats = RxStats::new(192_000.0);
+        push_iq(&mut prod, &[1.0, 2.0, 3.0, 4.0], &mut stats);
+        assert_eq!(cons.slots(), 4);
+        // Six more floats into four free slots: nothing goes in.
+        push_iq(&mut prod, &[0.0; 6], &mut stats);
+        assert_eq!(cons.slots(), 4);
+        assert_eq!(stats.total_dropped, 3);
+        assert_eq!(cons.pop(), Ok(1.0));
+    }
+
+    /// The rate cannot be commanded, so this check is the only thing standing
+    /// between an operator and a panadapter that is quietly the wrong width.
+    #[test]
+    fn a_rate_that_disagrees_with_the_stream_is_reported_once_and_named() {
+        let mut s = RxStats::new(192_000.0);
+        // Nothing to say before any samples have arrived.
+        let t = Trace::new();
+        assert_eq!(s.check_rate(&t), None);
+
+        // Pretend two seconds of 384 kHz went by while reading as 192 kHz.
+        s.first_iq = Some(Instant::now() - Duration::from_secs(4));
+        s.total_samples = 384_000 * 4;
+        let msg = s.check_rate(&t).expect("a doubled rate has to be reported");
+        assert!(msg.contains("384 kHz"), "{msg}");
+        assert!(msg.contains("192 kHz"), "{msg}");
+        // Once only: it is a statement about the device, not a running
+        // condition, and repeating it would bury everything else.
+        assert_eq!(s.check_rate(&t), None);
+    }
+
+    #[test]
+    fn a_rate_that_agrees_within_tolerance_says_nothing() {
+        let mut s = RxStats::new(192_000.0);
+        s.first_iq = Some(Instant::now() - Duration::from_secs(4));
+        // 3% slow: a busy machine, not a wrong setting.
+        s.total_samples = (192_000.0 * 4.0 * 0.97) as u64;
+        assert_eq!(s.check_rate(&Trace::new()), None);
+    }
+}

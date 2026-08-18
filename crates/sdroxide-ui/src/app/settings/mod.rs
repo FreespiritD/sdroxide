@@ -35,10 +35,10 @@ use self::net::{
     settings_freedv_tab,
 };
 use self::radio::{
-    settings_airspy_tab, settings_airspyhf_tab, settings_cat_tab, settings_hackrf_tab,
-    settings_hpsdr_tab, settings_icomnet_tab, settings_pluto_tab, settings_rtlsdr_tab,
-    settings_rtltcp_tab, settings_rx888_tab, settings_sdrplay_tab, settings_smartsdr_tab,
-    settings_soapy_devices, settings_spyserver_tab, settings_tci_tab,
+    settings_airspy_tab, settings_airspyhf_tab, settings_cat_tab, settings_elad_tab,
+    settings_hackrf_tab, settings_hpsdr_tab, settings_icomnet_tab, settings_pluto_tab,
+    settings_rtlsdr_tab, settings_rtltcp_tab, settings_rx888_tab, settings_sdrplay_tab,
+    settings_smartsdr_tab, settings_soapy_devices, settings_spyserver_tab, settings_tci_tab,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use self::remote::settings_remote_tab;
@@ -163,6 +163,10 @@ pub(in crate::app) struct SettingsIo<'a> {
     hackrf_copy_report: &'a mut bool,
     airspy_rescan: &'a mut bool,
     airspy_copy_report: &'a mut bool,
+    /// Re-enumerate the USB bus for ELAD devices. Opens nothing.
+    elad_rescan: &'a mut bool,
+    /// Copy the last ELAD session's trace to the clipboard.
+    elad_copy_report: &'a mut bool,
     /// Ask the SDRplay API service for its device list. Brief and
     /// non-invasive, so it cannot disturb a running stream.
     sdrplay_rescan: &'a mut bool,
@@ -408,6 +412,7 @@ impl SdroxideApp {
             A::Airspy(d) => self.airspy_devices = d,
             A::HackRf(d) => self.hackrf_devices = d,
             A::SdrPlay(d) => self.sdrplay_devices = d,
+            A::Elad(d) => self.elad_devices = d,
             // `Some` even when empty: "enumerated and found nothing" is a
             // different thing from "not enumerated yet", and only this one
             // means the operator should go looking for a driver.
@@ -512,6 +517,14 @@ impl SdroxideApp {
             {
                 self.ask_device(ctx, sdroxide_types::DeviceProbe::Airspy);
             }
+            if self.radio_cfg.as_ref().is_some_and(|c| c.backend == sdroxide_types::Backend::Elad) {
+                self.ask_device(ctx, sdroxide_types::DeviceProbe::Elad);
+                // An FDM-DUO's control link is a serial port like any other
+                // rig's, and its transmit audio is a sound card, so this tab
+                // needs both lists the CAT tab needs. The ports are asked for
+                // unconditionally above; the cards are not.
+                self.ask_device(ctx, sdroxide_types::DeviceProbe::RadioAudio);
+            }
             self.audio_devices_queried = true;
         } else if self.radio_cfg.is_none() {
             // Still waiting for the interface configuration. On a remote client
@@ -539,6 +552,8 @@ impl SdroxideApp {
         let mut rx888_rescan = false;
         let mut airspyhf_rescan = false;
         let mut airspyhf_copy_report = false;
+        let mut elad_rescan = false;
+        let mut elad_copy_report = false;
         let mut hackrf_rescan = false;
         let mut hackrf_copy_report = false;
         let mut airspy_rescan = false;
@@ -644,6 +659,11 @@ impl SdroxideApp {
         // with dlopen at runtime, and opening explains what to install when
         // it is absent.
         iface_opts.push(sdroxide_types::Backend::SdrPlay);
+        // Pure Rust over `nusb` again, so it is in every build variant. On an
+        // FDM-DUO this one interface covers the whole radio — the USB receiver,
+        // the CAT serial link and the transmit sound card — which is why it is
+        // here rather than under CAT / Audio.
+        iface_opts.push(sdroxide_types::Backend::Elad);
         // Case-folded so HackRF lands under H beside HPSDR rather than after
         // it, which a byte-order sort would do.
         iface_opts.sort_by_key(|b| b.label().to_ascii_lowercase());
@@ -716,6 +736,8 @@ impl SdroxideApp {
                             rx888_rescan: &mut rx888_rescan,
                             airspyhf_rescan: &mut airspyhf_rescan,
                             airspyhf_copy_report: &mut airspyhf_copy_report,
+                            elad_rescan: &mut elad_rescan,
+                            elad_copy_report: &mut elad_copy_report,
                             hackrf_rescan: &mut hackrf_rescan,
                             hackrf_copy_report: &mut hackrf_copy_report,
                             airspy_rescan: &mut airspy_rescan,
@@ -920,6 +942,12 @@ impl SdroxideApp {
         }
         if airspy_copy_report {
             self.ask_device(ctx, P::Report(R::Airspy));
+        }
+        if elad_rescan {
+            self.ask_device(ctx, P::Elad);
+        }
+        if elad_copy_report {
+            self.ask_device(ctx, P::Report(R::Elad));
         }
         if hackrf_rescan {
             self.ask_device(ctx, P::HackRf);
@@ -1766,6 +1794,17 @@ impl SdroxideApp {
                         io.radio_edit,
                         io.rx888_rescan,
                         io.apply_iface,
+                        io.can_probe,
+                        cmds,
+                    ),
+                    Backend::Elad => settings_elad_tab(
+                        ui,
+                        &self.elad_devices,
+                        &self.serial_ports,
+                        self.radio_audio_devices.as_ref().map(|(_, o)| o.as_slice()),
+                        io.radio_edit,
+                        io.elad_rescan,
+                        io.elad_copy_report,
                         io.can_probe,
                         cmds,
                     ),

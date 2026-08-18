@@ -5,6 +5,7 @@ mod console;
 mod device_registry;
 mod devices;
 mod dial;
+mod elad_source;
 mod gui_main;
 mod hackrf_source;
 mod hpsdr_source;
@@ -748,6 +749,7 @@ fn probe(cli: &Cli, settings: &Settings) -> anyhow::Result<()> {
     probe_airspy();
     probe_hackrf();
     probe_sdrplay();
+    probe_elad();
     probe_soapy(cli, settings)
 }
 
@@ -797,6 +799,23 @@ fn probe_airspyhf() {
             // HF+ enumerates as the same 03eb:800c — so the list does not
             // pretend to. `--example probe` opens one and says.
             println!("  {}: {}", i, d.label());
+        }
+    }
+    println!();
+}
+
+fn probe_elad() {
+    let devices = sdroxide_elad::list();
+    if devices.is_empty() {
+        println!("No ELAD FDM-DUO or FDM-S receivers found on USB.");
+    } else {
+        println!("=== ELAD FDM-DUO / FDM-S (native USB driver) ===");
+        for (i, d) in devices.iter().enumerate() {
+            // No serial number here on purpose: ELAD keeps it in the device's
+            // EEPROM rather than in the USB descriptor, so reading it would mean
+            // claiming a device that may be streaming. `--example probe` opens
+            // one and says.
+            println!("  {}: {}  [usb {:04x}:{:04x}]", i, d.label(), 0x1721, d.pid);
         }
     }
     println!();
@@ -1198,6 +1217,7 @@ fn open_configured_source(
         Backend::Airspy => open_airspy_source(radio, cli.center_hz()),
         Backend::HackRf => open_hackrf_source(radio, cli.center_hz()),
         Backend::SdrPlay => open_sdrplay_source(radio, cli.center_hz()),
+        Backend::Elad => open_elad_source(radio, cli.center_hz()),
         Backend::Soapy => open_soapy_source(cli, settings),
         Backend::Auto => {
             #[cfg(feature = "soapy")]
@@ -1526,6 +1546,79 @@ fn airspyhf_caps(src: &airspyhf_source::AirspyHfSource) -> DeviceCaps {
             max_db: 0.0,
             step_db: att_step_db,
         }],
+        ..DeviceCaps::default()
+    }
+}
+
+/// Build the ELAD source from radio.json.
+///
+/// Three of the radio's blocks meet here, which is what an FDM-DUO is: the
+/// `elad` block for the USB receiver, the `cat` block for the transceiver's
+/// serial control link (the same one `Backend::Cat` uses, so an operator who
+/// had the rig working there keeps their port and baud rate), and
+/// `radio_audio_out` for transmit audio.
+fn open_elad_source(
+    radio: &RadioConfig,
+    center_hz: f64,
+) -> anyhow::Result<(Box<dyn IqSource>, DeviceCaps)> {
+    let src = elad_source::EladSource::open(
+        &radio.elad,
+        &radio.cat,
+        radio.radio_audio_out.as_deref(),
+        center_hz,
+    )
+    .context("opening ELAD")?;
+    let caps = elad_caps(&src);
+    Ok((Box::new(src), caps))
+}
+
+/// Capabilities for an ELAD.
+///
+/// Two things here are decided by the model rather than published as a
+/// constant. **Transmit** belongs to the FDM-DUO alone, and only when there is
+/// a control path to key it with — a DUO whose serial port is unset still has
+/// the USB gateway, but an FDM-S has nothing, so `tx_channels` follows
+/// `can_transmit()` rather than the product id. And the **meters** need a link
+/// that answers: over the USB gateway the rig cannot be asked anything, so
+/// claiming an SWR sensor there would put a needle on screen that never moves.
+///
+/// `full_duplex` is false. Whether the DDC keeps streaming through an over has
+/// not been checked on hardware, and half duplex is the assumption that is safe
+/// to be wrong about: it costs a receiver that goes quiet for the length of a
+/// transmission, where the other way round costs a panadapter painting the
+/// station's own transmitter.
+fn elad_caps(src: &elad_source::EladSource) -> DeviceCaps {
+    use sdroxide_types::{Direction, EladConfig, GainElement};
+    let model = src.model();
+    let tx = src.can_transmit();
+    DeviceCaps {
+        driver: "elad".into(),
+        label: src.describe(),
+        rx_channels: 1,
+        tx_channels: usize::from(tx),
+        full_duplex: false,
+        // Wideband I/Q in, audio out — the same shape as TCI.
+        tx_audio: tx,
+        freq_ranges_rx: vec![model.rx_range_hz()],
+        // The transceiver's own amateur coverage, which is narrower than what
+        // its receiver hears: the PA and its low-pass bank are ham-band only.
+        freq_ranges_tx: if tx { vec![(1_800_000.0, 54_000_000.0)] } else { Vec::new() },
+        // The rate is not commandable, so this list is what the stream may be
+        // read as rather than what the device can be told to do. See
+        // `EladConfig::sample_rate_hz`.
+        sample_rates: sdroxide_types::ELAD_SAMPLE_RATES.iter().map(|&r| r as f64).collect(),
+        // One real gain: the input pad, in or out. The pre-selection filter
+        // switch is a pseudo-element and deliberately absent, so only this
+        // backend's own settings tab draws it.
+        gains: vec![GainElement {
+            name: EladConfig::ATT_ELEMENT.into(),
+            direction: Direction::Rx,
+            min_db: -sdroxide_types::ELAD_ATTENUATOR_DB,
+            max_db: 0.0,
+            step_db: sdroxide_types::ELAD_ATTENUATOR_DB,
+        }],
+        has_swr_sensor: tx && src.reads_rig(),
+        has_fwd_power_sensor: false,
         ..DeviceCaps::default()
     }
 }

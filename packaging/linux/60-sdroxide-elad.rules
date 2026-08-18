@@ -1,0 +1,30 @@
+# ELAD FDM-DUO, FDM-S2 and FDM-S1, for sdroxide's native USB driver.
+#
+# sdroxide talks to these directly with nusb rather than through libusb or
+# ELAD's own gr-elad, but the kernel-level requirement is the same: the invoking
+# user needs write access to the usbfs node.
+#
+# These ids are the *receive* interface only — the one carrying the DDC's I/Q.
+# An FDM-DUO is three USB devices, and the other two need nothing installed:
+# its CAT port is an FTDI bridge (0403:6001, handled by the in-tree ftdi_sio
+# driver, appearing as /dev/ttyUSB*) and its audio port is a USB audio class
+# device (0d8c:01af). If CAT is refused rather than the receiver, the problem is
+# the dialout group, not this file.
+#
+# TAG+="uaccess" hands an ACL to whoever is logged in at the active seat. That
+# is better than the older GROUP="plugdev" recipe, which needs a group to exist,
+# the user to be added to it, and a full re-login before it takes effect.
+#
+# Install:
+#   sudo cp 60-sdroxide-elad.rules /usr/lib/udev/rules.d/
+#   sudo udevadm control --reload
+# then unplug and replug the device.
+
+# FDM-DUO / FDM-DUOr transceiver.
+SUBSYSTEM=="usb", ATTRS{idVendor}=="1721", ATTRS{idProduct}=="061a", MODE="0660", TAG+="uaccess"
+
+# FDM-S2 sampler.
+SUBSYSTEM=="usb", ATTRS{idVendor}=="1721", ATTRS{idProduct}=="061c", MODE="0660", TAG+="uaccess"
+
+# FDM-S1 sampler.
+SUBSYSTEM=="usb", ATTRS{idVendor}=="1721", ATTRS{idProduct}=="0610", MODE="0660", TAG+="uaccess"
