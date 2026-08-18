@@ -5,6 +5,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::limerfe::LimeRfeConfig;
+
 /// Which radio backend to drive.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum Backend {
@@ -107,10 +109,29 @@ pub enum Backend {
     /// and come up receive-only. Appended last, for the same reason as
     /// `SmartSdr` above.
     Elad,
+    /// The LimeSDR family (LimeSDR-USB, LimeSDR Mini v1/v2, LimeNET-Micro,
+    /// LimeSDR-PCIe) driven through `libLimeSuite` — full-duplex wideband I/Q
+    /// both ways, plus LimeRFE front-end control that no other path offers.
+    ///
+    /// The one backend here that is neither pure Rust nor SoapySDR. LimeSuite
+    /// is found with dlopen at *runtime*, exactly as the SDRplay backend finds
+    /// `sdrplay_api`, so nothing is linked at build time and this ships in
+    /// every build variant; on a machine without it the device list is empty
+    /// and opening explains what to install. Unlike the SDRplay case the
+    /// library is open source (Apache-2.0), so this is a shortcut past ~10k
+    /// lines of LMS7002M register, PLL and calibration work rather than the
+    /// only door there is.
+    ///
+    /// A LimeSDR reaches sdroxide through SoapySDR too, and always has. What
+    /// this interface adds is the **LimeRFE**: SoapyLMS7 exposes none of it, so
+    /// band filters, the LNA, the PA and the transmit/receive relay are
+    /// unreachable from that side. Appended last, for the same reason as
+    /// `SmartSdr` above.
+    Lime,
 }
 
 impl Backend {
-    pub const ALL: [Backend; 18] = [
+    pub const ALL: [Backend; 19] = [
         Backend::Auto,
         Backend::Soapy,
         Backend::Cat,
@@ -129,6 +150,7 @@ impl Backend {
         Backend::HackRf,
         Backend::SdrPlay,
         Backend::Elad,
+        Backend::Lime,
     ];
     pub fn label(self) -> &'static str {
         match self {
@@ -150,6 +172,7 @@ impl Backend {
             Backend::HackRf => "HackRF One / Pro (USB)",
             Backend::SdrPlay => "SDRplay RSP (USB)",
             Backend::Elad => "ELAD FDM-DUO / FDM-S (USB)",
+            Backend::Lime => "LimeSDR + LimeRFE (LimeSuite)",
             Backend::None => "Not configured",
         }
     }
@@ -208,6 +231,10 @@ impl SoapyDeviceInfo {
             // receive amp on the first transmit and never applies the transmit
             // one at all, which the native driver does not do.
             "hackrf" => Some(Backend::HackRf),
+            // Both sides of this one end up in LimeSuite — SoapyLMS7 is a thin
+            // wrapper over it — so the steer is not about the I/Q path at all.
+            // It is about the LimeRFE, which SoapySDR cannot reach.
+            "lime" => Some(Backend::Lime),
             _ => None,
         }
     }
@@ -2303,6 +2330,271 @@ impl EladConfig {
     pub const LPF_ELEMENT: &'static str = "LPF";
 }
 
+/// One board from a LimeSuite enumeration.
+///
+/// LimeSuite reports each device as a 256-byte `key=value` string, and that
+/// string — not any field parsed out of it — is what reopens the device. It is
+/// carried verbatim in [`Self::info`] for exactly that reason; everything else
+/// here is only for the picker to draw a row with.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LimeDevice {
+    /// The device string LimeSuite handed back, passed straight back to
+    /// `LMS_Open`. Never reconstructed from the parsed fields: the format is
+    /// LimeSuite's and a rebuilt string is not guaranteed to match.
+    pub info: String,
+    /// The board name (`LimeSDR-USB`, `LimeSDR-Mini_v2`, `LimeNET-Micro`, …).
+    pub name: String,
+    /// The board serial, when the string carried one.
+    pub serial: String,
+    /// How it is attached (`USB 3.0`, `PCIe`, …), for the row's second line.
+    pub media: String,
+}
+
+impl LimeDevice {
+    /// The board names this backend will open.
+    ///
+    /// An allow-list rather than a deny-list, and that is the whole point.
+    /// LimeSuite claims the bare Cypress FX3 id that an unprogrammed RX-888
+    /// also presents — the fault recorded on [`Rx888Config`] — so an
+    /// enumeration on a machine with one plugged in offers a "Lime" device
+    /// that is nothing of the kind. Opening it would flood the log with
+    /// transfer errors and hand back a receiver that hears nothing.
+    pub const KNOWN_BOARDS: [&'static str; 8] = [
+        "LimeSDR-USB",
+        "LimeSDR-Mini",
+        "LimeSDR-Mini_v2",
+        "LimeNET-Micro",
+        "LimeSDR-PCIe",
+        "LimeSDR-QPCIe",
+        "LimeSDR-Core",
+        "LimeSDR_Core",
+    ];
+
+    /// Whether a device string names a board this backend recognises.
+    ///
+    /// Matched on a prefix and case-folded, because LimeSuite spells the same
+    /// board differently across versions (`LimeSDR-USB` and `LimeSDR-USB_SP`
+    /// are the same family) and the trailing variant is not worth a new entry
+    /// every time one appears.
+    pub fn name_is_known(name: &str) -> bool {
+        let name = name.trim().to_ascii_lowercase();
+        Self::KNOWN_BOARDS.iter().any(|b| name.starts_with(&b.to_ascii_lowercase()))
+    }
+
+    /// Whether `want` selects this board. Empty selects the first one found;
+    /// otherwise the serial is matched on its **suffix**, case-folded — the
+    /// same rule [`hackrf_serial_matches`] uses, and for the same reason: every
+    /// instruction anyone writes down quotes only the last few digits.
+    pub fn matches(&self, want: &str) -> bool {
+        let want = want.trim();
+        if want.is_empty() {
+            return true;
+        }
+        // The whole device string is accepted too, so a config written from a
+        // picker row keeps working even if the serial could not be parsed out.
+        self.info.eq_ignore_ascii_case(want)
+            || (!self.serial.is_empty()
+                && self.serial.to_ascii_lowercase().ends_with(&want.to_ascii_lowercase()))
+    }
+
+    /// One-line label for the selection UI.
+    pub fn label(&self) -> String {
+        let mut s = self.name.clone();
+        if !self.serial.is_empty() {
+            s.push_str(&format!("  (serial {})", self.serial));
+        }
+        if !self.media.is_empty() {
+            s.push_str(&format!("  [{}]", self.media));
+        }
+        s
+    }
+
+    /// Parse one `key=value, key=value` device string.
+    ///
+    /// The leading element carries no `=` and is the board name; everything
+    /// after it is a pair. Unknown keys are ignored rather than rejected —
+    /// LimeSuite adds them between versions and none of them is load-bearing
+    /// here, because [`Self::info`] keeps the original.
+    pub fn parse(info: &str) -> LimeDevice {
+        let mut dev = LimeDevice {
+            info: info.to_string(),
+            name: String::new(),
+            serial: String::new(),
+            media: String::new(),
+        };
+        for (i, part) in info.split(',').map(str::trim).enumerate() {
+            match part.split_once('=') {
+                Some((k, v)) => match k.trim().to_ascii_lowercase().as_str() {
+                    "serial" => dev.serial = v.trim().to_string(),
+                    "media" => dev.media = v.trim().to_string(),
+                    // Some builds put the board name in a `name=` pair instead
+                    // of leading with it bare.
+                    "name" if dev.name.is_empty() => dev.name = v.trim().to_string(),
+                    _ => {}
+                },
+                None if i == 0 && !part.is_empty() => dev.name = part.to_string(),
+                None => {}
+            }
+        }
+        dev
+    }
+}
+
+/// LimeSDR family (LimeSuite) backend configuration.
+///
+/// The LimeRFE in front of the radio is [`Self::rfe`]; it is part of this block
+/// rather than a peer of it because the board's second control path runs
+/// through the LimeSDR's own GPIO, so the two are only separable on paper.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LimeConfig {
+    /// Pin a board by its serial suffix, or carry a whole device string; empty
+    /// means "the first Lime board found".
+    pub device: String,
+    /// Which RX/TX channel pair to use. A LimeSDR-USB has two of each and a
+    /// Mini has one; the second chain shares the synthesiser, which is why only
+    /// one is opened per radio for now.
+    pub channel: u8,
+    /// Complex sample rate in Hz. See [`Self::SAMPLE_RATES`].
+    pub sample_rate_hz: f64,
+    /// RF oversampling ratio — 1, 2, 4, 8, 16, 32, or 0 for the device default.
+    /// Higher moves the ADC further from the band of interest at the cost of
+    /// nothing on the host, so the default is the device's own choice.
+    pub oversample: u8,
+    /// Combined receive gain in dB, 0–73. LimeSuite takes an integer here, so
+    /// this is rounded on the way to the hardware and what comes back from
+    /// `current_gains` is what the chip got, not what was asked for.
+    pub rx_gain_db: f64,
+    /// Combined transmit gain in dB, 0–73. Only reachable while
+    /// [`Self::tx_enabled`].
+    pub tx_gain_db: f64,
+    /// Arm the transmitter.
+    ///
+    /// Off by default, and the default is the point — the same reasoning as
+    /// [`HackRfConfig::tx_enabled`]. With this off the backend publishes no
+    /// transmit channel at all, so the engine's own capability check refuses to
+    /// key whatever else is configured.
+    pub tx_enabled: bool,
+    /// Receive port: `LNAH`, `LNAL`, `LNAW`, or empty for "let the driver pick
+    /// from the frequency". Which names exist is read from the board.
+    pub antenna_rx: String,
+    /// Transmit port: `BAND1`, `BAND2`, or empty to let the driver pick.
+    pub antenna_tx: String,
+    /// Analog low-pass filter bandwidth in Hz; `0.0` derives it from the sample
+    /// rate.
+    ///
+    /// Worth leaving alone, and worth leaving *wide* if not: a filter narrower
+    /// than a quarter of the span silently withdraws the zero-IF LO offset
+    /// rather than merely softening the band edges — see
+    /// `sdroxide_radio::lo_offset_for`.
+    pub lpf_rx_hz: f64,
+    /// The same on the transmit side; `0.0` follows the rate.
+    pub lpf_tx_hz: f64,
+    /// Run LimeSuite's own DC-offset and IQ-imbalance calibration when the
+    /// device is opened. Costs about a second at open and is worth it: this is
+    /// a zero-IF radio and the uncalibrated image sits across the band.
+    pub calibrate: bool,
+    /// Adaptive IQ image correction and DC removal on the host, on top of the
+    /// chip's own calibration. On by default for the same reason the HackRF
+    /// has it.
+    pub iq_correction: bool,
+    /// LimeSuite's own FIFO, in thousands of samples. Its streaming layer
+    /// already buffers, so this is the only depth that matters; the ring on
+    /// this side only decouples the engine's block cadence.
+    pub fifo_ksamples: u32,
+    /// LimeSuite's `throughputVsLatency`, 0.0–1.0. Low favours latency.
+    pub throughput_vs_latency: f32,
+    /// The LimeRFE front end, if one is attached.
+    pub rfe: LimeRfeConfig,
+}
+
+impl Default for LimeConfig {
+    fn default() -> Self {
+        LimeConfig {
+            device: String::new(),
+            channel: 0,
+            // Wide enough to be a useful panadapter, narrow enough that the
+            // LO offset applies and any USB 3 port keeps up.
+            sample_rate_hz: 5_000_000.0,
+            oversample: 0,
+            rx_gain_db: 40.0,
+            // Minimum drive, transmitter disarmed: the radio comes up unable
+            // to emit anything meaningful even if it is keyed.
+            tx_gain_db: 0.0,
+            tx_enabled: false,
+            antenna_rx: String::new(),
+            antenna_tx: String::new(),
+            lpf_rx_hz: 0.0,
+            lpf_tx_hz: 0.0,
+            calibrate: true,
+            iq_correction: true,
+            fifo_ksamples: 256,
+            throughput_vs_latency: 0.5,
+            rfe: LimeRfeConfig::default(),
+        }
+    }
+}
+
+impl LimeConfig {
+    /// The real gain elements, published in `DeviceCaps::gains` so the generic
+    /// sliders drive them and the engine remembers them across a reopen.
+    ///
+    /// Two, and only two, because `LMS_SetGaindB` is the only gain the C API
+    /// exposes: it distributes a single number across the LNA, TIA and PGA
+    /// itself. Reaching those stages individually needs `LMS_WriteParam`, and
+    /// three sliders that silently fight the combined one would be worse than
+    /// the one that works.
+    pub const RX_GAIN_ELEMENT: &'static str = "RX";
+    pub const TX_GAIN_ELEMENT: &'static str = "TX";
+
+    /// The gain range LimeSuite accepts, in dB. It takes an `unsigned`, so the
+    /// step is 1 dB and anything finer is truncated by the library.
+    pub const GAIN_MIN_DB: f64 = 0.0;
+    pub const GAIN_MAX_DB: f64 = 73.0;
+
+    /// Pseudo-elements carrying settings that are not gains at all.
+    ///
+    /// They ride the existing `SetGain` command so this backend needs no new
+    /// `Command` variant, no `DeviceCaps` field and no engine change. They are
+    /// deliberately absent from `DeviceCaps::gains`, so nothing renders them as
+    /// sliders — the LimeSDR settings panel drives them directly.
+    pub const LPF_RX_ELEMENT: &'static str = "LPFBW";
+    pub const LPF_TX_ELEMENT: &'static str = "TXLPFBW";
+    pub const IQ_CORRECTION_ELEMENT: &'static str = "IQCORR";
+    /// Momentary: any value at or above 0.5 runs a calibration now.
+    pub const CALIBRATE_ELEMENT: &'static str = "CAL";
+    /// LimeRFE controls, all momentary or level, all through the same door.
+    pub const RFE_MODE_ELEMENT: &'static str = "RFEMODE";
+    pub const RFE_CHANNEL_ELEMENT: &'static str = "RFECHAN";
+    pub const RFE_ATTEN_ELEMENT: &'static str = "RFEATT";
+    pub const RFE_NOTCH_ELEMENT: &'static str = "RFENOTCH";
+    pub const RFE_FAN_ELEMENT: &'static str = "RFEFAN";
+
+    /// The rates offered in the settings combo.
+    ///
+    /// The hardware synthesises anything inside the range it reports, so this
+    /// is a useful subset rather than the whole menu — and the range is read
+    /// from the board at open, which is what actually bounds it. The top two
+    /// are past what a USB 3 port will hold up over a long session; see
+    /// [`Self::rate_note`].
+    pub const SAMPLE_RATES: [f64; 9] =
+        [1.0e6, 2.0e6, 2.5e6, 5.0e6, 10.0e6, 15.36e6, 20.0e6, 30.72e6, 40.0e6];
+
+    /// What to say beside a rate in the combo, when there is something to say.
+    ///
+    /// The numbers are the host link's load at 12 bits per sample per
+    /// component, which is what the board actually sends — the ADC is 12-bit,
+    /// so nothing is lost by not asking for 16.
+    pub fn rate_note(rate_hz: f64) -> Option<&'static str> {
+        match rate_hz {
+            r if r >= 40.0e6 => Some("beyond USB 3 — PCIe boards only"),
+            r if r >= 30.0e6 => Some("needs a good USB 3 port"),
+            r if r <= 1.0e6 => Some("no LO offset below 1 Msps"),
+            _ => None,
+        }
+    }
+}
+
 /// Airspy HF+ (USB) backend configuration. Receive only.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -3928,6 +4220,9 @@ pub struct RadioConfig {
     /// ELAD FDM-DUO / FDM-S. Appended after `panadapter` because the layout is
     /// positional and every field is only ever added at the end.
     pub elad: EladConfig,
+    /// LimeSDR family through LimeSuite, and the LimeRFE in front of it.
+    /// Appended after `elad` for the same reason.
+    pub lime: LimeConfig,
 }
 
 #[cfg(test)]

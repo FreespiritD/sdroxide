@@ -371,7 +371,15 @@ use sdroxide_types::{
 /// appends, but a v63 client asked to decode the new `Backend::Elad` — or handed
 /// a `RadioConfig` with one more field on the end — has nowhere to put it, and
 /// the config is what a client reads to draw the settings dialog.
-pub const PROTO_VERSION: u16 = 64;
+///
+/// **65** — the LimeSDR backend and LimeRFE control. `Backend`, `DeviceProbe`,
+/// `ProbeAnswer` and `ReportKind` each gained a variant and `RadioConfig` a
+/// `lime` block, which carries a nested `LimeRfeConfig` of its own. Appends
+/// again, and again not survivable: a v64 client handed a `RadioConfig` with
+/// the new block on the end stops at the wrong byte, and the LimeRFE settings
+/// it cannot decode are the ones that decide whether an amplifier is switched
+/// into the transmit path.
+pub const PROTO_VERSION: u16 = 65;
 const VERSION_BYTE: u8 = 0x12;
 
 #[derive(Debug, thiserror::Error)]
@@ -1088,7 +1096,8 @@ mod tests {
     #[test]
     fn roundtrip_radio_config() {
         use sdroxide_types::{
-            Backend, RadioConfig, RtlSdrAgc, RtlSdrConfig, RtlSdrHfMode, RtlTcpConfig,
+            Backend, LimeConfig, LimeRfeConfig, RadioConfig, RfeChannel, RfeLink, RfeModeControl,
+            RfePort, RtlSdrAgc, RtlSdrConfig, RtlSdrHfMode, RtlTcpConfig,
         };
 
         let cfg = RadioConfig {
@@ -1116,6 +1125,45 @@ mod tests {
                 tuner_gain_db: 49.6,
                 agc: RtlSdrAgc::Both,
                 ..RtlTcpConfig::default()
+            },
+            // The last block in the struct, and the one most worth filling in:
+            // every field here differs from its neighbours' defaults, because a
+            // field-order slip only shows where two adjacent fields disagree.
+            // The nested LimeRFE block is the part that decides whether an
+            // amplifier is switched into the transmit path, so it gets
+            // non-default ports, a non-default channel and a non-default mode.
+            lime: LimeConfig {
+                device: "LimeSDR-USB, serial=0009072C02873717".into(),
+                channel: 1,
+                sample_rate_hz: 15.36e6,
+                oversample: 4,
+                rx_gain_db: 52.0,
+                tx_gain_db: 31.0,
+                tx_enabled: true,
+                antenna_rx: "LNAH".into(),
+                antenna_tx: "BAND2".into(),
+                lpf_rx_hz: 18.0e6,
+                lpf_tx_hz: 20.0e6,
+                calibrate: false,
+                iq_correction: false,
+                fifo_ksamples: 512,
+                throughput_vs_latency: 0.25,
+                rfe: LimeRfeConfig {
+                    link: RfeLink::Board,
+                    serial: sdroxide_types::SerialConfig {
+                        path: "/dev/ttyUSB7".into(),
+                        baud: 9600,
+                        ..sdroxide_types::SerialConfig::default()
+                    },
+                    port_rx: RfePort::J5,
+                    port_tx: RfePort::J3,
+                    follow_band: false,
+                    channel: RfeChannel::Ham1280,
+                    mode: RfeModeControl::TxRx,
+                    notch: true,
+                    atten_steps: 5,
+                    fan: true,
+                },
             },
             ..RadioConfig::default()
         };

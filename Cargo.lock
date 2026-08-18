@@ -4952,6 +4952,8 @@ dependencies = [
  "sdroxide-hackrf",
  "sdroxide-hpsdr",
  "sdroxide-icomnet",
+ "sdroxide-lime",
+ "sdroxide-limerfe",
  "sdroxide-net",
  "sdroxide-pluto",
  "sdroxide-proto",
@@ -5162,6 +5164,30 @@ version = "1.3.0"
 dependencies = [
  "crossbeam-channel",
  "sdroxide-ax25",
+ "tracing",
+]
+
+[[package]]
+name = "sdroxide-lime"
+version = "1.3.0"
+dependencies = [
+ "libloading 0.8.9",
+ "num-complex",
+ "sdroxide-limerfe",
+ "sdroxide-types",
+ "thiserror 2.0.19",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "sdroxide-limerfe"
+version = "1.3.0"
+dependencies = [
+ "crossbeam-channel",
+ "sdroxide-types",
+ "serialport",
+ "thiserror 2.0.19",
  "tracing",
 ]
 

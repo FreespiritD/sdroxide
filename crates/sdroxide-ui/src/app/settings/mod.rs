@@ -36,9 +36,10 @@ use self::net::{
 };
 use self::radio::{
     settings_airspy_tab, settings_airspyhf_tab, settings_cat_tab, settings_elad_tab,
-    settings_hackrf_tab, settings_hpsdr_tab, settings_icomnet_tab, settings_pluto_tab,
-    settings_rtlsdr_tab, settings_rtltcp_tab, settings_rx888_tab, settings_sdrplay_tab,
-    settings_smartsdr_tab, settings_soapy_devices, settings_spyserver_tab, settings_tci_tab,
+    settings_hackrf_tab, settings_hpsdr_tab, settings_icomnet_tab, settings_lime_tab,
+    settings_pluto_tab, settings_rtlsdr_tab, settings_rtltcp_tab, settings_rx888_tab,
+    settings_sdrplay_tab, settings_smartsdr_tab, settings_soapy_devices, settings_spyserver_tab,
+    settings_tci_tab,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use self::remote::settings_remote_tab;
@@ -167,6 +168,12 @@ pub(in crate::app) struct SettingsIo<'a> {
     elad_rescan: &'a mut bool,
     /// Copy the last ELAD session's trace to the clipboard.
     elad_copy_report: &'a mut bool,
+    /// Ask LimeSuite for its device list. Not free, unlike the `nusb` scans:
+    /// it opens each candidate to read its identity, so it can disturb a board
+    /// another program is holding.
+    lime_rescan: &'a mut bool,
+    /// Copy the last LimeSDR session's trace to the clipboard.
+    lime_copy_report: &'a mut bool,
     /// Ask the SDRplay API service for its device list. Brief and
     /// non-invasive, so it cannot disturb a running stream.
     sdrplay_rescan: &'a mut bool,
@@ -413,6 +420,7 @@ impl SdroxideApp {
             A::HackRf(d) => self.hackrf_devices = d,
             A::SdrPlay(d) => self.sdrplay_devices = d,
             A::Elad(d) => self.elad_devices = d,
+            A::Lime(d) => self.lime_devices = d,
             // `Some` even when empty: "enumerated and found nothing" is a
             // different thing from "not enumerated yet", and only this one
             // means the operator should go looking for a driver.
@@ -493,6 +501,9 @@ impl SdroxideApp {
             if self.radio_cfg.as_ref().is_some_and(|c| c.backend == sdroxide_types::Backend::Cat) {
                 self.ask_device(ctx, sdroxide_types::DeviceProbe::RadioAudio);
             }
+            if self.radio_cfg.as_ref().is_some_and(|c| c.backend == sdroxide_types::Backend::Lime) {
+                self.ask_device(ctx, sdroxide_types::DeviceProbe::Lime);
+            }
             // The RSP tab draws itself from the model in this list — which
             // antenna ports exist, whether there is an HDR path, how far the
             // LNA goes. Asking the service is one round trip and opens no
@@ -554,6 +565,8 @@ impl SdroxideApp {
         let mut airspyhf_copy_report = false;
         let mut elad_rescan = false;
         let mut elad_copy_report = false;
+        let mut lime_rescan = false;
+        let mut lime_copy_report = false;
         let mut hackrf_rescan = false;
         let mut hackrf_copy_report = false;
         let mut airspy_rescan = false;
@@ -664,6 +677,12 @@ impl SdroxideApp {
         // the CAT serial link and the transmit sound card — which is why it is
         // here rather than under CAT / Audio.
         iface_opts.push(sdroxide_types::Backend::Elad);
+        // The one interface here that needs a library installed rather than
+        // shipping its own driver — LimeSuite, found by dlopen at runtime, so
+        // this still builds and runs everywhere and merely finds nothing where
+        // the library is absent. Offered unconditionally for that reason: a
+        // greyed-out entry would not say what to install.
+        iface_opts.push(sdroxide_types::Backend::Lime);
         // Case-folded so HackRF lands under H beside HPSDR rather than after
         // it, which a byte-order sort would do.
         iface_opts.sort_by_key(|b| b.label().to_ascii_lowercase());
@@ -738,6 +757,8 @@ impl SdroxideApp {
                             airspyhf_copy_report: &mut airspyhf_copy_report,
                             elad_rescan: &mut elad_rescan,
                             elad_copy_report: &mut elad_copy_report,
+                            lime_rescan: &mut lime_rescan,
+                            lime_copy_report: &mut lime_copy_report,
                             hackrf_rescan: &mut hackrf_rescan,
                             hackrf_copy_report: &mut hackrf_copy_report,
                             airspy_rescan: &mut airspy_rescan,
@@ -948,6 +969,12 @@ impl SdroxideApp {
         }
         if elad_copy_report {
             self.ask_device(ctx, P::Report(R::Elad));
+        }
+        if lime_rescan {
+            self.ask_device(ctx, P::Lime);
+        }
+        if lime_copy_report {
+            self.ask_device(ctx, P::Report(R::Lime));
         }
         if hackrf_rescan {
             self.ask_device(ctx, P::HackRf);
@@ -1805,6 +1832,17 @@ impl SdroxideApp {
                         io.radio_edit,
                         io.elad_rescan,
                         io.elad_copy_report,
+                        io.can_probe,
+                        cmds,
+                    ),
+                    Backend::Lime => settings_lime_tab(
+                        ui,
+                        &self.lime_devices,
+                        &self.serial_ports,
+                        io.radio_edit,
+                        io.lime_rescan,
+                        io.lime_copy_report,
+                        io.apply_iface,
                         io.can_probe,
                         cmds,
                     ),

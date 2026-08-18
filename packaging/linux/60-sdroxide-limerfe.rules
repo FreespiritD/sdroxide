@@ -1,0 +1,31 @@
+# LimeRFE, for sdroxide's LimeRFE control over the board's own USB port.
+#
+# This file is only about the *LimeRFE*, not the LimeSDR. sdroxide reaches the
+# LimeSDR through LimeSuite, which opens the USB device itself and ships its own
+# rules (64-limesuite.rules, in the limesuite package) — so there is nothing for
+# this project to add there, and duplicating it would only make it unclear which
+# rule owns those ids.
+#
+# The LimeRFE is different: sdroxide opens its serial port directly, and on most
+# distributions a USB serial device is owned by root and the `dialout` group.
+#
+# TAG+="uaccess" hands an ACL to whoever is logged in at the active seat. That
+# is better than adding the user to `dialout`, which needs a group to exist, the
+# user to be added to it, and a full re-login before it takes effect.
+#
+# Install:
+#   sudo cp 60-sdroxide-limerfe.rules /usr/lib/udev/rules.d/
+#   sudo udevadm control --reload
+# then unplug and replug the board.
+#
+# The id below is a *generic FTDI* one, shared with a great many unrelated
+# USB-serial adapters — it cannot identify a LimeRFE and this rule does not try
+# to. It grants access; the operator picks the port in Settings → Radio; and the
+# board's own hello handshake is what actually confirms a LimeRFE is on the
+# other end of it. The consequence is that this rule also loosens permissions on
+# any other FTDI serial adapter on the machine, which is the same trade every
+# distribution's own FTDI rules already make.
+SUBSYSTEM=="tty", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6001", MODE="0660", TAG+="uaccess"
+
+# Some LimeRFE units carry the FT230X's own id instead.
+SUBSYSTEM=="tty", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6015", MODE="0660", TAG+="uaccess"

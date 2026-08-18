@@ -4552,3 +4552,484 @@ pub(in crate::app) fn settings_sdrplay_tab(
         .weak(),
     );
 }
+
+/// LimeSDR family, through LimeSuite, and the LimeRFE in front of it.
+///
+/// Two halves in one tab because they are one radio to the operator. The upper
+/// half is the board; the lower is the front end, which is off until it is
+/// declared — the same default-inert rule the HPSDR filter board follows, and
+/// for the same reason: this accessory switches a power amplifier.
+///
+/// The band readout in the LimeRFE section is worth the space it takes. It
+/// resolves the current dial through exactly the code the driver uses, so an
+/// operator can see which filter a frequency picks and which connector it
+/// needs *before* keying, rather than finding out from a refusal.
+#[allow(clippy::too_many_arguments)]
+pub(in crate::app) fn settings_lime_tab(
+    ui: &mut egui::Ui,
+    devices: &[sdroxide_types::LimeDevice],
+    serial_ports: &[String],
+    radio_edit: &mut Option<sdroxide_types::RadioConfig>,
+    rescan: &mut bool,
+    copy_report: &mut bool,
+    apply: &mut bool,
+    can_probe: bool,
+    cmds: &mut Vec<Command>,
+) {
+    use sdroxide_types::{
+        LimeConfig, RFE_ATTEN_MAX_STEPS, RFE_ATTEN_STEP_DB, RfeChannel, RfeLink, RfeModeControl,
+        RfePort,
+    };
+    let Some(cfg) = radio_edit.as_mut() else {
+        ui.label("Waiting for the configuration of the machine the radio is attached to.");
+        return;
+    };
+
+    // What forces the session to be rebuilt rather than adjusted in place.
+    let before = (
+        cfg.lime.device.clone(),
+        cfg.lime.channel,
+        cfg.lime.sample_rate_hz,
+        cfg.lime.oversample,
+        cfg.lime.tx_enabled,
+        cfg.lime.fifo_ksamples,
+        cfg.lime.rfe.link,
+        cfg.lime.rfe.serial.path.clone(),
+    );
+
+    egui::Grid::new("lime-grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+        ui.label("Board");
+        probe_only(ui, can_probe, |ui| {
+            ui.horizontal(|ui| {
+                let current = devices
+                    .iter()
+                    .find(|d| d.matches(&cfg.lime.device))
+                    .map(|d| d.label())
+                    .unwrap_or_else(|| {
+                        if cfg.lime.device.trim().is_empty() {
+                            "First one found".to_string()
+                        } else {
+                            format!("{} (not found)", cfg.lime.device)
+                        }
+                    });
+                egui::ComboBox::from_id_salt("lime-dev").selected_text(current).show_ui(ui, |ui| {
+                    ui.selectable_value(&mut cfg.lime.device, String::new(), "First one found");
+                    for d in devices {
+                        let sel = d.matches(&cfg.lime.device) && !cfg.lime.device.is_empty();
+                        if ui.selectable_label(sel, d.label()).clicked() {
+                            // Pin by serial where there is one: a device
+                            // string carries the bus address, which changes
+                            // when the cable moves.
+                            cfg.lime.device =
+                                if d.serial.is_empty() { d.info.clone() } else { d.serial.clone() };
+                        }
+                    }
+                });
+                if ui.button("Rescan").clicked() {
+                    *rescan = true;
+                }
+            });
+        });
+        ui.end_row();
+
+        ui.label("Sample rate");
+        ui.horizontal(|ui| {
+            let text = format!("{:.3} Msps", cfg.lime.sample_rate_hz / 1e6);
+            egui::ComboBox::from_id_salt("lime-rate").selected_text(text).show_ui(ui, |ui| {
+                for r in LimeConfig::SAMPLE_RATES {
+                    let label = match LimeConfig::rate_note(r) {
+                        Some(note) => format!("{:.3} Msps — {note}", r / 1e6),
+                        None => format!("{:.3} Msps", r / 1e6),
+                    };
+                    ui.selectable_value(&mut cfg.lime.sample_rate_hz, r, label);
+                }
+            });
+        });
+        ui.end_row();
+
+        ui.label("Receive gain");
+        if ui
+            .add(
+                egui::Slider::new(
+                    &mut cfg.lime.rx_gain_db,
+                    LimeConfig::GAIN_MIN_DB..=LimeConfig::GAIN_MAX_DB,
+                )
+                .suffix(" dB")
+                .step_by(1.0),
+            )
+            .on_hover_text(
+                "One combined figure, which LimeSuite distributes across the LNA, the TIA and \
+                 the PGA itself. It takes whole decibels, so anything finer is truncated.",
+            )
+            .changed()
+        {
+            push_gain(cmds, LimeConfig::RX_GAIN_ELEMENT, cfg.lime.rx_gain_db);
+        }
+        ui.end_row();
+
+        ui.label("Receive port");
+        ui.horizontal(|ui| {
+            let text = if cfg.lime.antenna_rx.is_empty() {
+                "Automatic".to_string()
+            } else {
+                cfg.lime.antenna_rx.clone()
+            };
+            egui::ComboBox::from_id_salt("lime-antrx").selected_text(text).show_ui(ui, |ui| {
+                ui.selectable_value(&mut cfg.lime.antenna_rx, String::new(), "Automatic");
+                for a in ["LNAH", "LNAL", "LNAW"] {
+                    ui.selectable_value(&mut cfg.lime.antenna_rx, a.to_string(), a);
+                }
+            });
+            ui.label(
+                egui::RichText::new("Automatic follows the frequency: LNAL low, LNAH high.").weak(),
+            );
+        });
+        ui.end_row();
+
+        ui.label("Analog filter");
+        ui.horizontal(|ui| {
+            let mut mhz = cfg.lime.lpf_rx_hz / 1e6;
+            if ui
+                .add(egui::DragValue::new(&mut mhz).speed(0.1).range(0.0..=130.0).suffix(" MHz"))
+                .on_hover_text(
+                    "0 follows the sample rate. Worth leaving there: a filter narrower than a \
+                     quarter of the span silently withdraws the zero-IF LO offset, which puts \
+                     the LO leakage back on top of the signal you are listening to.",
+                )
+                .changed()
+            {
+                cfg.lime.lpf_rx_hz = mhz * 1e6;
+                push_gain(cmds, LimeConfig::LPF_RX_ELEMENT, cfg.lime.lpf_rx_hz);
+            }
+            if cfg.lime.lpf_rx_hz == 0.0 {
+                ui.label(egui::RichText::new("following the rate").weak());
+            }
+        });
+        ui.end_row();
+
+        ui.label("Corrections");
+        ui.horizontal(|ui| {
+            if ui
+                .checkbox(&mut cfg.lime.iq_correction, "Host IQ / DC correction")
+                .on_hover_text(
+                    "Adaptive image and DC removal on this side, on top of the chip's own \
+                     calibration. Turning it off is the one-click way to tell a driver problem \
+                     from a DSP one.",
+                )
+                .changed()
+            {
+                push_gain(
+                    cmds,
+                    LimeConfig::IQ_CORRECTION_ELEMENT,
+                    f64::from(u8::from(cfg.lime.iq_correction)),
+                );
+            }
+            ui.checkbox(&mut cfg.lime.calibrate, "Calibrate at open")
+                .on_hover_text("Costs about a second when the radio is opened.");
+            if ui
+                .button("Calibrate now")
+                .on_hover_text("Stalls the receiver for the better part of a second.")
+                .clicked()
+            {
+                push_gain(cmds, LimeConfig::CALIBRATE_ELEMENT, 1.0);
+            }
+        });
+        ui.end_row();
+    });
+
+    ui.add_space(6.0);
+    ui.separator();
+    ui.label(egui::RichText::new("Transmit").strong());
+    ui.checkbox(&mut cfg.lime.tx_enabled, "Enabled").on_hover_text(
+        "With this off the interface publishes no transmit channel at all, so nothing can key \
+         the radio.",
+    );
+    if cfg.lime.tx_enabled {
+        egui::Grid::new("lime-tx-grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+            ui.label("Transmit gain");
+            if ui
+                .add(
+                    egui::Slider::new(
+                        &mut cfg.lime.tx_gain_db,
+                        LimeConfig::GAIN_MIN_DB..=LimeConfig::GAIN_MAX_DB,
+                    )
+                    .suffix(" dB")
+                    .step_by(1.0),
+                )
+                .changed()
+            {
+                cmds.push(Command::SetGain {
+                    dir: Direction::Tx,
+                    element: LimeConfig::TX_GAIN_ELEMENT.to_string(),
+                    db: cfg.lime.tx_gain_db,
+                });
+            }
+            ui.end_row();
+
+            ui.label("Transmit port");
+            let text = if cfg.lime.antenna_tx.is_empty() {
+                "Automatic".to_string()
+            } else {
+                cfg.lime.antenna_tx.clone()
+            };
+            egui::ComboBox::from_id_salt("lime-anttx").selected_text(text).show_ui(ui, |ui| {
+                ui.selectable_value(&mut cfg.lime.antenna_tx, String::new(), "Automatic");
+                for a in ["BAND1", "BAND2"] {
+                    ui.selectable_value(&mut cfg.lime.antenna_tx, a.to_string(), a);
+                }
+            });
+            ui.end_row();
+        });
+        ui.label(
+            egui::RichText::new(
+                "A LimeSDR transmits from about 100 kHz to 3.8 GHz with no filtering of its \
+                 own. Use a low-pass filter, an appropriate LimeRFE channel, or a dummy load.",
+            )
+            .color(egui::Color32::from_rgb(220, 170, 70)),
+        );
+    }
+
+    ui.add_space(6.0);
+    ui.separator();
+    ui.label(egui::RichText::new("LimeRFE front end").strong());
+
+    egui::Grid::new("lime-rfe-grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+        ui.label("Connected by");
+        egui::ComboBox::from_id_salt("lime-rfe-link")
+            .selected_text(cfg.lime.rfe.link.label())
+            .show_ui(ui, |ui| {
+                for l in RfeLink::ALL {
+                    ui.selectable_value(&mut cfg.lime.rfe.link, l, l.label());
+                }
+            });
+        ui.end_row();
+
+        if cfg.lime.rfe.link == RfeLink::Serial {
+            ui.label("Serial port");
+            probe_only(ui, can_probe, |ui| {
+                ui.horizontal(|ui| {
+                    egui::ComboBox::from_id_salt("lime-rfe-port")
+                        .selected_text(if cfg.lime.rfe.serial.path.is_empty() {
+                            "—".to_string()
+                        } else {
+                            cfg.lime.rfe.serial.path.clone()
+                        })
+                        .show_ui(ui, |ui| {
+                            for p in serial_ports {
+                                ui.selectable_value(&mut cfg.lime.rfe.serial.path, p.clone(), p);
+                            }
+                        });
+                    ui.label(
+                        egui::RichText::new(
+                            "The LimeRFE's own micro-USB port, not the radio's. 9600 baud, \
+                             fixed by its firmware.",
+                        )
+                        .weak(),
+                    );
+                });
+            });
+            ui.end_row();
+        }
+    });
+
+    if cfg.lime.rfe.link != RfeLink::Off {
+        egui::Grid::new("lime-rfe-grid2").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+            ui.label("Receive connector");
+            egui::ComboBox::from_id_salt("lime-rfe-prx")
+                .selected_text(cfg.lime.rfe.port_rx.label())
+                .show_ui(ui, |ui| {
+                    for p in RfePort::RX_PORTS {
+                        ui.selectable_value(&mut cfg.lime.rfe.port_rx, p, p.label());
+                    }
+                });
+            ui.end_row();
+
+            ui.label("Transmit connector");
+            egui::ComboBox::from_id_salt("lime-rfe-ptx")
+                .selected_text(cfg.lime.rfe.port_tx.label())
+                .show_ui(ui, |ui| {
+                    for p in RfePort::TX_PORTS {
+                        ui.selectable_value(&mut cfg.lime.rfe.port_tx, p, p.label());
+                    }
+                });
+            ui.end_row();
+
+            ui.label("Band");
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut cfg.lime.rfe.follow_band, "Follow the dial").on_hover_text(
+                    "Switch the filters to match the operating frequency, before any RF \
+                     appears. Tuning within one band puts nothing on the control link.",
+                );
+                if !cfg.lime.rfe.follow_band {
+                    egui::ComboBox::from_id_salt("lime-rfe-chan")
+                        .selected_text(cfg.lime.rfe.channel.label())
+                        .show_ui(ui, |ui| {
+                            for c in RfeChannel::ALL {
+                                ui.selectable_value(&mut cfg.lime.rfe.channel, c, c.label());
+                            }
+                        });
+                }
+            });
+            ui.end_row();
+
+            ui.label("Relays");
+            egui::ComboBox::from_id_salt("lime-rfe-mode")
+                .selected_text(cfg.lime.rfe.mode.label())
+                .show_ui(ui, |ui| {
+                    for m in RfeModeControl::ALL {
+                        ui.selectable_value(&mut cfg.lime.rfe.mode, m, m.label());
+                    }
+                });
+            ui.end_row();
+
+            ui.label("Receive attenuator");
+            let mut steps = cfg.lime.rfe.atten_steps;
+            if ui
+                .add(
+                    egui::Slider::new(&mut steps, 0..=RFE_ATTEN_MAX_STEPS)
+                        .custom_formatter(|v, _| format!("{} dB", v as u8 * RFE_ATTEN_STEP_DB)),
+                )
+                .changed()
+            {
+                cfg.lime.rfe.atten_steps = steps;
+                push_gain(cmds, LimeConfig::RFE_ATTEN_ELEMENT, cfg.lime.rfe.atten_db());
+            }
+            ui.end_row();
+
+            ui.label("Other");
+            ui.horizontal(|ui| {
+                if ui.checkbox(&mut cfg.lime.rfe.notch, "Notch filter").changed() {
+                    push_gain(
+                        cmds,
+                        LimeConfig::RFE_NOTCH_ELEMENT,
+                        f64::from(u8::from(cfg.lime.rfe.notch)),
+                    );
+                }
+                if ui
+                    .checkbox(&mut cfg.lime.rfe.fan, "Fan")
+                    .on_hover_text("Worth having on for any sustained transmitting.")
+                    .changed()
+                {
+                    push_gain(
+                        cmds,
+                        LimeConfig::RFE_FAN_ELEMENT,
+                        f64::from(u8::from(cfg.lime.rfe.fan)),
+                    );
+                }
+            });
+            ui.end_row();
+        });
+
+        // What the current cabling costs, said before it is discovered by
+        // keying into a closed relay.
+        if let Some(note) = cfg.lime.rfe.switching_note() {
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new(note).color(egui::Color32::from_rgb(220, 170, 70)));
+        }
+        if let Some(refusal) = cfg.lime.rfe.tx_refusal() {
+            ui.add_space(4.0);
+            ui.label(
+                egui::RichText::new(format!("Transmit is blocked: {refusal}"))
+                    .color(egui::Color32::from_rgb(220, 170, 70)),
+            );
+        }
+
+        // What this cabling can actually reach, resolved through exactly the
+        // functions the driver runs — so what it says here is what the board
+        // will be told. A channel the chosen connector cannot reach is not an
+        // error the operator should have to discover by keying.
+        if cfg.lime.rfe.follow_band {
+            let mut unreachable_rx: Vec<&str> = Vec::new();
+            let mut unreachable_tx: Vec<&str> = Vec::new();
+            for (label, hz) in [
+                ("HF", 14.2e6),
+                ("6 m", 50.2e6),
+                ("2 m", 145.5e6),
+                ("1.25 m", 222.0e6),
+                ("70 cm", 432.1e6),
+                ("33 cm", 915.0e6),
+                ("23 cm", 1296.0e6),
+                ("13 cm", 2400.0e6),
+                ("9 cm", 3400.0e6),
+            ] {
+                let want = sdroxide_types::channel_for(hz);
+                if sdroxide_types::rx_port_check(cfg.lime.rfe.port_rx, want) != want {
+                    unreachable_rx.push(label);
+                }
+                if sdroxide_types::tx_port_check(cfg.lime.rfe.port_tx, want) != want {
+                    unreachable_tx.push(label);
+                }
+            }
+            if !unreachable_rx.is_empty() || !unreachable_tx.is_empty() {
+                ui.add_space(4.0);
+                let mut lines = Vec::new();
+                if !unreachable_rx.is_empty() {
+                    lines.push(format!(
+                        "Receiving on {}, these fall back to the unfiltered wideband path: {}.",
+                        cfg.lime.rfe.port_rx.label(),
+                        unreachable_rx.join(", ")
+                    ));
+                }
+                if !unreachable_tx.is_empty() {
+                    lines.push(format!(
+                        "Transmitting on {}, these fall back to the wideband path — no band \
+                         amplifier and no filtering: {}.",
+                        cfg.lime.rfe.port_tx.label(),
+                        unreachable_tx.join(", ")
+                    ));
+                }
+                ui.label(
+                    egui::RichText::new(lines.join("\n"))
+                        .color(egui::Color32::from_rgb(220, 170, 70)),
+                );
+            }
+        }
+        ui.add_space(4.0);
+        ui.label(
+            egui::RichText::new(
+                "The 30 MHz channel is reachable only through J5, which is one connector for \
+                 both directions — so HF always switches at key-down. Wire receive to J3 and \
+                 transmit to J4 for everything above it and the relays never move.",
+            )
+            .weak(),
+        );
+    }
+
+    ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        if ui
+            .button("Copy diagnostic report")
+            .on_hover_text(
+                "LimeSDR support has not been verified against hardware. This is the last \
+                 session's trace, for an issue report.",
+            )
+            .clicked()
+        {
+            *copy_report = true;
+        }
+    });
+
+    let after = (
+        cfg.lime.device.clone(),
+        cfg.lime.channel,
+        cfg.lime.sample_rate_hz,
+        cfg.lime.oversample,
+        cfg.lime.tx_enabled,
+        cfg.lime.fifo_ksamples,
+        cfg.lime.rfe.link,
+        cfg.lime.rfe.serial.path.clone(),
+    );
+    if after != before {
+        *apply = true;
+    }
+
+    ui.add_space(4.0);
+    ui.label(
+        egui::RichText::new(
+            "Gains, filters, corrections and every LimeRFE control apply immediately. The \
+             board, the sample rate, arming transmit and the LimeRFE's connection take effect \
+             on Apply.",
+        )
+        .weak(),
+    );
+}

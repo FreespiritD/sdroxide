@@ -20,6 +20,7 @@ mod geo;
 mod input;
 mod ism;
 mod js8;
+mod limerfe;
 mod memory;
 mod meters;
 mod mode;
@@ -103,6 +104,11 @@ pub use js8::{
     HB_BAND_HI_HZ, HB_BAND_LO_HZ, HB_SLOT_HZ, Js8FrameInfo, Js8FrameKind, Js8Heard, Js8Msg,
     Js8Speed, Js8Status,
 };
+pub use limerfe::{
+    LimeRfeConfig, RFE_ATTEN_MAX_STEPS, RFE_ATTEN_STEP_DB, RFE_BAUD, RFE_BUFFER_SIZE,
+    RFE_I2C_ADDRESS, RfeChannel, RfeLink, RfeMode, RfeModeControl, RfePort, channel_for,
+    resolve as rfe_resolve, rx_port_check, tx_port_check,
+};
 pub use memory::{BandStackEntry, MemoryChannel, MemoryFolder, RttyMemory};
 pub use meters::{Meters, TxMeters, TxTelemetry};
 pub use mode::{AgcMode, Mode, NrEngine, NrLevel, NrStrength, SlotTiming};
@@ -130,13 +136,13 @@ pub use radio::{
     CwKeying, DigiMode, ELAD_ATTENUATOR_DB, ELAD_DEFAULT_RATE_HZ, ELAD_SAMPLE_RATES, EladConfig,
     EladDevice, EladTxInput, FREQ_RANGE_MAX_HZ, HackRfConfig, HackRfDevice, HpsdrConfig,
     HpsdrDevice, HpsdrFilterBoard, HpsdrIoRxInput, IcomModel, IcomNetConfig, IcomRxSource,
-    IfModeClass, KenwoodSend, LineState, ModeControl, PANADAPTER_OFFSET_MAX_HZ, PanadapterAudio,
-    PanadapterConfig, PanadapterTap, Parity, PlutoAgc, PlutoConfig, PlutoDevice, PttMethod,
-    RadioConfig, RtlSdrAgc, RtlSdrConfig, RtlSdrDevice, RtlSdrHfMode, RtlTcpConfig, Rx888Config,
-    Rx888Device, SdrPlayAgc, SdrPlayConfig, SdrPlayDevice, SdrPlayDuoTuner, SdrPlayModel,
-    SerialConfig, SmartSdrConfig, SmartSdrDevice, SoapyDeviceInfo, SoundFormat, SpyServerConfig,
-    SpyServerFormat, StopBits, TciConfig, cat_iq_offset_max_hz, converter_preset_name,
-    format_freq_ranges, hackrf_serial_matches, parse_freq_ranges,
+    IfModeClass, KenwoodSend, LimeConfig, LimeDevice, LineState, ModeControl,
+    PANADAPTER_OFFSET_MAX_HZ, PanadapterAudio, PanadapterConfig, PanadapterTap, Parity, PlutoAgc,
+    PlutoConfig, PlutoDevice, PttMethod, RadioConfig, RtlSdrAgc, RtlSdrConfig, RtlSdrDevice,
+    RtlSdrHfMode, RtlTcpConfig, Rx888Config, Rx888Device, SdrPlayAgc, SdrPlayConfig, SdrPlayDevice,
+    SdrPlayDuoTuner, SdrPlayModel, SerialConfig, SmartSdrConfig, SmartSdrDevice, SoapyDeviceInfo,
+    SoundFormat, SpyServerConfig, SpyServerFormat, StopBits, TciConfig, cat_iq_offset_max_hz,
+    converter_preset_name, format_freq_ranges, hackrf_serial_matches, parse_freq_ranges,
 };
 pub use rds::{
     RdsClock, RdsData, RdsGroupLog, RdsStandard, RdsStats, RtPlus, af_code_hz, pi_callsign,

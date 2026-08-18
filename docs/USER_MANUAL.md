@@ -2987,6 +2987,10 @@ radio. Everything below the selector changes to match the choice:
   driven by sdroxide's own USB driver. On an FDM-DUO this one interface covers
   the whole radio: the wideband receiver, the CAT control link and the transmit
   sound card. See [6.2.16](#6216-elad-fdm-duo--fdm-s-usb).
+- **LimeSDR + LimeRFE (LimeSuite)** — the LimeSDR family through LimeSuite,
+  full duplex both ways, and the LimeRFE front end that no other path can reach:
+  its band filters, LNA, amplifier and transmit/receive relay follow the dial.
+  See [6.2.17](#6217-limesdr-family--limerfe-limesuite).
 
 There is no auto-detect: you pick the interface, and an interface that cannot be
 opened falls back to a silent source rather than guessing at another one.
@@ -4248,14 +4252,6 @@ One connection carries three things:
 - **The radio's spectrum scope** — its own 475-point sweep, up to ±500 kHz wide,
   which sdroxide draws in the full-band waterfall.
 
-##### What this is not
-
-**There is no I/Q.** No Icom outputs I/Q over any interface, LAN included. The
-wide waterfall is the picture the radio's own DSP computed, not something
-sdroxide analysed — you cannot demodulate it, run a skimmer across it, or expect
-it to respond to sdroxide's own noise reduction. What sdroxide *can* process is
-whatever the audio stream carries, which is the choice below.
-
 ##### On the radio, first
 
 Three settings, all under **MENU » SET**:
@@ -4316,10 +4312,6 @@ Transmit is unaffected by the choice: it is always audio the radio modulates.
 - **Copy diagnostic report** — the last session's handshake and CI-V trace, as
   text.
 
-> **Not yet verified against hardware.** This backend was written from Icom's
-> published CI-V reference and the protocol's packet layout, and is tested
-> end-to-end against a simulator rather than a radio. If it misbehaves, the
-> **Copy diagnostic report** button produces everything a bug report needs.
 
 #### 6.2.11 RTL-SDR over rtl_tcp (network dongles)
 
@@ -5032,6 +5024,118 @@ the radio* — so the CW panel cannot key it over CAT. Menu 37 `CW IN` set to
 > the transceiver uses for its own audio, and whether the stream survives a
 > transmit cycle. The second is assumed *not* to hold — receive stops for the
 > length of an over — which is the safe way to be wrong.
+
+#### 6.2.17 LimeSDR family + LimeRFE (LimeSuite)
+
+Drives a LimeSDR-USB, LimeSDR Mini (v1 or v2), LimeNET-Micro or LimeSDR-PCIe
+through **LimeSuite**, and the **LimeRFE** front end in front of it. Wideband
+I/Q both ways, and genuinely full duplex — the receiver keeps running through
+your own transmission, which is how a QO-100 station listens to its own
+downlink.
+
+A LimeSDR has always been reachable through the SoapySDR interface, and
+SoapyLMS7 is itself a thin wrapper over this same library, so the I/Q path is
+not what this interface adds. The **LimeRFE** is: SoapySDR exposes none of it.
+
+**Why a library rather than a driver.** Every other USB interface here speaks
+its radio's wire protocol directly. This one does not, because driving the
+LMS7002M means its register map, its synthesisers, its signal-processing chain
+and — the part no amount of desk-checking settles — its DC-offset and
+IQ-imbalance calibration. LimeSuite is Apache-2.0 and already has all of it.
+The library is found with **dlopen at runtime**, so nothing is linked at build
+time: this interface is in every build variant and simply says what to install
+where the library is absent.
+
+##### The board
+
+- **Board** — which LimeSDR to open, or *First one found*. **Rescan** asks
+  LimeSuite again. Unlike the USB scans on the other tabs this one is not free:
+  LimeSuite opens each candidate to read its identity, so it can disturb a board
+  another program is using.
+- **Sample rate** — 1 to 40 Msps. The board's real limits are read from it when
+  it opens; this list is the useful subset.
+- **Receive gain** — one combined figure, 0–73 dB, which LimeSuite distributes
+  across the LNA, the TIA and the PGA itself. It takes whole decibels, so a
+  slider left between two of them is a radio at the lower one, and the panel
+  shows what the chip actually got rather than what it was asked for.
+- **Receive port** — `LNAL` (low band), `LNAH` (high band), `LNAW` (both, at the
+  cost of a couple of dB), or **Automatic**, which follows the frequency.
+- **Analog filter** — `0` follows the sample rate, which is what you want.
+  Worth leaving there: a filter narrower than a quarter of the span silently
+  withdraws the zero-IF LO offset, which puts the LO leakage back on top of what
+  you are listening to rather than merely softening the band edges.
+- **Corrections** — host-side IQ/DC correction on top of the chip's own
+  calibration, whether to calibrate when the radio opens (about a second), and
+  **Calibrate now**. Turning the host correction off is the one-click way to
+  tell a driver problem from a DSP one.
+
+**Transmit** is off until armed, and with it off the interface publishes no
+transmit channel at all — so nothing can key the radio, not merely the paths
+that remembered to check. A LimeSDR transmits from about 100 kHz to 3.8 GHz with
+no filtering of its own; use a low-pass filter, an appropriate LimeRFE channel,
+or a dummy load.
+
+##### The LimeRFE
+
+**Connected by** is *Not connected* until you say otherwise. That default is
+deliberate: this board switches a power amplifier, and an accessory that could
+be wired to anything comes up inert and gets declared, the same rule the HPSDR
+open-collector outputs follow.
+
+Two links, and the choice is worth making deliberately:
+
+- **Its own USB cable (serial)** — pick the port below it. Needs no LimeSuite at
+  all, so this link works whatever is driving the radio, and a transaction costs
+  a few tens of milliseconds.
+- **Through the LimeSDR (GPIO / I²C)** — one cable fewer, but the control signal
+  is bit-banged on the radio's own GPIO pins, so every transaction is hundreds of
+  USB round trips and takes the better part of a second. It also only exists
+  while the LimeSDR itself is open, and needs LimeSuite 20.01 or newer (older
+  builds have no LimeRFE support at all; the interface says so rather than
+  failing obscurely).
+
+If you change band often, use the cable.
+
+**Band** — with *Follow the dial* on, the operating frequency picks the channel
+and the filters are switched **before any RF appears**. Tuning within one band
+puts nothing on the control link at all; changing band always does. The mapping
+is LimeSuite's own, so a LimeRFE configured here and one configured in
+LimeSuiteGUI put the same filters in circuit.
+
+**Relays** is the setting worth understanding, because the cabling decides how
+much work an over is:
+
+| Receive | Transmit | What happens at key-down |
+| --- | --- | --- |
+| J3 | J4 | Nothing. The board sits in receive-and-transmit permanently. |
+| J3 | J3 | The relays switch to transmit, and back at key-up. |
+| J5 | J5 | The same — and this is every HF contact, because J5 is the only path to the HF amplifier and is one jack for both directions. |
+
+*Automatic* does whichever of those the cabling calls for, which is why it is
+the default: the board **refuses** receive-and-transmit on a shared connector,
+so there is no standing mode that can transmit there. Pinning it to *Always
+receive* makes transmit refuse outright rather than drive into a closed relay —
+the panel says so, in yellow, as soon as the combination is selected.
+
+If a band you use falls back to the unfiltered wideband path on your chosen
+connectors, the panel names it: J5 receives only up to 70 cm, and HF and 6 m
+transmit only through J5.
+
+**Receive attenuator** is 0–14 dB in 2 dB steps. **Notch** and **Fan** are the
+board's own; the fan is worth having on for any sustained transmitting.
+
+> **Not verified against hardware.** No LimeSDR has been attached to this code.
+> The wire-level facts come from LimeSuite's headers and source and from a
+> measured struct-layout check against the installed library; what cannot be
+> checked without a board is whether the streams behave as documented, how long
+> a LimeRFE band change really takes, and whether the LimeRFE's port rules match
+> its datasheet in every case. **Copy diagnostic report** on this tab dumps the
+> session's library calls, and `cargo run -p sdroxide-lime --example probe` does
+> the same from a terminal.
+>
+> See "LimeSDR and LimeRFE permissions" in the README for the Linux udev rule —
+> the LimeSDR itself needs nothing from this project, because LimeSuite ships
+> its own rules.
 
 ### 6.3 UI: display preferences and voice announcements
 
@@ -7503,6 +7607,8 @@ to its default, and a partial file is normal rather than a special case.
 | `"Airspy"` | Airspy R2 / Mini | `"airspy"` |
 | `"HackRf"` | HackRF One / Pro / Jawbreaker / rad1o | `"hackrf"` |
 | `"SdrPlay"` | SDRplay RSP | `"sdrplay"` |
+| `"Elad"` | ELAD FDM-DUO / FDM-S1 / FDM-S2 | `"elad"` |
+| `"Lime"` | LimeSDR family + LimeRFE, via LimeSuite | `"lime"` |
 
 The per-interface object is only read when `backend` names it, so leaving the
 others out — or leaving them configured for a radio you have unplugged — changes

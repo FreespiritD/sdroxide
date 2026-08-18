@@ -1,0 +1,27 @@
+[package]
+name = "sdroxide-lime"
+version.workspace = true
+edition.workspace = true
+
+# The LimeSDR family (LimeSDR-USB, Mini v1/v2, LimeNET-Micro, PCIe) through
+# LimeSuite, which is found with dlopen at *runtime*. Nothing is linked at build
+# time, so this crate builds everywhere and simply reports "not installed" where
+# the library is absent — the same arrangement `sdroxide-sdrplay` uses for the
+# closed sdrplay_api.
+#
+# Unlike that one, the library here is open source (Apache-2.0). This is a
+# shortcut past the LMS7002M's register map, its CGEN/SXR/SXT synthesisers and
+# its DC-offset and IQ-imbalance calibration — roughly ten thousand lines whose
+# quality can only be settled on a bench — rather than the only door there is.
+#
+# Must never be a dependency of any wasm-targeted crate.
+[dependencies]
+sdroxide-types.workspace = true
+sdroxide-limerfe.workspace = true
+num-complex.workspace = true
+libloading.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tracing-subscriber.workspace = true

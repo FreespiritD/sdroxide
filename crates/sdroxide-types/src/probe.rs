@@ -22,7 +22,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AirspyDevice, AirspyHfDevice, EladDevice, HackRfDevice, HpsdrDevice, IcomNetConfig,
+    AirspyDevice, AirspyHfDevice, EladDevice, HackRfDevice, HpsdrDevice, IcomNetConfig, LimeDevice,
     PlutoDevice, RtlSdrDevice, Rx888Device, SdrPlayDevice, SmartSdrDevice, SoapyDeviceInfo,
 };
 
@@ -68,6 +68,13 @@ pub enum DeviceProbe {
     /// the serial in EEPROM, which needs the device opened — so the entries are
     /// named by model and bus address.
     Elad,
+    /// The LimeSDR boards LimeSuite reports.
+    ///
+    /// Unlike the USB lists above this one is **not** free: `LMS_GetDeviceList`
+    /// opens each candidate to read its identity, so it disturbs a device
+    /// another program is holding. Asked on demand only, like
+    /// [`DeviceProbe::Soapy`].
+    Lime,
     /// The SoapySDR enumeration. Unlike the USB lists this one is not free: it
     /// loads every installed SoapySDR module and asks each to scan, which on a
     /// bundle install means probing several buses. Asked on demand only.
@@ -149,6 +156,7 @@ pub enum ReportKind {
     HackRf,
     Pluto,
     Elad,
+    Lime,
 }
 
 /// What the machine with the radio on it answered.
@@ -170,6 +178,7 @@ pub enum ProbeAnswer {
     HackRf(Vec<HackRfDevice>),
     SdrPlay(Vec<SdrPlayDevice>),
     Elad(Vec<EladDevice>),
+    Lime(Vec<LimeDevice>),
     Soapy(Vec<SoapyDeviceInfo>),
     Hpsdr(Vec<HpsdrDevice>),
     SmartSdr(Vec<SmartSdrDevice>),

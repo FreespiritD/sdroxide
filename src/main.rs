@@ -10,6 +10,7 @@ mod gui_main;
 mod hackrf_source;
 mod hpsdr_source;
 mod icomnet_source;
+mod lime_source;
 mod local_controller;
 mod null_source;
 mod panadapter_source;
@@ -750,6 +751,7 @@ fn probe(cli: &Cli, settings: &Settings) -> anyhow::Result<()> {
     probe_hackrf();
     probe_sdrplay();
     probe_elad();
+    probe_lime();
     probe_soapy(cli, settings)
 }
 
@@ -802,6 +804,40 @@ fn probe_airspyhf() {
         }
     }
     println!();
+}
+
+/// The Lime boards LimeSuite reports.
+///
+/// Unlike the `nusb` scans above this one is not free — LimeSuite opens each
+/// candidate to read its identity — and it can fail in a way the others cannot:
+/// the library may simply not be installed. Each of those is a different thing
+/// to say.
+fn probe_lime() {
+    match sdroxide_lime::try_list() {
+        Err(e) => println!("LimeSDR: {e}\n"),
+        Ok(found) => {
+            if found.devices.is_empty() {
+                println!("No LimeSDR boards found by LimeSuite.");
+            } else {
+                println!("=== LimeSDR family (LimeSuite) ===");
+                for (i, d) in found.devices.iter().enumerate() {
+                    println!("  {i}: {}", d.label());
+                }
+            }
+            // Named rather than silently dropped: LimeSuite claims the bare
+            // Cypress FX3 id an unprogrammed RX-888 also presents, and "my
+            // board is missing from the list" is a worse thing to debug than a
+            // line saying what was skipped and why.
+            if !found.rejected.is_empty() {
+                println!(
+                    "  ({} device(s) LimeSuite listed but this backend does not drive: {})",
+                    found.rejected.len(),
+                    found.rejected.join("; ")
+                );
+            }
+            println!();
+        }
+    }
 }
 
 fn probe_elad() {
@@ -1185,7 +1221,8 @@ fn open_configured_source(
     // as "the flag works and the radio ignored it". Once per run, not once per
     // reconnect — this is called again every time the engine reopens.
     if let Some(rate) = cli.rate {
-        if !matches!(radio.backend, Backend::Soapy | Backend::Pluto | Backend::Auto) {
+        if !matches!(radio.backend, Backend::Soapy | Backend::Pluto | Backend::Lime | Backend::Auto)
+        {
             static SAID: std::sync::Once = std::sync::Once::new();
             SAID.call_once(|| {
                 tracing::warn!(
@@ -1218,6 +1255,7 @@ fn open_configured_source(
         Backend::HackRf => open_hackrf_source(radio, cli.center_hz()),
         Backend::SdrPlay => open_sdrplay_source(radio, cli.center_hz()),
         Backend::Elad => open_elad_source(radio, cli.center_hz()),
+        Backend::Lime => open_lime_source(radio, cli.center_hz(), cli.rate),
         Backend::Soapy => open_soapy_source(cli, settings),
         Backend::Auto => {
             #[cfg(feature = "soapy")]
@@ -1746,6 +1784,90 @@ fn hackrf_caps(src: &hackrf_source::HackRfSource) -> DeviceCaps {
         freq_ranges_tx: if tx { vec![range] } else { Vec::new() },
         sample_rates: HackRfConfig::SAMPLE_RATES.to_vec(),
         gains,
+        ..DeviceCaps::default()
+    }
+}
+
+/// Build the LimeSDR source from radio.json.
+///
+/// `--rate` is honoured here, unlike on the other USB backends: this interface
+/// supersedes `--device driver=lime` on the SoapySDR one, which has always
+/// taken the flag, and a migrating operator should not have it silently
+/// dropped.
+fn open_lime_source(
+    radio: &RadioConfig,
+    center_hz: f64,
+    rate: Option<f64>,
+) -> anyhow::Result<(Box<dyn IqSource>, DeviceCaps)> {
+    let mut cfg = radio.lime.clone();
+    if let Some(r) = rate {
+        cfg.sample_rate_hz = r;
+    }
+    let src = lime_source::LimeSource::open(&cfg, center_hz).context("opening LimeSDR")?;
+    let caps = lime_caps(&src);
+    Ok((Box::new(src), caps))
+}
+
+/// Capabilities for a LimeSDR: wideband I/Q both ways, genuinely full duplex,
+/// and a transmitter published only once it has been armed.
+///
+/// `tx_channels` is load-bearing in the same way it is for the HackRF: with
+/// `tx_enabled` off it is zero, `DeviceCaps::is_transmit_capable()` is false,
+/// and the engine's own gate refuses to key by any path.
+///
+/// `full_duplex` is true and earned — this radio has separate receive and
+/// transmit chains and the USB 3 link to carry both, which is why
+/// `read_available` is overridden in the source.
+///
+/// The frequency and rate ranges are **read from the board, never assumed**.
+/// That is not politeness: a LimeSDR asked for a frequency below the LMS7002M's
+/// range reconfigures its interface clock, fails half way, and then delivers
+/// nothing at all until the process restarts — the fault recorded on the
+/// SoapySDR path and guarded by the engine's retune limit, which can only work
+/// from a published range.
+///
+/// One real gain element per direction. `LMS_SetGaindB` distributes a single
+/// number across the LNA, TIA and PGA itself, and reaching those stages
+/// individually needs a register-level call; three sliders that silently fought
+/// the combined one would be worse than the one that works. Everything else —
+/// the analog filters, the calibration trigger, the host-side IQ correction and
+/// every LimeRFE control — rides pseudo-elements that are deliberately absent
+/// here, so only this backend's own settings panel renders them.
+fn lime_caps(src: &lime_source::LimeSource) -> DeviceCaps {
+    use sdroxide_types::{Direction, GainElement, LimeConfig};
+    let tx = src.tx_enabled();
+    let mut gains = vec![GainElement {
+        name: LimeConfig::RX_GAIN_ELEMENT.into(),
+        direction: Direction::Rx,
+        min_db: LimeConfig::GAIN_MIN_DB,
+        max_db: LimeConfig::GAIN_MAX_DB,
+        // LimeSuite takes an unsigned number of decibels; anything finer is
+        // truncated by the library, so offering finer would be a fiction.
+        step_db: 1.0,
+    }];
+    if tx {
+        gains.push(GainElement {
+            name: LimeConfig::TX_GAIN_ELEMENT.into(),
+            direction: Direction::Tx,
+            min_db: LimeConfig::GAIN_MIN_DB,
+            max_db: LimeConfig::GAIN_MAX_DB,
+            step_db: 1.0,
+        });
+    }
+    DeviceCaps {
+        driver: "lime".into(),
+        label: src.describe(),
+        rx_channels: 1,
+        tx_channels: usize::from(tx),
+        full_duplex: true,
+        audio_mode: false,
+        freq_ranges_rx: src.freq_range(false).into_iter().collect(),
+        freq_ranges_tx: if tx { src.freq_range(true).into_iter().collect() } else { Vec::new() },
+        sample_rates: LimeConfig::SAMPLE_RATES.to_vec(),
+        rate_ranges: src.rate_range().into_iter().collect(),
+        gains,
+        antennas_rx: src.antennas(false),
+        antennas_tx: if tx { src.antennas(true) } else { Vec::new() },
         ..DeviceCaps::default()
     }
 }

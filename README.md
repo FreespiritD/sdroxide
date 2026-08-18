@@ -41,9 +41,10 @@ One binary, three ways to run it:
   over USB or over the network via rtl_tcp),
   RX-888 (native support), SDRplay RSP (native, via the vendor API service),
   SmartSDR (FlexRadio - experimental!), PlutoSDR (native support, experimental!),
-  Icom LAN / RS-BA1 protocol (experimental!), HackRF (native support, RX
+  Icom LAN / RS-BA1 protocol, HackRF (native support, RX
   verified / TX unmeasured), Airspy R2/Mini (native support, experimental!),
-  ELAD FDM-DUO / FDM-S1 / FDM-S2 (native support, experimental!)
+  ELAD FDM-DUO / FDM-S1 / FDM-S2 (native support, experimental!),
+  LimeSDR family + LimeRFE front end (via LimeSuite, experimental!)
 - **Panadapter** — GPU (wgpu) waterfall + spectrum line, wheel-zoom around the
   cursor, drag-to-pan, per-digit frequency readout, selectable colormaps,
   peak-hold, and **auto-contrast** ("FIT", on by default) that keeps the display
@@ -561,6 +562,47 @@ starting sdroxide before the rig is fine:
   exchanged with the device, and `cargo run -p sdroxide-elad --example probe`
   does the same from a terminal.
 
+- **LimeSDR + LimeRFE (LimeSuite)** — the LimeSDR family (LimeSDR-USB, Mini v1
+  and v2, LimeNET-Micro, PCIe), driven through **LimeSuite** rather than through
+  SoapySDR. Wideband I/Q both ways and genuinely full duplex: the receiver keeps
+  running through your own transmission.
+
+  A LimeSDR has always been reachable here through the SoapySDR interface, and
+  SoapyLMS7 is itself a thin wrapper over this same library — so the I/Q path is
+  not what this adds. **The LimeRFE is.** SoapySDR exposes none of it, so the
+  band filters, the LNA, the power amplifier and the transmit/receive relay are
+  unreachable from that side. Here the front end follows the dial: change band
+  and the right filter is in circuit before any RF appears, while tuning *within*
+  a band puts nothing at all on the control link.
+
+  The LimeRFE is reached either way the hardware allows. Over **its own
+  micro-USB port** it is a serial device, driven by pure Rust that needs no
+  LimeSuite at all — so that link works whatever is driving the radio. Through
+  the **LimeSDR's GPIO header** it is bit-banged I²C on the radio's own pins,
+  one cable fewer but far slower: a band change there is the better part of a
+  second against a few tens of milliseconds over the serial cable. Pick whichever
+  suits the shack; if you change band often, pick the cable.
+
+  **Cabling decides whether an over costs anything.** Receive on J3 and transmit
+  on J4 and the board sits in receive-and-transmit permanently — the relays never
+  move. Share one connector — one antenna on J3, or anything on HF, where J5 is
+  the only path to the HF amplifier and is one jack for both directions — and the
+  board physically cannot do both, so it is switched at key-down and back at
+  key-up. The **Relays** setting is left on *Automatic*, which does whichever of
+  those the cabling calls for; pin it to *Always receive* and transmit is refused
+  outright rather than driven into a closed relay.
+
+  **LimeSuite is found at runtime, not linked**, so this interface is in every
+  build variant and simply reports what to install where the library is absent
+  (Debian/Ubuntu and Arch: `limesuite`; macOS: `brew install limesuite`; Windows:
+  the PothosSDR bundle). It needs no SoapySDR module. See "LimeRFE permissions"
+  under Building for the Linux udev rule — the LimeSDR itself needs nothing from
+  this project, because LimeSuite ships its own rules.
+
+  **Not verified against hardware.** No LimeSDR has been attached to this code.
+  **Copy diagnostic report** on the Radio tab dumps the session's library calls,
+  and `cargo run -p sdroxide-lime --example probe` does the same from a terminal.
+
 - **PlutoSDR (network)** — an ADALM-Pluto, driven directly over the **IIOD**
   protocol its on-board daemon serves. **No SoapySDR and no libiio**, so it
   works in every build including the standard `.msi` and `.dmg`. Wideband IQ
@@ -1063,6 +1105,46 @@ Scott Gadgets ship one device descriptor for both, and only the USB *product
 string* differs. sdroxide reads that string during enumeration so the settings
 dialog can offer the Pro's extra low sample rates without opening anything, and
 confirms the board from its board-id register once the radio is open.
+
+### LimeSDR and LimeRFE permissions
+
+Not quite the same situation as the rest, because sdroxide does not open the
+LimeSDR itself — LimeSuite does, and it ships its own rules.
+
+**Linux, the LimeSDR.** Nothing from this project. Installing LimeSuite installs
+`64-limesuite.rules`, which covers the LimeSDR-USB (`1d50:6108`), the Mini
+(`0403:601f`) and the Cypress FX3 bootloader states. If `LimeUtil --find` sees
+your board, so will sdroxide.
+
+**Linux, the LimeRFE.** This one sdroxide *does* open — its own micro-USB port
+is a serial device — so install the packaged rule and replug it:
+
+```sh
+sudo cp packaging/linux/60-sdroxide-limerfe.rules /usr/lib/udev/rules.d/
+sudo udevadm control --reload
+```
+
+The `.deb` installs this for you. Worth knowing what it does and does not do:
+the LimeRFE's USB-serial bridge presents a *generic FTDI* id shared with a great
+many unrelated adapters, so the rule cannot identify a LimeRFE and does not try.
+It grants access to those ports, you pick the right one in Settings → Radio, and
+the board's own handshake is what confirms a LimeRFE is on the other end. The
+side effect is that any other FTDI serial adapter on the machine gets the same
+loosened permissions — the same trade every distribution's own FTDI rules make.
+If you would rather not, add yourself to the `dialout` group instead and skip
+this file.
+
+**Windows.** The PothosSDR bundle installs LimeSuite and its drivers. The
+LimeRFE appears as an ordinary COM port through FTDI's driver.
+
+**macOS.** `brew install limesuite`. Nothing else to do.
+
+**If sdroxide finds no board but `LimeUtil --find` does**, the likely cause is
+that the library found at runtime is not the one you think: the interface logs
+its version at startup (`LimeSuite loaded, version …`). If sdroxide lists a board
+you do not recognise, note that LimeSuite claims the bare Cypress FX3 id that an
+*unprogrammed RX-888* also presents — sdroxide filters those out by board name
+and `--probe` names what it skipped.
 
 ### SDRplay RSP prerequisites
 

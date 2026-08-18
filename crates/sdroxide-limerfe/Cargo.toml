@@ -1,0 +1,26 @@
+[package]
+name = "sdroxide-limerfe"
+version.workspace = true
+edition.workspace = true
+
+# The LimeRFE RF front end — band filters, LNA, PA and the transmit/receive
+# relay — over its own USB serial port. Pure Rust: no LimeSuite, no libusb, no
+# SoapySDR, so it drives a LimeRFE in front of *any* radio this program can
+# open, not only a LimeSDR.
+#
+# The other control path — bit-banged I2C through the LimeSDR's GPIO header —
+# needs an open LimeSuite device handle and so lives in `sdroxide-lime`, which
+# implements this crate's `RfeTransport` trait. The dependency runs that way
+# round on purpose: this crate must stay usable without LimeSuite installed.
+#
+# Native-only (links `serialport`). Must never be a dependency of any
+# wasm-targeted crate — the settings UI reaches the band map through
+# `sdroxide-types` instead, which is wasm-safe.
+[dependencies]
+sdroxide-types.workspace = true
+# `default-features = false` for the same reason `sdroxide-cat` does it: drop
+# the `libudev` feature so libudev-sys is not linked. We only need the path.
+serialport = { version = "4.7", default-features = false }
+crossbeam-channel.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
