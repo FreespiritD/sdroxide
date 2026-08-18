@@ -70,6 +70,35 @@ pub(in crate::app) fn settings_cat_tab(
             );
             ui.end_row();
 
+            ui.label("I/Q sample rate").on_hover_text(
+                "How fast the radio's I/Q sound card is run — and so how much \
+                 band the panadapter shows, because a quadrature stream spans \
+                 its whole sample rate: 48 kHz gives ±24 kHz either side of the \
+                 dial, 192 kHz gives ±96.\n\n\
+                 The card has the final say. One that cannot do the rate picked \
+                 here is opened at the nearest it can, and the panadapter is \
+                 that much narrower — the log says so at startup when it \
+                 happens.\n\n\
+                 A faster card is also more work: the machine has proportionally \
+                 less time to empty it, and one that cannot keep up drops \
+                 samples. That shows up as audio breaking up while the waterfall \
+                 still looks perfect, and it too is logged. If you see it, come \
+                 back down a step.",
+            );
+            // Labelled with the span each rate buys as well as the rate itself:
+            // the width is the reason to touch this, and it is the half of it
+            // an operator cannot work out at a glance.
+            enum_combo(ui, "iqrate", &mut cfg.cat.iq_rate_hz, &sdroxide_types::CAT_IQ_RATES, |r| {
+                match r {
+                    48_000 => "48 kHz (±24 kHz)",
+                    96_000 => "96 kHz (±48 kHz)",
+                    192_000 => "192 kHz (±96 kHz)",
+                    384_000 => "384 kHz (±192 kHz)",
+                    _ => "—",
+                }
+            });
+            ui.end_row();
+
             ui.label("I/Q centre offset").on_hover_text(
                 "How far the radio's I/Q output is centred above its own dial, \
                  for a rig whose receive I.F. has been moved off zero — on an \
@@ -87,10 +116,10 @@ pub(in crate::app) fn settings_cat_tab(
             ui.add(
                 DragValue::new(&mut cfg.cat.iq_offset_hz)
                     .speed(100.0)
-                    .range(
-                        -sdroxide_types::CAT_IQ_OFFSET_MAX_HZ
-                            ..=sdroxide_types::CAT_IQ_OFFSET_MAX_HZ,
-                    )
+                    .range({
+                        let max = sdroxide_types::cat_iq_offset_max_hz(cfg.cat.iq_rate_hz);
+                        -max..=max
+                    })
                     .suffix(" Hz"),
             );
             ui.end_row();

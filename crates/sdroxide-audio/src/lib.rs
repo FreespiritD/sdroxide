@@ -53,6 +53,17 @@ fn config_candidates(
     default: Result<cpal::SupportedStreamConfig, cpal::Error>,
 ) -> Vec<(cpal::StreamConfig, SampleFormat)> {
     let mut tries: Vec<(cpal::StreamConfig, SampleFormat)> = picked.into_iter().collect();
+    // A config carrying an explicit buffer size gets a second go with the
+    // driver's own, tried before falling back to the device default. The two
+    // fallbacks are not interchangeable: this one keeps the rate and channel
+    // count that were chosen and gives up only the buffering, whereas the
+    // device default gives up the rate as well — and for an I/Q card the rate
+    // *is* the setting the operator asked for.
+    if let Some((cfg, fmt)) = tries.first().cloned()
+        && cfg.buffer_size != cpal::BufferSize::Default
+    {
+        tries.push((cpal::StreamConfig { buffer_size: cpal::BufferSize::Default, ..cfg }, fmt));
+    }
     if let Ok(def) = default {
         let pair = (def.config(), def.sample_format());
         if supported_format(pair.1) && !tries.contains(&pair) {
@@ -60,6 +71,31 @@ fn config_candidates(
         }
     }
     tries
+}
+
+/// How much capture the sound stack is asked to buffer ahead of us, in
+/// milliseconds, when we size it ourselves.
+///
+/// cpal's `BufferSize::Default` hands the period choice to the driver and then
+/// pins the ring to two of them, and a driver's period is a *frame* count — so
+/// the same setting is worth four times less time at 192 kHz than at 48 kHz,
+/// and the margin the capture thread has to be scheduled inside shrinks exactly
+/// as the rate the operator picked goes up. Anything that has to buffer
+/// steadily wants a fixed number of milliseconds instead, whatever the rate:
+/// samples the device drops because nobody emptied it are gone, and a gap in a
+/// quadrature stream is a splice in the demodulated audio.
+///
+/// Receive only, and deliberately generous: nothing downstream of an I/Q card
+/// is latency-critical (the panadapter and the demodulators both read a stream
+/// that is already tens of milliseconds old), whereas a microphone is, which is
+/// why [`start_input`] leaves the driver's own choice alone.
+const CAPTURE_BUFFER_MS: u32 = 50;
+
+/// The period to ask for so the capture ring comes to [`CAPTURE_BUFFER_MS`] at
+/// `rate`. cpal turns `BufferSize::Fixed(n)` into a two-period ring of `2n`
+/// frames, so the period is half the buffer wanted.
+fn capture_period_frames(rate: u32) -> u32 {
+    (rate * CAPTURE_BUFFER_MS / 2_000).max(64)
 }
 
 /// Pick the best (config, format) from `ranges`: prefer f32 (no conversion) at
@@ -110,6 +146,7 @@ fn spawn_input(
     fmt: SampleFormat,
     stereo: bool,
     mut producer: rtrb::Producer<f32>,
+    dropped: Arc<AtomicU64>,
 ) -> Result<cpal::Stream, AudioError> {
     let channels = config.channels as usize;
     macro_rules! build {
@@ -117,13 +154,29 @@ fn spawn_input(
             device.build_input_stream(
                 config.clone(),
                 move |data: &[$t], _| {
+                    let mut lost = 0u64;
                     for frame in data.chunks(channels) {
+                        // Room for the whole frame or none of it. Half a frame
+                        // pushed into a full ring would leave an odd sample
+                        // behind, and from there every (I, Q) pair the reader
+                        // takes is one sample out — I and Q swapped for the rest
+                        // of the session, which is a mirrored waterfall and SSB
+                        // on the wrong sideband rather than the passing gap the
+                        // overflow actually was.
+                        let want = if stereo { 2 } else { 1 };
+                        if producer.slots() < want {
+                            lost += 1;
+                            continue;
+                        }
                         let l: f32 = frame[0].to_sample::<f32>();
                         let _ = producer.push(l);
                         if stereo {
                             let r = frame.get(1).copied().unwrap_or(frame[0]);
                             let _ = producer.push(r.to_sample::<f32>());
                         }
+                    }
+                    if lost > 0 {
+                        dropped.fetch_add(lost, Ordering::Relaxed);
                     }
                 },
                 |e| warn!("input stream error: {e}"),
@@ -240,6 +293,22 @@ pub struct AudioInput {
     pub sample_rate: f64,
     /// Channels the capture stream actually runs with (1 = mono; IQ needs ≥2).
     pub channels: u16,
+    dropped: Arc<AtomicU64>,
+}
+
+impl AudioInput {
+    /// Frames the capture callback had to throw away because the reader had not
+    /// emptied the ring — a whole second of samples behind, at any rate.
+    ///
+    /// Counted rather than merely survived because there is nothing else to see
+    /// it by: dropped frames leave the panadapter looking perfectly healthy (an
+    /// FFT of a spliced stream is still an FFT of real signals) while the
+    /// demodulated audio, which has to be continuous, breaks up. A rising count
+    /// here is the difference between "the radio is set up wrong" and "this
+    /// machine cannot keep up with the rate it was asked for".
+    pub fn dropped_frames(&self) -> u64 {
+        self.dropped.load(Ordering::Relaxed)
+    }
 }
 
 /// Extract the ALSA card id ("Device_1") from a cpal driver/pcm id like
@@ -605,12 +674,13 @@ pub fn start_input(
         let rate = config.sample_rate;
         let channels = config.channels;
         let (producer, consumer) = rtrb::RingBuffer::<f32>::new(rate as usize);
+        let dropped = Arc::new(AtomicU64::new(0));
         let started = Instant::now();
-        match spawn_input(&device, &config, fmt, false, producer) {
+        match spawn_input(&device, &config, fmt, false, producer, dropped.clone()) {
             Ok(stream) => {
                 info!(rate, format = ?fmt, device = %label, "mic input running");
                 return Ok((
-                    AudioInput { _stream: stream, sample_rate: rate as f64, channels },
+                    AudioInput { _stream: stream, sample_rate: rate as f64, channels, dropped },
                     consumer,
                 ));
             }
@@ -710,7 +780,14 @@ pub fn start_input_stereo(
     let picked = device
         .supported_input_configs()
         .ok()
-        .and_then(|configs| choose_config(configs, preferred_rate, 2));
+        .and_then(|configs| choose_config(configs, preferred_rate, 2))
+        // Sized here rather than in `choose_config` because only this path wants
+        // it: see [`CAPTURE_BUFFER_MS`]. `config_candidates` retries without it
+        // for a device that will not take the period asked for.
+        .map(|(cfg, fmt)| {
+            let period = capture_period_frames(cfg.sample_rate);
+            (cpal::StreamConfig { buffer_size: cpal::BufferSize::Fixed(period), ..cfg }, fmt)
+        });
     // Report the TRUE hardware channel count, not cpal's — the ALSA plug layer
     // upmixes a mono mic to a fake 2-channel config, which would otherwise slip
     // past the caller's mono-for-IQ guard. Fall back to cpal's count when the
@@ -723,12 +800,25 @@ pub fn start_input_stereo(
         let rate = config.sample_rate;
         let channels = hw_channels.unwrap_or(config.channels);
         let (producer, consumer) = rtrb::RingBuffer::<f32>::new(rate as usize * 2);
+        let dropped = Arc::new(AtomicU64::new(0));
         let started = Instant::now();
-        match spawn_input(&device, &config, fmt, true, producer) {
+        match spawn_input(&device, &config, fmt, true, producer, dropped.clone()) {
             Ok(stream) => {
-                info!(rate, stream_channels = config.channels, hw_channels = channels, format = ?fmt, device = %label, "radio IQ input running");
+                info!(rate, buffer = ?config.buffer_size, stream_channels = config.channels, hw_channels = channels, format = ?fmt, device = %label, "radio IQ input running");
+                // The card is the one that decides. A panadapter half the width
+                // that was asked for looks exactly like one the operator
+                // mis-set, so which of the two it is goes in the log.
+                if rate != preferred_rate {
+                    warn!(
+                        "radio IQ input “{label}” will not run at {preferred_rate} Hz — opened at \
+                         {rate} Hz instead, so the panadapter is {:.0} kHz wide rather than {:.0}. \
+                         Pick a rate this card offers under Settings → Radio → I/Q sample rate.",
+                        rate as f64 / 1000.0,
+                        preferred_rate as f64 / 1000.0,
+                    );
+                }
                 return Ok((
-                    AudioInput { _stream: stream, sample_rate: rate as f64, channels },
+                    AudioInput { _stream: stream, sample_rate: rate as f64, channels, dropped },
                     consumer,
                 ));
             }
@@ -789,8 +879,52 @@ pub fn start_output(
 
 #[cfg(test)]
 mod tests {
-    use super::{NameAssigner, PendingInput};
+    use super::{
+        CAPTURE_BUFFER_MS, NameAssigner, PendingInput, capture_period_frames, config_candidates,
+    };
     use std::time::{Duration, Instant};
+
+    /// The reason the period is computed rather than left to the driver: what
+    /// has to stay constant as the operator moves an I/Q card up the rates is
+    /// the buffer's depth in *time*. A period fixed in frames — which is what
+    /// leaving it alone gets — is worth a quarter as long at 192 kHz as at 48,
+    /// and the margin the capture thread has to be scheduled inside goes with
+    /// it.
+    #[test]
+    fn the_capture_buffer_is_the_same_length_at_every_rate() {
+        for rate in [48_000u32, 96_000, 192_000, 384_000] {
+            // cpal turns `Fixed(n)` into a ring of two periods.
+            let buffered_ms = 2.0 * capture_period_frames(rate) as f64 * 1000.0 / rate as f64;
+            assert!(
+                (buffered_ms - CAPTURE_BUFFER_MS as f64).abs() < 1.0,
+                "{rate} Hz buffers {buffered_ms:.1} ms, wanted {CAPTURE_BUFFER_MS}"
+            );
+        }
+    }
+
+    /// A card that will not take the period asked for must lose the *period*,
+    /// not the rate: the rate is the setting the operator chose, and silently
+    /// dropping to the device default would narrow the panadapter to fix a
+    /// problem they never had.
+    #[test]
+    fn refusing_the_buffer_size_does_not_give_up_the_rate() {
+        let picked = cpal::StreamConfig {
+            channels: 2,
+            sample_rate: 192_000,
+            buffer_size: cpal::BufferSize::Fixed(capture_period_frames(192_000)),
+        };
+        // A device with no default config to fall back on, so the only
+        // candidates are the ones this function derives.
+        let no_default = Err(cpal::Error::new(cpal::ErrorKind::DeviceNotAvailable));
+        let tries = config_candidates(Some((picked, cpal::SampleFormat::I16)), no_default);
+        assert_eq!(tries.len(), 2, "the chosen config, then the same without the buffer size");
+        assert_eq!(tries[1].0.sample_rate, 192_000, "still the rate that was asked for");
+        assert_eq!(
+            tries[1].0.buffer_size,
+            cpal::BufferSize::Default,
+            "only the buffering given up"
+        );
+    }
 
     /// The whole point of the background open: whatever the sound stack does
     /// with the request, asking is instant. A default input that PipeWire

@@ -3221,6 +3221,33 @@ separately from your computer's own speakers and microphone.
   own, so every kind of tuning moves sdroxide's receiver inside it and the
   hardware is only retuned when the frequency would leave the span.
 
+**I/Q sample rate** (IQ format only) — how fast the radio's I/Q sound card is
+run, and so how wide the panadapter is. A quadrature stream spans its whole
+sample rate, centred on the dial, so 48 kHz shows ±24 kHz either side of the
+frequency you are tuned to, 96 kHz shows ±48, and 192 kHz shows ±96. Nothing
+else changes: the audio, the demodulators and the decoders all work exactly as
+before, on a receiver that now has more band to pick from.
+
+The sound card decides what it will do. A card that cannot run at the rate you
+pick is opened at the nearest rate it does have, which leaves the panadapter
+narrower than you asked for — a startup log line says so when that happens,
+because a card quietly refusing looks identical to a setting you mis-clicked.
+Most USB codecs sold for radio work do 96 kHz; 192 kHz is common but not
+universal, and 384 kHz is rare.
+
+A faster card is also more work for the computer, and the margin is not
+generous: at 192 kHz there is a quarter as much time to empty the card between
+callbacks as there is at 48 kHz. A machine that cannot keep up drops captured
+samples, and the two things reading the stream disagree completely about how
+much that matters — the panadapter is unaffected (every block it transforms is
+still real signal, so the waterfall looks perfect) while the demodulated audio,
+which has to be continuous, breaks up into clicks and stutters. **Audio
+breaking up while the waterfall still looks right is that symptom and not a
+DSP fault**; sdroxide logs a warning naming the count when it happens. If you
+see it, come back down a rate.
+
+Changing this takes effect on **Apply**, without restarting.
+
 **Invert spectrum (Swap I/Q)** (IQ format only) — mirrors the panadapter about
 the tuned frequency, for a radio that carries I and Q the other way round on its
 sound card. Which channel a quadrature rig calls I is a wiring convention, and
@@ -3258,6 +3285,10 @@ ignored.
 
 If signals end up at *twice* the offset from where they belong, the sign is the
 other way round for your radio — enter `-8000` instead. Receive only, as above.
+
+The offset can be set up to half the **I/Q sample rate** either way, which is as
+far as the digitised window reaches: past that the dial is outside what the card
+is recording at all. Raising the rate raises that ceiling with it.
 
 **Serial (CAT) settings**, in the order they appear:
 

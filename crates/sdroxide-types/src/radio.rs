@@ -731,17 +731,52 @@ pub struct CatConfig {
     /// where it lands.
     #[serde(default)]
     pub iq_offset_hz: f64,
+    /// What sample rate the rig's I/Q sound card is opened at, in Hz — and so
+    /// how wide the panadapter is, since a quadrature stream spans its whole
+    /// sample rate. Only read for [`SoundFormat::Iq`]: demod audio is a real
+    /// signal already inside the rig's filter, and widening the card would only
+    /// digitise more silence.
+    ///
+    /// This is a request, not a guarantee. The card decides: one that cannot do
+    /// the rate asked for is opened at the nearest it does, and everything
+    /// downstream — the span, the demodulators, the I.F. shift — follows the
+    /// rate actually achieved rather than this number. A mismatch is logged at
+    /// open, because a panadapter half the width the operator asked for is not
+    /// otherwise distinguishable from one they mis-set.
+    ///
+    /// Defaulted to 48 kHz so a config written before this existed loads
+    /// unchanged and comes up exactly as it did.
+    #[serde(default = "default_iq_rate_hz")]
+    pub iq_rate_hz: u32,
     /// Displayed panadapter bandwidth for demod-audio mode (Hz).
     pub audio_bw_hz: f64,
 }
 
-/// How far either way [`CatConfig::iq_offset_hz`] may be set, in Hz.
+/// The rates a rig's I/Q sound card may be opened at, in Hz — what the operator
+/// picks between, and so what panadapter widths are on offer.
 ///
-/// Half of the 48 kHz the radio's sound card is opened at: an offset past that
-/// puts the dial outside the window the card digitises at all, which is not a
-/// shifted I.F. but a receiver pointed at nothing. The 8 kHz an Elecraft asks
-/// for is comfortably inside it.
-pub const CAT_IQ_OFFSET_MAX_HZ: f64 = 24_000.0;
+/// Every one of these is an ordinary sound-card rate; which of them a given
+/// card will actually give is the card's business, and [`CatConfig::iq_rate_hz`]
+/// says what happens when it declines.
+pub const CAT_IQ_RATES: [u32; 4] = [48_000, 96_000, 192_000, 384_000];
+
+/// The rate a rig's I/Q card is opened at unless the operator says otherwise —
+/// the one every such rig was opened at before the setting existed.
+fn default_iq_rate_hz() -> u32 {
+    48_000
+}
+
+/// How far either way [`CatConfig::iq_offset_hz`] may be set for a card running
+/// at `iq_rate_hz`, in Hz.
+///
+/// Half the sample rate: a quadrature stream spans its whole rate about the
+/// centre, so an offset past the halfway mark puts the dial outside the window
+/// the card digitises at all — which is not a shifted I.F. but a receiver
+/// pointed at nothing. The 8 kHz an Elecraft asks for is comfortably inside
+/// even the narrowest of [`CAT_IQ_RATES`].
+pub fn cat_iq_offset_max_hz(iq_rate_hz: u32) -> f64 {
+    iq_rate_hz as f64 / 2.0
+}
 
 /// Where a `rigctld` listens unless told otherwise — the daemon's own default
 /// port, on this machine.
@@ -766,6 +801,7 @@ impl Default for CatConfig {
             format: SoundFormat::default(),
             invert_spectrum: false,
             iq_offset_hz: 0.0,
+            iq_rate_hz: default_iq_rate_hz(),
             audio_bw_hz: 4000.0,
         }
     }
@@ -3714,6 +3750,34 @@ pub struct RadioConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A config written before the rate was selectable has to come up at the
+    /// rate it was written for. Every such rig was opened at 48 kHz, and a
+    /// panadapter that silently changed width on upgrade — or, worse, a config
+    /// that failed to deserialise and took every other radio setting with it —
+    /// is the cost of getting this wrong.
+    #[test]
+    fn a_config_from_before_the_setting_still_opens_at_48_khz() {
+        let before = serde_json::to_value(CatConfig::default()).unwrap();
+        let mut before = before.as_object().unwrap().clone();
+        assert!(before.remove("iq_rate_hz").is_some(), "the field is in the written form");
+
+        let loaded: CatConfig = serde_json::from_value(before.into()).unwrap();
+        assert_eq!(loaded.iq_rate_hz, 48_000);
+        assert_eq!(loaded, CatConfig::default(), "and nothing else moved");
+    }
+
+    /// The offset is a position inside the digitised window, so what may be
+    /// asked for grows with the window. Half the rate either way, and the 8 kHz
+    /// an Elecraft's `RX SHFT` asks for fits in the narrowest of them.
+    #[test]
+    fn the_iq_offset_ceiling_follows_the_sample_rate() {
+        assert_eq!(cat_iq_offset_max_hz(48_000), 24_000.0);
+        assert_eq!(cat_iq_offset_max_hz(192_000), 96_000.0);
+        for rate in CAT_IQ_RATES {
+            assert!(cat_iq_offset_max_hz(rate) >= 8_000.0, "{rate} Hz cannot express RX SHFT");
+        }
+    }
 
     fn hackrf(name: &str, pid: u16) -> HackRfDevice {
         HackRfDevice {

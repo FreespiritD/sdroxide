@@ -16,9 +16,16 @@ pub struct AudioCatSource {
     // RX audio from the rig (mono for demod, interleaved L/R for IQ). `None`
     // when the capture device could not be opened — the app still runs so the
     // user can fix the device in Settings; RX is just silent until then.
-    _in_stream: Option<sdroxide_audio::AudioInput>,
+    in_stream: Option<sdroxide_audio::AudioInput>,
     in_consumer: rtrb::Consumer<f32>,
     in_rate: f64,
+    /// Capture frames the sound card had to throw away, as of the last check,
+    /// and when to look again. Watched because dropping them is silent
+    /// everywhere else: a spliced I/Q stream still paints a healthy panadapter,
+    /// and only the audio — which has to be continuous — gives it away. See
+    /// [`Self::check_dropped`].
+    dropped_seen: u64,
+    next_drop_check: std::time::Instant,
     format: SoundFormat,
     /// What the right channel is multiplied by on the way into the complex
     /// stream: `1.0` normally, `-1.0` when the rig's I and Q are the other way
@@ -96,8 +103,13 @@ impl AudioCatSource {
 
         // RX capture is best-effort: a missing/unsupported device leaves RX
         // silent but keeps the app (and its Settings dialog) alive.
+        // The I/Q card is opened at whatever rate the operator chose, because on
+        // a quadrature rig that rate *is* the panadapter width — the stream
+        // spans all of it. Demod audio is fixed at 48 kHz: it arrives already
+        // inside the radio's own filter, so a faster card would only digitise
+        // more silence either side of it.
         let opened = match cfg.format {
-            SoundFormat::Iq => sdroxide_audio::start_input_stereo(audio_in, 48_000),
+            SoundFormat::Iq => sdroxide_audio::start_input_stereo(audio_in, cfg.iq_rate_hz),
             SoundFormat::DemodAudio => sdroxide_audio::start_input(audio_in, 48_000),
         };
         let dev_label = audio_in.unwrap_or("system default");
@@ -174,12 +186,24 @@ impl AudioCatSource {
             );
         }
         let iq_shift = shift.map(|hz| Nco::new(hz, in_rate));
+        // Said out loud with the rest of what was assumed at open, and with the
+        // same reasoning: on a quadrature rig the card's rate is the panadapter
+        // width, so it belongs in the log beside which way round I and Q are.
+        if matches!(format, SoundFormat::Iq) {
+            tracing::info!(
+                "radio I/Q at {:.0} Hz — {:.0} kHz of spectrum either side of the dial",
+                in_rate,
+                in_rate / 2000.0,
+            );
+        }
         let cat = sdroxide_cat::spawn(cfg);
 
         Ok(AudioCatSource {
-            _in_stream: in_stream,
+            in_stream,
             in_consumer,
             in_rate,
+            dropped_seen: 0,
+            next_drop_check: std::time::Instant::now() + DROP_CHECK_INTERVAL,
             format,
             q_sign,
             iq_shift,
@@ -195,7 +219,50 @@ impl AudioCatSource {
             last_signal: None,
         })
     }
+
+    /// Report capture frames the sound card dropped since the last look.
+    ///
+    /// A dropped frame is a hole in the I/Q stream, and the two things reading
+    /// it disagree completely about how much that matters. The panadapter does
+    /// not care: every block it transforms is still real signal, so a stream
+    /// with pieces missing paints a spectrum indistinguishable from an intact
+    /// one. The demodulators do: audio has to be continuous, and each hole is a
+    /// splice the operator hears as a click, a stutter, or — often enough — as
+    /// speech that has simply stopped being intelligible.
+    ///
+    /// So the failure looks exactly like a DSP fault and is not one, which is
+    /// why it is worth a line of its own. It is also the failure that arrives
+    /// with the sample rate: the faster the card runs, the less wall-clock time
+    /// the machine has to empty it between callbacks, and a rate that a given
+    /// machine cannot sustain shows up here and nowhere else.
+    fn check_dropped(&mut self) {
+        let now = std::time::Instant::now();
+        if now < self.next_drop_check {
+            return;
+        }
+        self.next_drop_check = now + DROP_CHECK_INTERVAL;
+        let Some(total) = self.in_stream.as_ref().map(|s| s.dropped_frames()) else { return };
+        let lost = total.saturating_sub(self.dropped_seen);
+        if lost == 0 {
+            return;
+        }
+        self.dropped_seen = total;
+        tracing::warn!(
+            "radio audio: {lost} capture frames dropped in the last {} s ({:.1} ms of signal) — \
+             this machine is not emptying a {:.0} Hz card fast enough. The panadapter will look \
+             fine and the demodulated audio will break up. Try a lower I/Q sample rate under \
+             Settings → Radio.",
+            DROP_CHECK_INTERVAL.as_secs(),
+            lost as f64 * 1000.0 / self.in_rate,
+            self.in_rate,
+        );
+    }
 }
+
+/// How often [`AudioCatSource::check_dropped`] looks. Long enough that a
+/// struggling machine is not also made to write a log line per block, short
+/// enough that the operator sees it while still at the radio.
+const DROP_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Drain interleaved (I, Q) pairs from the capture ring into `buf`, with the
 /// right channel scaled by `q_sign` — `-1.0` conjugates the stream, mirroring
@@ -262,6 +329,7 @@ impl IqSource for AudioCatSource {
     }
 
     fn read(&mut self, buf: &mut [Complex32]) -> Result<usize> {
+        self.check_dropped();
         match self.format {
             SoundFormat::DemodAudio => {
                 let mut n = 0;
