@@ -2959,16 +2959,20 @@ impl Engine {
             ControlUpdate::Ptt(closed) => self.apply_hw_ptt(closed),
             ControlUpdate::Mode(m) => {
                 let cur = self.state.rx[0].mode;
-                let same_class = rig_mode_class(cur) == rig_mode_class(m);
+                // Against the mode we *command*, not the one on screen: SSTV is
+                // commanded as plain LSB on 160/80/40 m, and a rig echoing that
+                // LSB back has done exactly as it was told.
+                let same_class = rig_mode_class(self.control_mode()) == rig_mode_class(m);
                 if cur.is_digital() {
                     // Digital modes (FT8/FT4/PSK/RTTY/SSTV) are app-driven and
-                    // always ride on USB. Never leave the digital mode because of
-                    // a rig report; if the rig drifted onto another sideband (e.g.
-                    // per-band mode memory switching to LSB on 40/80 m), command
-                    // it straight back. Re-commanding USB just echoes USB, which
-                    // is same-class and ignored, so this settles (no feedback).
+                    // ride the sideband the app chose. Never leave the digital
+                    // mode because of a rig report; if the rig drifted onto
+                    // another sideband (e.g. per-band mode memory switching to
+                    // LSB on 40/80 m), command it straight back. Re-commanding
+                    // just echoes the same sideband, which is same-class and
+                    // ignored, so this settles (no feedback).
                     if !same_class {
-                        let _ = self.source.set_control_mode(cur);
+                        let _ = self.source.set_control_mode(self.control_mode());
                     }
                     return;
                 }
@@ -3008,7 +3012,7 @@ impl Engine {
             return;
         }
         let dial = self.state.rx_freq_hz();
-        let lsb = self.state.rx[0].mode.is_lower_sideband();
+        let lsb = self.state.rx[0].mode.is_lower_sideband_at(dial);
         self.state.center_hz =
             if lsb { dial - self.audio_bw / 2.0 } else { dial + self.audio_bw / 2.0 };
         self.state.sample_rate = self.audio_bw;
@@ -3504,6 +3508,25 @@ impl Engine {
         self.audio_mode || self.caps.rx_audio_external
     }
 
+    /// The mode to command the radio in front of us. The operator's mode, with
+    /// one exception.
+    ///
+    /// Analog SSTV is a phone emission and follows phone practice rather than
+    /// the digital modes' fixed USB, so on 160/80/40 m the rig has to be put in
+    /// LSB. There is no lower-sideband spelling of `Mode::Sstv` to send — every
+    /// CAT family's map turns it into plain USB — so the translation happens
+    /// here, at the one place that knows both the mode and where we are tuned.
+    /// A rig then echoing LSB back is answered by the same translation in
+    /// [`Self::apply_control_update`], so nothing drags it off again.
+    fn control_mode(&self) -> Mode {
+        let mode = self.state.rx[0].mode;
+        if mode.is_sstv() && mode.is_lower_sideband_at(self.state.rx_freq_hz()) {
+            Mode::Lsb
+        } else {
+            mode
+        }
+    }
+
     /// Assert the operator's receive mode (and, where it applies, passband) to
     /// a front end that asked to track it — see [`IqSource::tracks_rx_mode`].
     ///
@@ -3516,7 +3539,7 @@ impl Engine {
         if !self.source.tracks_rx_mode() {
             return;
         }
-        let _ = self.source.set_control_mode(self.state.rx[0].mode);
+        let _ = self.source.set_control_mode(self.control_mode());
         self.push_control_filter();
     }
 
@@ -3640,7 +3663,7 @@ impl Engine {
             // audio f → dial+f (show the positive half); LSB → dial-f (negative
             // half). Both give the correct RF window over `audio_bw`.
             let dial = self.state.active_freq_hz();
-            let vp = if self.state.rx[0].mode.is_lower_sideband() {
+            let vp = if self.state.rx[0].mode.is_lower_sideband_at(dial) {
                 (dial - self.audio_bw, dial)
             } else {
                 (dial, dial + self.audio_bw)
@@ -3704,7 +3727,7 @@ impl Engine {
     /// transmit-sideband scope built from the TX baseband/audio.
     fn make_tx_frame(&mut self) -> SpectrumFrame {
         let dial = self.tx_center_hz;
-        let lsb = self.state.rx[0].mode.is_lower_sideband();
+        let lsb = self.state.rx[0].mode.is_lower_sideband_at(dial);
         let (floor, ceil) = (self.cfg.db_floor, self.cfg.db_ceil);
         // Attenuate the monitor for display by mapping through a window shifted
         // up by `off` dB (equivalent to attenuating the signal), so full-scale TX
@@ -6080,9 +6103,15 @@ impl Engine {
                 self.emit_voice_status();
             }
         }
+        // At this receiver's own dial, not in the abstract: SSTV's sideband
+        // depends on the band it is being used on.
+        let dial = match rx {
+            RxId::Main => self.state.rx_freq_hz(),
+            RxId::Sub => self.state.sub_rx_hz,
+        };
         let r = &mut self.state.rx[rx.index()];
         r.mode = mode;
-        let (lo, hi) = mode.default_filter();
+        let (lo, hi) = mode.default_filter_at(dial);
         (r.filter_lo, r.filter_hi) = (lo, hi);
         let snapshot = *r;
         if let Some(c) = self.chain_mut(rx) {
@@ -6095,7 +6124,7 @@ impl Engine {
         // rig is doing the receiving — but its display is the receiver's I/Q
         // and a sideband flip does not move it.
         if rx == RxId::Main && (self.audio_mode || self.source.tracks_rx_mode()) {
-            let _ = self.source.set_control_mode(mode);
+            let _ = self.source.set_control_mode(self.control_mode());
             // After the mode, never before: every family expresses a filter in
             // terms of the mode the rig is in, so a width sent ahead of the
             // mode is a width measured against the old one. Self-guarded: a
@@ -6153,7 +6182,7 @@ impl Engine {
 
         let entry = self.stacks.get(&band).and_then(|s| s.first().copied()).unwrap_or_else(|| {
             let (freq_hz, mode) = band.default_entry();
-            let (filter_lo, filter_hi) = mode.default_filter();
+            let (filter_lo, filter_hi) = mode.default_filter_at(freq_hz);
             BandStackEntry { freq_hz, mode, filter_lo, filter_hi }
         });
 
@@ -7408,7 +7437,40 @@ impl Engine {
         self.update_tuning();
     }
 
+    /// Keep a band-dependent sideband following the dial.
+    ///
+    /// Only analog SSTV has one — LSB on 160/80/40 m, USB above — so tuning
+    /// across that boundary has to mirror the passband (sideband lives in the
+    /// sign of the filter edges, which is what puts the demodulator on the
+    /// right side and, at key-down, the modulator), and tell a rig that is
+    /// doing the receiving. Every other mode's sideband is fixed, so this
+    /// leaves them alone.
+    fn follow_sideband(&mut self) {
+        let mode = self.state.rx[0].mode;
+        if !mode.is_sstv() {
+            return;
+        }
+        let want = mode.default_filter_at(self.state.rx_freq_hz());
+        let r = &mut self.state.rx[0];
+        if (r.filter_lo, r.filter_hi) == want {
+            return;
+        }
+        (r.filter_lo, r.filter_hi) = want;
+        let (lo, hi) = want;
+        if let Some(d) = self.main.as_mut().and_then(|c| c.demod.as_mut()) {
+            d.set_filter(lo, hi);
+        }
+        if self.audio_mode || self.source.tracks_rx_mode() {
+            let _ = self.source.set_control_mode(self.control_mode());
+            self.push_control_filter();
+        }
+        let _ = self.event_tx.send(RadioEvent::State(self.state.clone()));
+    }
+
     fn update_tuning(&mut self) {
+        // Before anything reads the passband below (the audio-mode window is
+        // drawn on the sideband), and before the dial reaches the rig.
+        self.follow_sideband();
         if self.audio_mode {
             // The rig's dial IS the VFO — command it over CAT (no DDC offset).
             // RIT has no DDC to ride on either, so it goes on the dial too: the
@@ -7623,7 +7685,7 @@ impl Engine {
             // this session — otherwise the rig keeps its own (e.g. 0 % drive → no
             // output, or a stale/empty modulation). No-ops for IQ sources, which
             // apply mode and drive in the modulator chain instead.
-            let _ = self.source.set_control_mode(self.state.rx[0].mode);
+            let _ = self.source.set_control_mode(self.control_mode());
             self.source.set_tx_drive(self.tx_power_level() as f64);
             self.source.set_tune_drive(self.state.tx.tune_drive as f64);
             // In audio mode `tx_begin` just asserts CAT PTT; there is no

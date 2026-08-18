@@ -317,7 +317,9 @@ pub const WSPR_DIALS: &[f64] = &[
 ];
 
 /// Analog-SSTV frequencies (Hz), with the note the picker shows and the regions
-/// each belongs to. A picture occupies ~2.7 kHz above the dial.
+/// each belongs to. A picture occupies ~2.7 kHz of the sideband in use — above
+/// the dial on 20 m and up, below it on 80 m and 40 m, where SSTV follows phone
+/// practice and runs LSB (see [`crate::Mode::is_lower_sideband_at`]).
 ///
 /// The secondaries matter more here than in most modes: a picture takes two
 /// minutes, so a single frequency per band is occupied a lot of the time and
@@ -577,8 +579,9 @@ pub const FSQ_DIALS: &[f64] = &[
 /// The band edges are a separate matter and are enforced separately.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DigiChannel {
-    /// Dial frequency in Hz. Every mode in this table is USB on the dial with
-    /// its signal in the audio passband above it.
+    /// Dial frequency in Hz. Every mode in this table sits on the dial with its
+    /// signal in the audio passband — above it on USB, which is all of them bar
+    /// analog SSTV on 80 m and 40 m, where the passband is below the dial.
     pub dial_hz: f64,
     /// What distinguishes it from the band's other entries — "DXpedition",
     /// "secondary", "DX calling". Empty for the plain calling frequency, which

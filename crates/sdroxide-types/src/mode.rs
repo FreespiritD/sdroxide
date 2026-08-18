@@ -22,7 +22,10 @@ pub enum Mode {
     Psk,
     /// RTTY keyboard mode — USB underneath, streaming FSK/Baudot decode/encode.
     Rtty,
-    /// SSTV image mode — USB underneath, image decode/encode by the digi engine.
+    /// SSTV image mode — a sideband underneath, image decode/encode by the digi
+    /// engine. The one mode here whose sideband depends on the band: analog
+    /// SSTV is a phone emission and follows phone practice, so it is LSB on
+    /// 160/80/40 m and USB above (see [`Mode::is_lower_sideband_at`]).
     Sstv,
     /// Olivia MFSK keyboard mode — USB underneath, tones/bandwidth chosen in setup.
     Olivia,
@@ -96,6 +99,15 @@ pub enum Mode {
     /// answer for it. Appended for the same reason as [`Mode::Hell`].
     PacketHf,
 }
+
+/// The bands on which analog SSTV rides the lower sideband, as (low, high) Hz.
+///
+/// Written as frequency ranges rather than [`crate::Band`] values on purpose:
+/// the edges differ by region (80 m runs to 4.0 MHz in Region 2, 40 m to 7.3),
+/// and the widest edges are the right answer here — a station tuned to 3.845
+/// from Europe is still on 80 m as far as which sideband to use is concerned.
+const SSTV_LSB_BANDS: [(f64, f64); 3] =
+    [(1_800_000.0, 2_000_000.0), (3_500_000.0, 4_000_000.0), (7_000_000.0, 7_300_000.0)];
 
 impl Mode {
     /// Every mode, in the order they cycle and appear in the picker — which is
@@ -378,7 +390,8 @@ impl Mode {
             // FT8/FT4 occupy the whole USB audio passband (tones 0..~3500 Hz).
             // PSK/RTTY/Olivia/Thor/FSQ/Hell do the same (the modem filters
             // narrowly around audio_hz — and Hell X9 needs nearly all of it).
-            // SSTV occupies the full USB audio passband.
+            // SSTV occupies the full sideband audio passband (mirrored onto
+            // the lower sideband by `default_filter_at` where it rides one).
             Mode::Ft8
             | Mode::Ft4
             | Mode::Ft2
@@ -424,8 +437,34 @@ impl Mode {
     }
 
     /// True for modes that place the displayed carrier below the passband.
+    ///
+    /// Answers for the mode alone, so it cannot see SSTV's band-dependent
+    /// sideband — prefer [`Self::is_lower_sideband_at`] wherever a dial
+    /// frequency is at hand.
     pub fn is_lower_sideband(self) -> bool {
         matches!(self, Mode::Lsb | Mode::Digl)
+    }
+
+    /// True for modes that place the displayed carrier below the passband at
+    /// `dial_hz`.
+    ///
+    /// Sideband is a fixed property of every mode but one. Analog SSTV is a
+    /// phone emission and follows phone practice: LSB on 160, 80 and 40 m —
+    /// where a picture sent on USB comes out of everybody else's receiver
+    /// inverted — and USB on every band above.
+    pub fn is_lower_sideband_at(self, dial_hz: f64) -> bool {
+        self.is_lower_sideband()
+            || (self.is_sstv()
+                && SSTV_LSB_BANDS.iter().any(|&(lo, hi)| dial_hz >= lo && dial_hz <= hi))
+    }
+
+    /// [`Self::default_filter`] at a dial frequency: the same passband, mirrored
+    /// onto the lower sideband where the mode rides one there (SSTV on
+    /// 160/80/40 m). Sideband is carried entirely in the sign of the edges, so
+    /// this is what actually puts the demodulator on the right side.
+    pub fn default_filter_at(self, dial_hz: f64) -> (f32, f32) {
+        let (lo, hi) = self.default_filter();
+        if self.is_lower_sideband_at(dial_hz) && lo >= 0.0 { (-hi, -lo) } else { (lo, hi) }
     }
 
     /// Which carrier position a transceiver puts this mode at, for the per-mode
@@ -1129,5 +1168,38 @@ mod tests {
         let ft2 = Mode::Ft2.slot_timing().unwrap();
         assert_eq!(ft8.slot_s, 2.0 * ft4.slot_s);
         assert_eq!(ft4.slot_s, 2.0 * ft2.slot_s);
+    }
+
+    /// SSTV follows phone practice: the low bands are LSB, everything above is
+    /// USB, and no other mode's sideband moves with the dial.
+    #[test]
+    fn sstv_takes_the_low_bands_lower_sideband() {
+        for dial in [1_890_000.0, 3_730_000.0, 3_845_000.0, 7_165_000.0, 7_171_000.0] {
+            assert!(Mode::Sstv.is_lower_sideband_at(dial), "SSTV at {dial} should be LSB");
+            let (lo, hi) = Mode::Sstv.default_filter_at(dial);
+            assert!(
+                lo < 0.0 && hi <= 0.0,
+                "SSTV at {dial}: passband {lo}..{hi} is not below the dial"
+            );
+            // Mirrored, not redesigned: the same picture bandwidth either way.
+            let (ulo, uhi) = Mode::Sstv.default_filter();
+            assert_eq!((hi - lo), (uhi - ulo));
+        }
+        for dial in [14_230_000.0, 21_340_000.0, 28_680_000.0, 144_500_000.0] {
+            assert!(!Mode::Sstv.is_lower_sideband_at(dial), "SSTV at {dial} should be USB");
+            assert_eq!(Mode::Sstv.default_filter_at(dial), Mode::Sstv.default_filter());
+        }
+    }
+
+    /// The band-aware answer differs from the mode-only one for SSTV alone —
+    /// 40 m does not turn FT8 or PSK31 upside down.
+    #[test]
+    fn only_sstv_changes_sideband_with_the_band() {
+        for mode in Mode::ALL {
+            for dial in [1_890_000.0, 3_730_000.0, 7_171_000.0, 14_230_000.0, 145_500_000.0] {
+                let differs = mode.is_lower_sideband_at(dial) != mode.is_lower_sideband();
+                assert_eq!(differs, mode.is_sstv() && dial < 10_000_000.0, "{mode:?} at {dial}");
+            }
+        }
     }
 }

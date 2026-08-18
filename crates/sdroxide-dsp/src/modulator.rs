@@ -21,17 +21,20 @@ pub trait Modulator: Send {
 /// keyed.
 ///
 /// `passband` is the SSB filter's band-pass edges for plain voice (USB/LSB),
-/// so transmit bandwidth follows the operator's receive filter. Other modes
-/// ignore it and use their own fixed passband.
+/// so transmit bandwidth follows the operator's receive filter. SSTV takes it
+/// too — not for the width, which is fixed, but for the sign: its sideband
+/// depends on the band (LSB on 160/80/40 m) and so cannot be answered from the
+/// mode alone. Other modes ignore it and use their own fixed passband.
 pub fn make_modulator(mode: Mode, rate: f64, passband: (f32, f32)) -> Option<Box<dyn Modulator>> {
     let (lo, hi) = match mode {
-        Mode::Lsb | Mode::Usb => passband,
+        Mode::Lsb | Mode::Usb | Mode::Sstv => passband,
         _ => mode.default_filter(),
     };
     match mode {
         // FT8/FT4 modulate as USB: the synthesized 12 kHz audio (resampled to
         // 48 k, injected as "mic") is USB-modulated exactly like a real radio.
-        // PSK/RTTY, Olivia/Thor/FSQ, and SSTV ride the same USB path.
+        // PSK/RTTY and Olivia/Thor/FSQ ride the same USB path; SSTV rides the
+        // same path on whichever sideband its passband names.
         Mode::Lsb
         | Mode::Usb
         | Mode::Digu

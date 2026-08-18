@@ -1796,6 +1796,14 @@ over; 80 m and 40 m split by region and follow the **IARU region** setting
 Region 1, 3.845 and 7.171 in Regions 2 and 3. Above HF, 144.500 on 2 m and
 432.500 on 70 cm, the narrow-band SSTV activity centre.
 
+**Which sideband:** SSTV is a phone emission and follows phone practice rather
+than the other digital modes' fixed USB — **LSB on 160, 80 and 40 m, USB on
+20 m and up**. sdroxide switches for you: the passband flips to the other side
+of the dial as you tune across the boundary, and a CAT-controlled rig is
+commanded into the matching sideband. Nothing to set, and nothing to undo when
+you go back up — a picture sent on the wrong sideband arrives at everyone else
+inverted.
+
 **Receiving:**
 
 - Incoming pictures decode scanline-by-scanline and appear in the **LIVE** view
