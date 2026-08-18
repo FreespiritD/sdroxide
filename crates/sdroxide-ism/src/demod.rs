@@ -31,16 +31,34 @@ pub struct Stats {
     pub center_hz: f32,
     /// Half the tone separation, Hz — the FSK deviation.
     pub dev_hz: f32,
-    /// Fractional envelope swing, `(p90 − p10) / p90`, so it lands in 0..1.
+    /// Fractional envelope swing over the *signal*, `(p90 − p10) / p90`, so it
+    /// lands in 0..1.
     ///
     /// Small for a constant-envelope signal such as FSK, large for on-off
-    /// keying, which puts its data there instead. Reported as a *measurement*
-    /// and nothing more: it is not used to choose a demodulator, because at the
-    /// SNRs a burst gate lets through, noise alone lifts an FSK burst's swing
-    /// into the range an OOK burst occupies. Splitting the two apart needs a
-    /// comparison against the channel's noise floor as well, and that is worth
-    /// writing when there is an OOK protocol to test it against — not before.
+    /// keying, which puts its data there instead.
+    ///
+    /// This used to be measured across the whole gated burst, padding included —
+    /// and the padding is noise, so every burst read as though its envelope
+    /// collapsed somewhere. That is most of why the figure was never trustworthy
+    /// enough to classify with. Measured over the signal region it means what it
+    /// says, and [`crate::class`] uses it against the channel's own noise floor.
     pub env_depth: f32,
+    /// Envelope at the 10th percentile of the signal region, in dBFS.
+    ///
+    /// What separates keying from fading: an on-off keyed burst's quiet symbols
+    /// fall all the way to the channel's noise floor, while a constant-envelope
+    /// burst that merely has a poor signal-to-noise ratio does not.
+    pub env_low_dbfs: f32,
+    /// Fraction of the signal whose instantaneous frequency sits close to one of
+    /// the two tones.
+    ///
+    /// The one measurement that tells a chirp from a two-level signal without
+    /// knowing either. Frequency-shift keying spends nearly all of its time *at*
+    /// one tone or the other and only crosses between them, so this is high; a
+    /// chirp sweeps continuously and spends equal time everywhere in between, so
+    /// it is low. Neither needs a symbol rate to have been recovered, which
+    /// matters because a chirp has none to recover.
+    pub bimodal: f32,
     /// The part of the burst that is actually signal, as a range into the
     /// discriminator trace.
     ///
@@ -78,7 +96,8 @@ const SIGNAL_FRAC: f32 = 0.5;
 /// Describe a burst from its samples and its discriminator output.
 pub fn stats(iq: &[Complex32], disc: &[f32], scratch: &mut Vec<f32>) -> Stats {
     let mag: Vec<f32> = iq.iter().map(|z| z.norm()).collect();
-    let m10 = percentile(scratch, &mag, 0.1);
+    // Only the high percentile is needed here: it sets the threshold that finds
+    // the signal region, and the envelope statistics are then taken inside it.
     let m90 = percentile(scratch, &mag, 0.9);
 
     // Where the signal starts and stops inside the padded burst. `disc[i]` is the
@@ -95,19 +114,57 @@ pub fn stats(iq: &[Complex32], disc: &[f32], scratch: &mut Vec<f32>) -> Stats {
     // midpoint is the carrier and their difference is the tone separation.
     // Using the mean instead would let one long run of identical bits pull the
     // slicing level into the wrong tone.
+    //
+    // Taken over the samples that actually carry signal, not over every sample
+    // between the first and the last. On a constant-envelope burst those are the
+    // same set. On a keyed one they are not: an on-off keyed burst is half
+    // silence, the discriminator over silence is noise spread across the whole
+    // channel, and letting that into the percentiles drags the carrier estimate
+    // off — by 20 kHz on the first keyed signal this was tried against, which is
+    // enough to report a device on the wrong frequency.
     let body = &disc[signal.clone()];
-    let lo = percentile(scratch, body, 0.1);
-    let hi = percentile(scratch, body, 0.9);
+    let on: Vec<f32> = body
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| mag[signal.start + i] > floor)
+        .map(|(_, f)| *f)
+        .collect();
+    let measure: &[f32] = if on.len() >= body.len() / 8 && !on.is_empty() { &on } else { body };
+    let lo = percentile(scratch, measure, 0.1);
+    let hi = percentile(scratch, measure, 0.9);
+    let dev = (hi - lo) / 2.0;
+
+    // Envelope percentiles over the signal, not over the padded burst — see
+    // [`Stats::env_depth`]. `mag` is one longer than `disc`, so the same range
+    // indexes it safely.
+    let e10 = percentile(scratch, &mag[signal.clone()], 0.1);
+    let e90 = percentile(scratch, &mag[signal.clone()], 0.9);
+
+    // How much of the signal sits at a tone rather than between them.
+    let tol = dev * TONE_TOL;
+    let near = body.iter().filter(|f| (**f - lo).abs() <= tol || (**f - hi).abs() <= tol).count();
 
     Stats {
         center_hz: (lo + hi) / 2.0,
-        dev_hz: (hi - lo) / 2.0,
+        dev_hz: dev,
         // Referred to p90 rather than to the median, so the result is bounded
         // by 1 and a burst whose envelope reaches zero cannot divide by it.
-        env_depth: (m90 - m10) / m90.max(1e-12),
+        env_depth: (e90 - e10) / e90.max(1e-12),
+        env_low_dbfs: 20.0 * e10.max(1e-12).log10(),
+        bimodal: if body.is_empty() { 0.0 } else { near as f32 / body.len() as f32 },
         signal,
     }
 }
+
+/// How close to a tone counts as "at" it, as a fraction of the deviation.
+///
+/// Chosen so the two measures it produces are far apart rather than by feel. A
+/// two-level signal spends its time within a small fraction of the deviation of
+/// one tone or the other, so at 0.35 it still scores near 1. A chirp's
+/// instantaneous frequency is uniform across the sweep, so the two windows cover
+/// `2 × 0.35` of the `2 ×` deviation the percentiles span — about 0.35. Nothing
+/// in between is being asked to be decided finely.
+const TONE_TOL: f32 = 0.35;
 
 /// Measure the symbol period from the run-up of a burst, in samples.
 ///
@@ -453,5 +510,250 @@ mod tests {
         // White noise crosses zero about every other sample, nowhere near a
         // 14.5-sample symbol, so nothing should survive the plausibility bound.
         assert!(estimate_sps(&disc, 0.0, RATE / 17_241.0).is_none());
+    }
+}
+
+/// Symbol rate of an on-off keyed burst, measured from its envelope.
+///
+/// # Why this cannot reuse the symbol-rate estimator above
+///
+/// [`estimate_baud_free`] counts how often the *frequency* crosses the carrier,
+/// which is the right measurement for a signal that keeps a constant envelope and
+/// moves its frequency. On-off keying does the opposite: the frequency never
+/// moves and the envelope does. Over the silent half of a keyed burst the
+/// discriminator is noise, so that estimator reads the noise rather than the
+/// signal and returns either nothing or a number that means nothing — which is
+/// exactly what it did on the first keyed burst this was tried against.
+///
+/// So this one thresholds the envelope, takes the run lengths, and calls the
+/// shortest reliable run the symbol period.
+///
+/// # What the fit means
+///
+/// The fraction of runs that are close to a whole number of symbol periods. Real
+/// pulse-coded keying — which is what nearly every cheap remote and sensor on 433
+/// and 868 MHz uses — is built from one short unit and multiples of it, so a true
+/// period scores high and a wrong one scores badly. It is the same
+/// self-verification [`estimate_baud_free`] applies, for the same reason: a rate
+/// that cannot check itself is not worth reporting.
+pub fn estimate_ook_baud(mag: &[f32], rate_hz: f64) -> Option<(f64, f32)> {
+    if mag.len() < 64 {
+        return None;
+    }
+    let mut scratch = Vec::new();
+    let lo = percentile(&mut scratch, mag, 0.1);
+    let hi = percentile(&mut scratch, mag, 0.9);
+    // Halfway between the two levels in dB, which is the geometric mean — the
+    // right midpoint for a quantity that spans decades.
+    let thr = (lo.max(1e-12) * hi.max(1e-12)).sqrt();
+    if hi <= lo * 2.0 {
+        return None; // not keyed enough to have run lengths worth measuring
+    }
+
+    // Run lengths, dropping the first and last: both are cut short by where the
+    // gate happened to open and close rather than by the transmitter.
+    //
+    // With hysteresis, and it is not optional. A single threshold chatters every
+    // time the envelope wanders across it, and on a real burst that produced runs
+    // of one sample — six microseconds against symbols of four hundred — sitting
+    // in the middle of the sequence. Those tiny runs are what both estimators
+    // below then measure: the shortest-run reading takes one as its symbol
+    // period, and the edge-interval reading counts each as an extra edge. The
+    // signal was perfectly clean; the slicer was not.
+    //
+    // A factor of two either way is six decibels of dead zone, against the forty
+    // this signal swings.
+    let (on_thr, off_thr) = (thr * 2.0, thr / 2.0);
+    let mut runs: Vec<(bool, f64)> = Vec::new();
+    let mut cur = mag[0] > thr;
+    let mut n = 0usize;
+    for &m in mag {
+        let next = if cur { m > off_thr } else { m > on_thr };
+        if next == cur {
+            n += 1;
+        } else {
+            runs.push((cur, n as f64));
+            cur = next;
+            n = 1;
+        }
+    }
+    runs.push((cur, n as f64));
+    if runs.len() < 6 {
+        return None;
+    }
+    // Both ends are cut short by where the gate opened and closed rather than by
+    // the transmitter, so neither is a symbol.
+    runs.remove(0);
+    runs.pop();
+
+    // Then debounce. Hysteresis catches an envelope wandering *near* the
+    // threshold; it cannot catch one that drops all the way through and back in a
+    // single sample, and a deep momentary null does exactly that. Either way the
+    // result is a one-sample run in the middle of the sequence, and a one-sample
+    // run is not a symbol — so runs far shorter than the rest are absorbed into
+    // their neighbours, which is what a receiver's own slicer would do.
+    let mut lens: Vec<f64> = runs.iter().map(|r| r.1).collect();
+    lens.sort_by(f64::total_cmp);
+    let min_run = (lens[lens.len() / 2] / 4.0).max(2.0);
+    let mut i = 1;
+    while i + 1 < runs.len() {
+        if runs[i].1 < min_run {
+            let add = runs[i].1 + runs[i + 1].1;
+            runs[i - 1].1 += add;
+            runs.drain(i..i + 2);
+        } else {
+            i += 1;
+        }
+    }
+    if runs.len() < 4 {
+        return None;
+    }
+    let lengths: Vec<f64> = runs.iter().map(|r| r.1).collect();
+
+    // Reading one: every run is a whole number of symbol periods, and the
+    // shortest reliable run is that period. This is on-off keying in the plain
+    // sense — the transmitter is on for a one and off for a zero.
+    //
+    // A low percentile rather than the minimum, so one clipped run cannot set the
+    // scale for everything else.
+    let mut sorted = lengths.clone();
+    sorted.sort_by(f64::total_cmp);
+    let unit = sorted[sorted.len() / 10];
+    let by_run = (unit >= 2.0).then(|| {
+        let fit = lengths
+            .iter()
+            .filter(|r| {
+                let k = *r / unit;
+                k >= 0.75 && (k - k.round()).abs() <= 0.25
+            })
+            .count() as f32
+            / lengths.len() as f32;
+        (rate_hz / unit, fit)
+    });
+
+    // Reading two: the symbol period is constant and the *ratio* of on to off
+    // inside it carries the bit — pulse-width coding, which is what almost every
+    // cheap remote and sensor on these bands actually uses. Then no run is a
+    // symbol, but one rising edge to the next is exactly one, so the period is
+    // the median of those.
+    //
+    // The level of each run is carried alongside its length rather than inferred
+    // from whether its index is even. That inference is wrong the moment the ends
+    // are trimmed, and being wrong by one run pairs each "on" with the *previous*
+    // gap instead of its own — which still yields a plausible-looking period, so
+    // it fails quietly rather than loudly.
+    //
+    // Counting starts at the first rising edge. Trimming the ends can leave the
+    // sequence beginning midway through a symbol, and that leading fragment is
+    // not a period — one short entry among twenty is enough to pull this reading
+    // below the other and hand back the wrong number.
+    let first_on = runs.iter().position(|(on, _)| *on).unwrap_or(runs.len());
+    let mut periods: Vec<f64> = Vec::new();
+    let mut acc = 0.0;
+    for (on, len) in &runs[first_on..] {
+        acc += len;
+        if !*on {
+            periods.push(acc);
+            acc = 0.0;
+        }
+    }
+    let by_period = (periods.len() >= 3).then(|| {
+        let mut p = periods.clone();
+        p.sort_by(f64::total_cmp);
+        let med = p[p.len() / 2];
+        let fit = periods.iter().filter(|q| (*q - med).abs() <= med * 0.2).count() as f32
+            / periods.len() as f32;
+        (rate_hz / med, fit)
+    })?;
+
+    // When both readings verify themselves, the symbol period wins. Both are
+    // true statements about the same signal — the tick is the shortest keying
+    // element, the period is how often a symbol goes by — and the period is the
+    // one an operator comparing this against a datasheet will recognise.
+    Some(match by_run {
+        Some(r) if r.1 > by_period.1 => r,
+        _ => by_period,
+    })
+}
+
+#[cfg(test)]
+mod ook_tests {
+    use super::*;
+
+    /// Build a keyed envelope from run lengths given in samples.
+    fn keyed(runs: &[(bool, usize)], glitch_every: usize) -> Vec<f32> {
+        let mut v = Vec::new();
+        for (on, n) in runs {
+            for k in 0..*n {
+                // Occasional single-sample excursions across the midpoint, which
+                // is what a real envelope does and what the hysteresis is for.
+                let g = glitch_every > 0 && k > 0 && (v.len() % glitch_every) == 0;
+                v.push(if *on != g { 1.0 } else { 0.01 });
+            }
+        }
+        v
+    }
+
+    /// Pulse-width coding: a constant symbol period whose on/off split carries
+    /// the bit. This is the shape of the first keyed signal this was written
+    /// for — 392 microsecond tick, runs of one or two ticks, every symbol the
+    /// same total length.
+    #[test]
+    fn pulse_width_coding_gives_back_its_symbol_period() {
+        // 60 samples per tick; a symbol is three ticks either way round.
+        let mut runs = Vec::new();
+        for i in 0..24 {
+            if i % 2 == 0 {
+                runs.push((true, 60));
+                runs.push((false, 120));
+            } else {
+                runs.push((true, 120));
+                runs.push((false, 60));
+            }
+        }
+        let mag = keyed(&runs, 0);
+        let rate = 155_769.0;
+        let (baud, fit) = estimate_ook_baud(&mag, rate).expect("a keyed burst has a rate");
+        assert!(fit > 0.9, "a clean PWM burst should verify: fit {fit}");
+        // 180 samples a symbol.
+        assert!(
+            (baud - rate / 180.0).abs() < rate / 180.0 * 0.1,
+            "got {baud:.0} baud, expected about {:.0}",
+            rate / 180.0
+        );
+    }
+
+    /// The same signal with the envelope chattering across the midpoint. Without
+    /// hysteresis those one-sample runs become the measurement — this is the
+    /// regression that produced 4451 baud and a fit of 0.14 on a real burst
+    /// whose true rate was under a thousand.
+    #[test]
+    fn a_chattering_envelope_does_not_set_the_symbol_period() {
+        let mut runs = Vec::new();
+        for i in 0..24 {
+            if i % 2 == 0 {
+                runs.push((true, 60));
+                runs.push((false, 120));
+            } else {
+                runs.push((true, 120));
+                runs.push((false, 60));
+            }
+        }
+        let rate = 155_769.0;
+        let clean = estimate_ook_baud(&keyed(&runs, 0), rate).unwrap();
+        let noisy = estimate_ook_baud(&keyed(&runs, 37), rate).unwrap();
+        assert!(noisy.1 > 0.9, "chatter must not destroy the fit: {}", noisy.1);
+        assert!(
+            (clean.0 - noisy.0).abs() < clean.0 * 0.1,
+            "chatter moved the rate from {:.0} to {:.0} baud",
+            clean.0,
+            noisy.0
+        );
+    }
+
+    /// A constant envelope is not keyed and has no keying rate to report.
+    #[test]
+    fn a_constant_envelope_has_no_keying_rate() {
+        assert!(estimate_ook_baud(&vec![1.0f32; 4000], 155_769.0).is_none());
     }
 }

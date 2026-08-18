@@ -41,6 +41,13 @@ pub struct BurstReport {
     pub baud: f64,
     /// Fractional envelope swing; see [`crate::demod::Stats::env_depth`].
     pub env_depth: f32,
+    /// What kind of signal the burst is; see [`crate::class`].
+    pub class: sdroxide_types::IsmBurstClass,
+    /// The two numbers the class was decided on, so a survey line shows the
+    /// evidence and not just the verdict.
+    pub bimodal: f32,
+    /// How far the quiet part of the envelope sits above the channel's floor, dB.
+    pub floor_margin_db: f32,
     /// Frames the slicers pulled out, whether or not any validated.
     pub candidates: usize,
     /// Symbol rate measured from the burst itself, with no protocol to guess from,
@@ -51,9 +58,15 @@ pub struct BurstReport {
     /// The burst sliced at its measured rate, as hex, so the framing can be read
     /// by eye. Empty unless a bit dump was asked for.
     pub bits_hex: String,
-    /// Anything that decoded: protocol, device, readings, the non-numeric extras
-    /// (battery state and the like), and the raw frame.
-    pub decoded: Vec<(IsmProtocol, String, Vec<IsmReading>, Vec<(String, String)>, String)>,
+    /// Anything that decoded: protocol, model, device, readings, the non-numeric
+    /// extras (battery state and the like), and the raw frame.
+    ///
+    /// The model is carried because for an unidentified burst it is the *class* —
+    /// "2-FSK", "chirp" — which is the whole of what such a report says, and a
+    /// diagnostic tool that dropped it would print every unread burst as the same
+    /// anonymous line.
+    pub decoded:
+        Vec<(IsmProtocol, Option<String>, String, Vec<IsmReading>, Vec<(String, String)>, String)>,
 }
 
 impl BurstReport {
@@ -73,6 +86,12 @@ impl BurstReport {
             self.env_depth,
             self.candidates,
         );
+        s.push_str(&format!(
+            "  {:>12}  bim {:4.2}  floor +{:5.1} dB",
+            self.class.label(),
+            self.bimodal,
+            self.floor_margin_db
+        ));
         if let Some((baud, fit)) = self.measured_baud {
             s.push_str(&format!("  sym {baud:6.0} ({fit:.2})"));
         } else {
@@ -84,12 +103,16 @@ impl BurstReport {
         if !self.bits_hex.is_empty() {
             s.push_str(&format!("\n      {}", self.bits_hex));
         }
-        for (p, dev, readings, extra, raw) in &self.decoded {
+        for (p, model, dev, readings, extra, raw) in &self.decoded {
             let mut vals: Vec<String> = readings.iter().map(|r| r.fmt_labelled()).collect();
             // The extras carry the battery state, which is the one thing an
             // operator wants from a sensor besides its reading.
             vals.extend(extra.iter().map(|(k, v)| format!("{k} {v}")));
-            s.push_str(&format!("\n    {} id {dev}  {}  [{raw}]", p.label(), vals.join("  ")));
+            let kind = match model {
+                Some(m) => format!("{} {m}", p.label()),
+                None => p.label().to_string(),
+            };
+            s.push_str(&format!("\n    {kind} id {dev}  {}  [{raw}]", vals.join("  ")));
         }
         s
     }
@@ -168,13 +191,16 @@ impl Probe {
                     dev_hz: o.dev_hz,
                     baud: o.baud,
                     env_depth: o.env_depth,
+                    class: o.class,
+                    bimodal: o.bimodal,
+                    floor_margin_db: o.floor_margin_db,
                     candidates: o.candidates,
                     measured_baud: o.measured_baud,
                     bits_hex: o.bits_hex.clone(),
                     decoded: o
                         .decoded
                         .into_iter()
-                        .map(|d| (d.protocol, d.device, d.readings, d.extra, d.raw_hex))
+                        .map(|d| (d.protocol, d.model, d.device, d.readings, d.extra, d.raw_hex))
                         .collect(),
                 });
             }
@@ -304,13 +330,16 @@ impl Survey {
                     dev_hz: o.dev_hz,
                     baud: o.baud,
                     env_depth: o.env_depth,
+                    class: o.class,
+                    bimodal: o.bimodal,
+                    floor_margin_db: o.floor_margin_db,
                     candidates: o.candidates,
                     measured_baud: o.measured_baud,
                     bits_hex: o.bits_hex.clone(),
                     decoded: o
                         .decoded
                         .into_iter()
-                        .map(|d| (d.protocol, d.device, d.readings, d.extra, d.raw_hex))
+                        .map(|d| (d.protocol, d.model, d.device, d.readings, d.extra, d.raw_hex))
                         .collect(),
                 };
                 // The same transmission reaches several tiles; keep the one that
@@ -454,7 +483,12 @@ mod tests {
             out[0].freq_hz / 1e6,
             want / 1e6
         );
-        // Nothing decoded it, which is the honest outcome for a bare tone.
-        assert!(out[0].decoded.is_empty());
+        // Nothing *read* it — a bare tone carries no frame. It is still reported,
+        // classified for what it is, which is the whole point of the
+        // unidentified path: a tone is a finding, not a gap.
+        assert_eq!(out[0].decoded.len(), 1, "a tone should be reported, unread");
+        let (proto, model, ..) = &out[0].decoded[0];
+        assert_eq!(*proto, IsmProtocol::Unidentified);
+        assert_eq!(model.as_deref(), Some("carrier"), "an unmodulated tone is a carrier");
     }
 }

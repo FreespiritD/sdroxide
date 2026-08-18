@@ -93,6 +93,12 @@ pub struct Outcome {
     pub dev_hz: f32,
     pub baud: f64,
     pub env_depth: f32,
+    /// What kind of signal it is, decided from the burst alone.
+    pub class: sdroxide_types::IsmBurstClass,
+    /// The evidence behind [`Outcome::class`]: how much of the signal sat at a
+    /// tone, and how far its quiet part stood above the channel's noise floor.
+    pub bimodal: f32,
+    pub floor_margin_db: f32,
     /// Candidate frames the slicer produced, whether or not any parsed. A burst
     /// with candidates but no decode is an unsupported device; one with no
     /// candidates at all is not this modulation.
@@ -132,12 +138,13 @@ pub fn hex(bytes: &[u8]) -> String {
 }
 
 /// How well a burst's own symbol-rate measurement must have verified itself
-/// before the burst is worth listing as an unidentified device.
+/// before the rate is worth *printing*.
 ///
 /// Higher than the 0.8 the slicers accept, and for a different reason: a slicer
 /// that takes a poor rate estimate just fails to find a sync word and costs
-/// nothing, whereas a poor estimate here becomes a row in the operator's panel
-/// claiming a device exists at a symbol rate that was never really measured.
+/// nothing, whereas a poor estimate here becomes a figure in the operator's panel
+/// claiming a symbol rate that was never really measured. Below this the row
+/// simply does not quote one.
 const UNIDENTIFIED_MIN_FIT: f32 = 0.9;
 
 /// Alternating bits that must precede the derived sync word.
@@ -147,20 +154,68 @@ const UNIDENTIFIED_MIN_FIT: f32 = 0.9;
 /// runs constantly and a two-byte threshold would list a great deal of nothing.
 const UNIDENTIFIED_PREAMBLE_BITS: usize = 24;
 
+/// How finely an unidentified burst's frequency is rounded when it becomes that
+/// burst's identity, in Hz.
+///
+/// Only used for bursts with no sync word to be known by. Coarse enough that one
+/// transmitter's drift and the estimator's own scatter stay in one row, fine
+/// enough that two devices a channel apart do not merge.
+const UNIDENTIFIED_FREQ_BUCKET_HZ: f64 = 25_000.0;
+
 /// Describe a burst that no decoder claimed.
 ///
-/// The operator's question about an unread burst is "what is it and is it always
-/// there", and three things answer it without knowing the protocol: the symbol
-/// rate, the deviation, and the bytes immediately after the preamble — which for
-/// every protocol in this band is the sync word, and is therefore what identifies
-/// the *protocol* even when nothing can read it.
+/// The operator's question about an unread burst is "what is it, and is it always
+/// there". Four things answer that without knowing the protocol: what kind of
+/// signal it is, how wide, how fast, and — when it is framed — the bytes
+/// immediately after its preamble, which for every protocol in this band are the
+/// sync word and therefore identify the *protocol* even when nothing can read it.
 ///
-/// The sync word is used as the device identity so that repeats collapse into one
-/// row with a count, rather than filling the panel with one entry per
-/// transmission. That does mean two devices sharing a protocol merge into a
-/// single row — which is the right answer at this level of knowledge, because
-/// what is actually known is "an unidentified protocol is here, this often".
-fn unidentified(bits: &[u8], baud: f64, dev_hz: f32) -> Option<Decoded> {
+/// # What a row is keyed on
+///
+/// The sync word where there is one, so repeats collapse into a single row with a
+/// count rather than filling the panel. Two devices sharing a protocol merge,
+/// which is the right answer at this level of knowledge: what is known is "this
+/// protocol is here, this often".
+///
+/// A chirp or a bare carrier has no preamble and no sync word to be known by, so
+/// those are keyed on their rounded frequency instead. That is a weaker identity
+/// and it is why the class is named in the row: "chirp at 868.35" is a true and
+/// useful thing to say, and it is all that can be said.
+fn unidentified(
+    class: sdroxide_types::IsmBurstClass,
+    sync: Option<[u8; 2]>,
+    stats: &crate::demod::Stats,
+    measured_baud: Option<(f64, f32)>,
+    burst: &Burst,
+) -> Decoded {
+    let freq = burst.center_hz + f64::from(stats.center_hz);
+    let mut extra = vec![("dev".to_string(), format!("{:.1} kHz", stats.dev_hz / 1e3))];
+    match measured_baud.filter(|(_, fit)| *fit >= UNIDENTIFIED_MIN_FIT) {
+        Some((b, _)) => extra.push(("rate".to_string(), format!("{:.1} kbaud", b / 1000.0))),
+        // Said out loud rather than left blank: for a chirp there is no symbol
+        // rate to find, and "none" is a finding rather than a gap.
+        None => extra.push(("rate".to_string(), "not measurable".to_string())),
+    }
+
+    Decoded {
+        protocol: IsmProtocol::Unidentified,
+        model: Some(class.label().to_string()),
+        device: match sync {
+            Some(s) => format!("sync {:02x}{:02x}", s[0], s[1]),
+            None => format!(
+                "{:.3} MHz",
+                (freq / UNIDENTIFIED_FREQ_BUCKET_HZ).round() * UNIDENTIFIED_FREQ_BUCKET_HZ / 1e6
+            ),
+        },
+        readings: Vec::new(),
+        extra,
+        encrypted: false,
+        raw_hex: String::new(),
+    }
+}
+
+/// The two bytes after a burst's preamble, when it has one.
+fn signature(bits: &[u8]) -> Option<[u8; 2]> {
     // The end of the first run of alternating bits long enough to be a preamble.
     let mut i = 0usize;
     let (start, mut end) = loop {
@@ -199,16 +254,7 @@ fn unidentified(bits: &[u8], baud: f64, dev_hz: f32) -> Option<Decoded> {
         return None;
     }
     let sync = crate::slice::pack_bits(&bits[end..end + 16]);
-
-    Some(Decoded {
-        protocol: IsmProtocol::Unidentified,
-        model: Some(format!("{:.1} kbaud", baud / 1000.0)),
-        device: format!("{:02x}{:02x}", sync[0], sync[1]),
-        readings: Vec::new(),
-        extra: vec![("dev".to_string(), format!("{:.1} kHz", dev_hz / 1e3))],
-        encrypted: false,
-        raw_hex: String::new(),
-    })
+    Some([sync[0], sync[1]])
 }
 
 /// Scratch buffers, so a channel's decoder does not allocate per burst.
@@ -309,14 +355,22 @@ pub fn decode(
     // Nothing read it. If the operator asked to see those, say what could be
     // measured about it rather than dropping it — see [`unidentified`].
     if decoded.is_empty() && on_channel && enabled(IsmProtocol::Unidentified) {
-        if let (Some(bits), Some((b, fit))) = (&sliced, measured_baud) {
-            if fit >= UNIDENTIFIED_MIN_FIT {
-                if let Some(mut d) = unidentified(bits, b, stats.dev_hz) {
-                    d.raw_hex = hex(&crate::slice::pack_bits(&bits[..bits.len().min(32 * 8)]));
-                    decoded.push(d);
-                }
-            }
+        let class = crate::class::classify(burst, &stats, measured_baud);
+        // A keyed burst's rate lives in its envelope, not in its frequency — the
+        // discriminator estimator reads noise over the silent half. See
+        // [`crate::demod::estimate_ook_baud`].
+        let rate = if class == sdroxide_types::IsmBurstClass::Ook {
+            let mag: Vec<f32> = burst.iq[stats.signal.clone()].iter().map(|z| z.norm()).collect();
+            crate::demod::estimate_ook_baud(&mag, burst.rate_hz)
+        } else {
+            measured_baud
+        };
+        let sync = sliced.as_deref().and_then(signature);
+        let mut d = unidentified(class, sync, &stats, rate, burst);
+        if let Some(bits) = &sliced {
+            d.raw_hex = hex(&crate::slice::pack_bits(&bits[..bits.len().min(32 * 8)]));
         }
+        decoded.push(d);
     }
 
     Outcome {
@@ -327,6 +381,9 @@ pub fn decode(
         dev_hz: stats.dev_hz,
         baud,
         env_depth: stats.env_depth,
+        class: crate::class::classify(burst, &stats, measured_baud),
+        bimodal: stats.bimodal,
+        floor_margin_db: stats.env_low_dbfs - (burst.peak_dbfs - burst.snr_db),
         candidates,
         measured_baud,
         bits_hex,

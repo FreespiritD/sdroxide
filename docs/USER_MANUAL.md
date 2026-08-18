@@ -2544,14 +2544,34 @@ de-obfuscation from prose and apply it to a single unverifiable capture — whic
 would produce device addresses that look authoritative and might be nonsense —
 the frame is listed with its bytes and no interpretation.
 
-**Unidentified bursts** — the `UNKNOWN` chip. Off by default. With it on, a burst
-that gates, holds still long enough for its symbol rate to be measured, and
-matches no decoder is listed anyway, described by what *could* be measured: its
-symbol rate, its deviation, and the two bytes immediately after its preamble.
-Those two bytes are the sync word for every protocol in this band, so they
-identify the **protocol** even when nothing can read it — and they are used as
-the device identity, so repeats collapse into one row with a count instead of
-filling the panel.
+**Unidentified bursts** — the `UNKNOWN` chip. Off by default. With it on, every
+burst that gates but matches no decoder is listed anyway, **classified** and
+described by what could be measured about it:
+
+| Class | Decided by |
+|---|---|
+| `2-FSK` | two tones, constant envelope |
+| `OOK` | the envelope is keyed down to the channel's own noise floor |
+| `chirp` | the frequency sweeps instead of settling on tones |
+| `carrier` | too little frequency spread to be two tones |
+
+None of that needs a symbol rate to have been recovered, which matters because a
+chirp has none to recover. The row also carries the deviation, the rate, and —
+where the burst is framed — the two bytes immediately after its preamble. Those
+two bytes are the sync word for every protocol in this band, so they identify the
+**protocol** even when nothing can read it, and they are used as the device
+identity so repeats collapse into one row with a count. A chirp or a carrier has
+no preamble to derive one from, so those are listed by rounded frequency instead.
+
+> **On-off keying is measured differently.** The symbol-rate
+> estimator used everywhere else counts how often the *frequency* crosses the
+> carrier — the right measurement for a constant-envelope signal that moves its
+> frequency, and the wrong one for a signal that does the opposite. Over the
+> silent half of a keyed burst the discriminator is reading noise. So a burst
+> classified `OOK` has its rate taken from the envelope instead, as the shortest
+> keying element or as the interval between rising edges, whichever verifies
+> itself better — the second being what pulse-width coding needs, which is what
+> nearly every cheap remote and sensor on these bands actually uses.
 
 That is how the 868 MHz band around this author's bench turned out to hold a
 `2c4c` emitter at 10 kbaud that heartbeats every 60 seconds and a `d391` one —

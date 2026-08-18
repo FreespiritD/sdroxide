@@ -155,6 +155,40 @@ impl IsmProtocol {
     }
 }
 
+/// What kind of signal a burst is, decided from the burst alone.
+///
+/// Deliberately coarse. These are the distinctions that can be made from one
+/// transmission with no idea what protocol sent it, and each one is decided by a
+/// measurement rather than by a family of guesses — see `sdroxide_ism::class`.
+/// Variants may be **appended**.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum IsmBurstClass {
+    /// Two tones at a constant envelope: frequency-shift keying.
+    Fsk2,
+    /// The envelope is keyed to the noise floor and back: on-off keying.
+    Ook,
+    /// The frequency sweeps rather than settling on tones. LoRa is the reason
+    /// this is common here, though nothing in that name is being claimed — a
+    /// sweep is all that was measured.
+    Chirp,
+    /// A carrier with too little frequency spread to be two tones.
+    Carrier,
+    /// None of the above held.
+    Unknown,
+}
+
+impl IsmBurstClass {
+    pub fn label(self) -> &'static str {
+        match self {
+            IsmBurstClass::Fsk2 => "2-FSK",
+            IsmBurstClass::Ook => "OOK",
+            IsmBurstClass::Chirp => "chirp",
+            IsmBurstClass::Carrier => "carrier",
+            IsmBurstClass::Unknown => "unclassified",
+        }
+    }
+}
+
 /// A physical quantity a decoded frame can carry.
 ///
 /// A closed enum rather than a free-text name so that the unit, the sensible

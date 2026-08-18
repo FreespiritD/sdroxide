@@ -29,6 +29,7 @@
 //! prior art and is GPL-2.0-or-later; field layouts are facts about the devices
 //! and cross-checking against it is fair, but no code came from it.
 
+pub mod class;
 mod controller;
 mod crc;
 mod demod;
@@ -38,6 +39,7 @@ pub mod probe;
 mod proto;
 mod slice;
 
+pub use class::classify;
 pub use controller::{IsmAction, IsmController};
 pub use gate::Burst;
 pub use plan::{CHANNELS, Channel, USABLE_FRACTION, ideal_center_hz, span_hz, window_center_hz};
