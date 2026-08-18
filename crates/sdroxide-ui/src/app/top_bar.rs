@@ -70,6 +70,11 @@ const TX_MIC_COL_W: f32 = 30.0;
 /// Padding between the TX rows' readouts and the mic column, so the vertical
 /// rail stands apart from the sliders beside it.
 const TX_MIC_GAP: f32 = 16.0;
+/// Width of the RX box's pinned dB rails — the front-end Gain slider and the
+/// manual gain behind an AGC that is switched off. Narrower than the Vol and
+/// SQL rails on purpose: these two carry a dB readout, and the box has to stay
+/// inside one row. See [`db_rail_w`].
+const RX_DB_RAIL_W: f32 = 76.0;
 /// Text size of the band/mode chip's label.
 const BAND_MODE_TEXT: f32 = 14.0;
 /// Below this the frequency digits stop reading as a dial, so the box sheds
@@ -635,7 +640,7 @@ impl SdroxideApp {
                 StripBox { w, flex: 1.0, max_w: w + RAIL_STRETCH_MAX }
             }),
             (Kind::RxFilter, {
-                let w = self.rx_filter_w();
+                let w = self.rx_filter_w(ui);
                 StripBox { w, flex: 2.0, max_w: w + RAIL_STRETCH_MAX }
             }),
         ];
@@ -1527,31 +1532,19 @@ impl SdroxideApp {
     }
 
     /// The Receiver + Filter/Noise box's natural width: the wider of its two
-    /// rows, each figure being that row laid out at the desktop tier plus a
-    /// little slack. Which row leads changes with the rig and the state: the
-    /// noise row usually, the receive row once it carries both a front-end
-    /// gain rail and the manual-gain rail that appears with the AGC off.
-    /// The NR chip is a fixed "NR" whatever engine is running (see
-    /// [`Self::nr_button`]), so the noise row no longer has to be sized for the
-    /// widest setting it could be switched to — this figure is that row with a
-    /// bare NR chip in it.
-    fn rx_filter_w(&self) -> f32 {
-        let noise_row: f32 = 420.0
-            + match self.state.rx[0].mode {
-                Mode::Wfm => 40.0,
-                // The tone chip reads "D023N" at its widest, plus the dot that
-                // marks an armed-but-silent squelch.
-                Mode::Nfm => 66.0,
-                _ => 0.0,
-            };
-        let rx_row = 205.0
-            + if self.rx_gain().is_some() { 180.0 } else { 0.0 }
-            + if self.state.rx[0].agc == AgcMode::Off { 170.0 } else { 0.0 }
-            // "DEC off" and "DEC /64" measure the same, so the chip has one
-            // width whatever it is set to — it either rides this row or, on a
-            // radio with no span to spare, is not drawn at all.
-            + if self.decim_range().is_some() { 66.0 } else { 0.0 };
-        noise_row.max(rx_row) + 16.0
+    /// rows at [`rx_rows_w`], plus the box margins and a little rounding
+    /// slack. Which row leads changes with the rig and the state: the noise
+    /// row usually, the receive row once it carries both a front-end gain rail
+    /// and the manual-gain rail that appears with the AGC off.
+    fn rx_filter_w(&self, ui: &egui::Ui) -> f32 {
+        let (rx_row, noise_row) = rx_rows_w(
+            ui,
+            self.rx_gain().is_some(),
+            self.decim_range().is_some(),
+            self.state.rx[0].agc == AgcMode::Off,
+            self.state.rx[0].mode,
+        );
+        rx_row.max(noise_row) + 2.0 * crate::chrome::MODULE_MARGIN_X + 4.0
     }
 
     /// Combined Receiver + Filter/Noise box: volume, gain and AGC on top, with
@@ -1560,7 +1553,7 @@ impl SdroxideApp {
     /// the Vol and SQL rails — one per row, so both rows grow by the same
     /// amount (the Gain and Man rails pin their own width and stay put).
     fn rx_filter_module(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>, w: f32) {
-        let extra = (w - self.rx_filter_w()).clamp(0.0, RAIL_STRETCH_MAX);
+        let extra = (w - self.rx_filter_w(ui)).clamp(0.0, RAIL_STRETCH_MAX);
         crate::chrome::module_bare_h(ui, w, crate::chrome::MODULE_TALL_H, |ui| {
             ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(MODULE_ROW_SPACING, MODULE_ROW_SPACING);
@@ -1690,7 +1683,7 @@ impl SdroxideApp {
                 let resp = ui
                     .scope(|ui| {
                         if !narrow {
-                            ui.spacing_mut().slider_width = 76.0;
+                            ui.spacing_mut().slider_width = RX_DB_RAIL_W;
                         }
                         crate::chrome::slider(
                             ui,
@@ -1733,7 +1726,7 @@ impl SdroxideApp {
                 let resp = ui
                     .scope(|ui| {
                         if !narrow {
-                            ui.spacing_mut().slider_width = 76.0;
+                            ui.spacing_mut().slider_width = RX_DB_RAIL_W;
                         }
                         crate::chrome::slider(
                             ui,
@@ -3007,6 +3000,93 @@ fn tx_rows_w_for(ui: &egui::Ui, keyer: bool) -> f32 {
         + 4.0
 }
 
+/// What egui draws a slider's or drag-value's readout as: the value's text in
+/// button padding, never narrower than the style's interact size. Measured
+/// from the style rather than pinned to a literal, because both figures move
+/// with the tier.
+fn value_field_w(ui: &egui::Ui, text: &str) -> f32 {
+    let w = crate::chrome::text_width(ui, text, egui::TextStyle::Body.resolve(ui.style()))
+        + 2.0 * ui.spacing().button_padding.x;
+    w.max(ui.spacing().interact_size.x)
+}
+
+/// One of the RX box's dB rails — the front-end Gain and the manual gain the
+/// AGC falls back to — with its readout beside it. The rail is pinned
+/// ([`RX_DB_RAIL_W`]): these two don't take the box's stretch, the Vol and SQL
+/// rails do.
+///
+/// The readout is priced at a sample wider than any rig's gain range formats
+/// to rather than derived from the range, and deliberately: egui picks the
+/// number of decimals it shows from the rail's *gradient* — dB per point —
+/// so what the box would have to reserve moves with the rail length as well
+/// as with the range. A few points of slack buys a figure that holds for
+/// every rig, and one that does not change as the rail is dragged.
+fn db_rail_w(ui: &egui::Ui) -> f32 {
+    RX_DB_RAIL_W + MODULE_ROW_SPACING + value_field_w(ui, "-888.8 dB")
+}
+
+/// The natural width of the RX box's two rows: (receive, noise), gaps
+/// included, each measured against the live style. A free function of the
+/// state that changes them, like [`tx_rows_fixed_w`], so
+/// `the_condensed_rx_box_fits_its_rows` can price every combination without an
+/// app around it.
+///
+/// This was two hand-priced literals, calibrated once against the rows as they
+/// then stood. The noise row grew — ANC, then MONO — and the figure did not:
+/// by the time it was 40 pt light the box was reserving less than it drew, and
+/// a module that overflows is not clipped to its box. It pushed the boxes
+/// after it along the row, and the System box at the end of the row lost its
+/// last chips over the edge of the window.
+fn rx_rows_w(ui: &egui::Ui, gain: bool, decim: bool, agc_off: bool, mode: Mode) -> (f32, f32) {
+    let g = MODULE_ROW_SPACING;
+    // The Vol and SQL rails, which is what the box's stretch lengthens.
+    let rail = ui.spacing().slider_width;
+    let label =
+        |s: &str| crate::chrome::text_width(ui, s, egui::TextStyle::Body.resolve(ui.style()));
+    let chip = |s: &str| crate::chrome::chip_width(ui, s, None);
+
+    // Receive: volume, the front-end gain rail where the rig has one, the
+    // decimation chip, the AGC chip, and the manual rail behind it.
+    let mut rx_row = label("Vol") + g + rail;
+    if gain {
+        rx_row += g + label("Gain") + g + db_rail_w(ui);
+    }
+    if decim {
+        // "DEC off" and "DEC /64" measure much the same, so the chip has one
+        // width whatever it is set to — it either rides this row or, on a
+        // radio with no span to spare, is not drawn at all.
+        rx_row += g + chip("DEC off").max(chip("DEC /64"));
+    }
+    // At the widest of the four settings, so the box does not change width —
+    // and the strip does not re-break its rows — as the AGC is cycled.
+    rx_row +=
+        g + AgcMode::ALL.iter().map(|a| chip(&format!("AGC {}", a.label()))).fold(0.0, f32::max);
+    if agc_off {
+        rx_row += g + label("Man") + g + db_rail_w(ui);
+    }
+
+    // Filter / noise: the squelch rail and its readout — the deepest threshold
+    // is the longest it reads, "off" at the bottom of the range being shorter
+    // — then the noise, audio and recording chips. The NR chip is a fixed "NR"
+    // whatever engine is running (see [`SdroxideApp::nr_button`]), so this row
+    // is not sized for the widest setting it could be switched to.
+    let sql_readout = format!("{:.0}", sdroxide_types::SQUELCH_OPEN_DB);
+    let mut noise_row = label("SQL") + g + rail + g + value_field_w(ui, &sql_readout);
+    for c in ["NB", "ANC", "NR", "MUTE", "REC", "MONO"] {
+        noise_row += g + chip(c);
+    }
+    match mode {
+        // Only WFM has a stereo pilot to lock or an RDS subcarrier to decode.
+        Mode::Wfm => noise_row += g + chip("ST") + g + chip("RDS"),
+        // Only NFM carries a sub-audible tone. The chip reads a DCS code at
+        // its widest, behind the dot that marks an armed-but-silent squelch.
+        Mode::Nfm => noise_row += g + chip("·D023N"),
+        _ => {}
+    }
+
+    (rx_row, noise_row)
+}
+
 /// The natural width of the RIT/XIT offset row: the chips at their labels and
 /// the Hz fields at their design width, with the box's row spacing between
 /// them. A receive-only rig draws no XIT.
@@ -4131,6 +4211,131 @@ mod tests {
                     && r.bottom() <= screen.y,
                 "{screen:?}: the band menu spans {r:?}"
             );
+        }
+    }
+
+    /// Lay the condensed RX box's two rows out with the real widgets at
+    /// desktop metrics, in every combination of the state that changes them,
+    /// and check each fits the width [`rx_rows_w`] prices for it.
+    ///
+    /// The figure this replaced was a literal, and by the time the noise row
+    /// had grown an ANC chip and a MONO chip it was 40 pt light. Nothing about
+    /// the box said so: it drew its rows past its own right edge, pushing the
+    /// TX, Display and System boxes along the row, and the System box — last
+    /// on the row on a desktop layout — lost ISM and HELP over the edge of the
+    /// window. That is what this test is here to catch.
+    #[test]
+    fn the_condensed_rx_box_fits_its_rows() {
+        for gain in [false, true] {
+            for decim in [false, true] {
+                for agc_off in [false, true] {
+                    for mode in [Mode::Usb, Mode::Nfm, Mode::Wfm] {
+                        let (ctx, input) = desktop_ctx();
+                        let _ = ctx.run_ui(input, |ui| {
+                            ui.spacing_mut().item_spacing =
+                                egui::vec2(MODULE_ROW_SPACING, MODULE_ROW_SPACING);
+                            let (room1, room2) = rx_rows_w(ui, gain, decim, agc_off, mode);
+                            let (mut vol, mut db) = (0.5f32, -88.8f32);
+                            // The deepest threshold, which is the longest the
+                            // readout beside the rail reads.
+                            let mut sql = sdroxide_types::SQUELCH_OPEN_DB + 1.0;
+                            let state = format!(
+                                "gain={gain} decim={decim} agc_off={agc_off} mode={mode:?}"
+                            );
+
+                            let row1 = ui
+                                .horizontal(|ui| {
+                                    ui.label("Vol");
+                                    crate::chrome::slider(
+                                        ui,
+                                        Slider::new(&mut vol, 0.0..=1.0).show_value(false),
+                                    );
+                                    if gain {
+                                        ui.label("Gain");
+                                        ui.scope(|ui| {
+                                            ui.spacing_mut().slider_width = RX_DB_RAIL_W;
+                                            crate::chrome::slider(
+                                                ui,
+                                                Slider::new(&mut db, -88.8..=0.0)
+                                                    .step_by(0.1)
+                                                    .suffix(" dB"),
+                                            );
+                                        });
+                                    }
+                                    if decim {
+                                        crate::chrome::chip(ui, false, "DEC /64");
+                                    }
+                                    // The widest of the four AGC settings.
+                                    crate::chrome::chip(ui, true, "AGC Slow");
+                                    if agc_off {
+                                        let mut man = sdroxide_types::MAX_MANUAL_GAIN_DB;
+                                        ui.label("Man");
+                                        ui.scope(|ui| {
+                                            ui.spacing_mut().slider_width = RX_DB_RAIL_W;
+                                            crate::chrome::slider(
+                                                ui,
+                                                Slider::new(
+                                                    &mut man,
+                                                    0.0..=sdroxide_types::MAX_MANUAL_GAIN_DB,
+                                                )
+                                                .step_by(1.0)
+                                                .suffix(" dB"),
+                                            );
+                                        });
+                                    }
+                                    ui.min_rect().width()
+                                })
+                                .inner;
+
+                            let row2 = ui
+                                .horizontal(|ui| {
+                                    ui.label("SQL");
+                                    crate::chrome::slider(
+                                        ui,
+                                        Slider::new(
+                                            &mut sql,
+                                            sdroxide_types::SQUELCH_OPEN_DB..=-30.0,
+                                        )
+                                        .show_value(true)
+                                        .custom_formatter(|v, _| format!("{v:.0}")),
+                                    );
+                                    for l in ["NB", "ANC", "NR"] {
+                                        crate::chrome::chip(ui, false, l);
+                                    }
+                                    for l in ["MUTE", "REC", "MONO"] {
+                                        crate::chrome::chip_accent(
+                                            ui,
+                                            false,
+                                            l,
+                                            crate::theme::ALERT(),
+                                            Color32::WHITE,
+                                        );
+                                    }
+                                    if mode == Mode::Wfm {
+                                        crate::chrome::chip(ui, false, "ST");
+                                        crate::chrome::chip(ui, false, "RDS");
+                                    }
+                                    if mode == Mode::Nfm {
+                                        // Armed but silent: the widest the
+                                        // tone chip reads.
+                                        crate::chrome::chip_accent(
+                                            ui,
+                                            false,
+                                            "·D023N",
+                                            crate::theme::YELLOW(),
+                                            crate::theme::INK_ON_BRIGHT(),
+                                        );
+                                    }
+                                    ui.min_rect().width()
+                                })
+                                .inner;
+
+                            assert!(row1 <= room1 + 0.5, "{state}: row 1 took {row1} of {room1}");
+                            assert!(row2 <= room2 + 0.5, "{state}: row 2 took {row2} of {room2}");
+                        });
+                    }
+                }
+            }
         }
     }
 }
