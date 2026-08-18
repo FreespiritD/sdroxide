@@ -364,11 +364,13 @@ can't quietly add itself to the one you set here.
   it affects only what you hear, not the digital decoders; leave it off for CW
   and data modes, whose signals *are* tones.)
 - **NR** — noise reduction on the audio, with four selectable engines. The button
-  reads what is running (`NR RNN Med`, `NR DFNR High`, `NR SPEC Low`, `NR Mid`);
-  click it for a picker with an **Engine** row and a **Strength** row, so any
-  setting is two clicks away. A keyboard or MIDI binding cycles the *strength*
-  within whichever engine is selected — Off → Low → Med → High → Off — and never
-  changes the engine underneath you.
+  always reads just `NR` and lights when noise reduction is in circuit — that is
+  all it tells you, and it never changes width under the chips beside it. Click
+  it for a picker with an **Engine** row and a **Strength** row, which is where
+  you both read back what is running and change it, so any setting is two clicks
+  away; hovering the button names it too. A keyboard or MIDI binding cycles the
+  *strength* within whichever engine is selected — Off → Low → Med → High → Off —
+  and never changes the engine underneath you.
   - **RNN** — a neural **RNNoise** denoiser. Trained on speech, it recognises the
     *voice* and mutes everything else, so it clears non-stationary junk that
     spectral NR can't — babble, wind, keyboard/shack noise, fluttering hiss —
@@ -385,9 +387,10 @@ can't quietly add itself to the one you set here.
     and a *whitened* noise floor: rather than carving the residue into birdies it
     flattens what is left into even hiss. Good on steady static where the neural
     engines sound processed.
-  - **NR Low/Mid/High** — the built-in **spectral** noise reduction: it suppresses
-    the stationary noise floor while letting the changing, speech-like parts
-    through. Fast and predictable on steady static and hiss.
+  - **NR** — the built-in **spectral** noise reduction, whose engine chip keeps
+    the bare name the button has always worn: it suppresses the stationary noise
+    floor while letting the changing, speech-like parts through. Fast and
+    predictable on steady static and hiss.
 
   All four make voice quieter to listen to and easier to copy with less fatigue.
   Higher strengths remove more noise but can add faint artefacts on weak signals,

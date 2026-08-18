@@ -1531,10 +1531,12 @@ impl SdroxideApp {
     /// little slack. Which row leads changes with the rig and the state: the
     /// noise row usually, the receive row once it carries both a front-end
     /// gain rail and the manual-gain rail that appears with the AGC off.
-    /// The widest NR chip is now "NR DFNR High" — two characters more than
-    /// the "NR AI High" this was sized for.
+    /// The NR chip is a fixed "NR" whatever engine is running (see
+    /// [`Self::nr_button`]), so the noise row no longer has to be sized for the
+    /// widest setting it could be switched to — this figure is that row with a
+    /// bare NR chip in it.
     fn rx_filter_w(&self) -> f32 {
-        let noise_row: f32 = 462.0
+        let noise_row: f32 = 420.0
             + match self.state.rx[0].mode {
                 Mode::Wfm => 40.0,
                 // The tone chip reads "D023N" at its widest, plus the dot that
@@ -1786,24 +1788,30 @@ impl SdroxideApp {
                 self.state.rx[0].auto_notch = !anc; // optimistic echo
                 cmds.push(Command::SetAutoNotch { rx: RxId::Main, on: !anc });
             }
-            // Noise reduction. The chip says what is running; the picker behind
-            // it chooses which of the four engines and how hard. A cycling chip
-            // was fine at seven states and two engines; at thirteen and four it
-            // is a dozen clicks to cross, and which engine to use is a
-            // considered choice rather than something to walk past on the way
-            // to the one you wanted.
+            // Noise reduction. The chip says only whether it is in circuit; the
+            // picker behind it chooses which of the four engines and how hard.
+            // A cycling chip was fine at seven states and two engines; at
+            // thirteen and four it is a dozen clicks to cross, and which engine
+            // to use is a considered choice rather than something to walk past
+            // on the way to the one you wanted.
             if narrow {
                 // This row is itself inside the RX menu on a compact layout, and
                 // a popup opened from a popup counts as a click outside the
                 // first and closes it (see `sub_mode_picker`). So here the chip
                 // rides the strength and the picker is inlined below.
                 let nr = self.state.rx[0].noise_reduction;
-                let label =
-                    if nr.is_on() { format!("NR {}", nr.label()) } else { "NR".to_string() };
-                if crate::chrome::chip(ui, nr.is_on(), label)
-                    .on_hover_text("Noise reduction — click to cycle Off / Low / Med / High")
-                    .clicked()
-                {
+                let hover = match nr.engine() {
+                    Some(e) => format!(
+                        "Noise reduction: {} — {}\n\nClick to cycle the strength: \
+                         Low / Med / High / Off. The engine is in the rows below.",
+                        nr.label(),
+                        e.name()
+                    ),
+                    None => "Noise reduction, off — click to switch it on, or pick an engine \
+                             in the rows below"
+                        .to_string(),
+                };
+                if crate::chrome::chip(ui, nr.is_on(), "NR").on_hover_text(hover).clicked() {
                     let next = nr.next();
                     self.state.rx[0].noise_reduction = next; // optimistic echo
                     cmds.push(Command::SetNoiseReduction { rx: RxId::Main, level: next });
@@ -1901,16 +1909,23 @@ impl SdroxideApp {
 
     /// The NR chip and the picker behind it: which denoiser, and how hard.
     /// Fades out on its own, like the tone popup.
+    ///
+    /// The chip's label is the bare "NR" whatever is running: lit or not, it
+    /// answers "is noise reduction in circuit?" and nothing else. A label that
+    /// grew to "NR DFNR High" and shrank to "NR" changed width — and so moved
+    /// every chip beside it — each time the engine or the strength changed.
+    /// Which of the two is running is one click away, in the picker itself.
     fn nr_button(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>) {
         let nr = self.state.rx[0].noise_reduction;
-        let label = if nr.is_on() { format!("NR {}", nr.label()) } else { "NR".to_string() };
         let hover = match nr.engine() {
-            Some(e) => {
-                format!("Noise reduction: {} — click to change engine or strength", e.name())
-            }
-            None => "Noise reduction (voice) — click to pick an engine".to_string(),
+            Some(e) => format!(
+                "Noise reduction: {} — {}\n\nClick to change engine or strength",
+                nr.label(),
+                e.name()
+            ),
+            None => "Noise reduction (voice), off — click to pick an engine".to_string(),
         };
-        let btn = crate::chrome::chip(ui, nr.is_on(), label).on_hover_text(hover);
+        let btn = crate::chrome::chip(ui, nr.is_on(), "NR").on_hover_text(hover);
 
         let popup_id = egui::Popup::default_response_id(&btn);
         let now = ui.input(|i| i.time);
