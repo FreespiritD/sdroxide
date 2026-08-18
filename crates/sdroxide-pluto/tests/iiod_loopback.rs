@@ -133,9 +133,11 @@ struct DeviceState {
     rx_open_masks: Vec<String>,
     /// … and on the transmit buffer.
     tx_open_masks: Vec<String>,
-    /// Pause in the middle of the next `READBUF` payload, once. Models the
-    /// intermittent gap a Pluto on a USB gadget produces every few minutes.
-    stall_next_readbuf: bool,
+    /// Pause this long in the middle of the next `READBUF` payload, once.
+    /// Models the intermittent gap a Pluto on a USB gadget produces every few
+    /// minutes. How long it lasts decides which of the client's two answers is
+    /// under test — see [`HICCUP`] and [`STALL`].
+    stall_next_readbuf: Option<Duration>,
     /// Answer every `READBUF` with `-EAGAIN` until the buffer is reopened.
     /// Models a wedged DMA: the connection is fine, the server is answering,
     /// and no amount of further reading will ever produce a sample.
@@ -178,11 +180,20 @@ impl Fake {
         Fake::start_with(DeviceState::default(), CONTEXT_XML.to_string())
     }
 
-    /// A device that goes quiet in the middle of one buffer and then carries on
-    /// — the fault that used to end the stream and force a reopen.
+    /// A device that goes quiet in the middle of one buffer for longer than the
+    /// client will wait, and then carries on.
     fn start_that_stalls_mid_buffer() -> Fake {
         Fake::start_with(
-            DeviceState { stall_next_readbuf: true, ..DeviceState::default() },
+            DeviceState { stall_next_readbuf: Some(STALL), ..DeviceState::default() },
+            CONTEXT_XML.to_string(),
+        )
+    }
+
+    /// The same fault, briefly enough that the client should ride it out on the
+    /// socket it already has — see [`HICCUP`].
+    fn start_that_hiccups_mid_buffer() -> Fake {
+        Fake::start_with(
+            DeviceState { stall_next_readbuf: Some(HICCUP), ..DeviceState::default() },
             CONTEXT_XML.to_string(),
         )
     }
@@ -459,13 +470,13 @@ fn serve(sock: TcpStream, state: Arc<Mutex<DeviceState>>, stop: Arc<AtomicBool>,
                     let mut g = state.lock().expect("lock");
                     std::mem::take(&mut g.stall_next_readbuf)
                 };
-                let ok = if stall {
+                let ok = if let Some(how_long) = stall {
                     // The same bytes in the same order — only the timing
                     // differs. The pause falls *inside* the first chunk's
                     // payload, which is the position that matters: a read that
                     // gives up there has consumed an unknown number of bytes
                     // and cannot simply be retried from the top.
-                    stalled_chunk(&mut writer, &data[..split], &mask)
+                    stalled_chunk(&mut writer, &data[..split], &mask, how_long)
                         && write_chunk(&mut writer, &data[split..], &mask)
                 } else {
                     write_chunk(&mut writer, &data[..split], &mask)
@@ -512,8 +523,8 @@ fn write_chunk(writer: &mut TcpStream, data: &[u8], mask: &str) -> bool {
 }
 
 /// The same chunk, with the device going quiet part-way through its payload for
-/// longer than one socket poll interval.
-fn stalled_chunk(writer: &mut TcpStream, data: &[u8], mask: &str) -> bool {
+/// `how_long` — longer than one socket poll interval either way.
+fn stalled_chunk(writer: &mut TcpStream, data: &[u8], mask: &str, how_long: Duration) -> bool {
     let half = (data.len() / 2) & !3;
     let sent = writer
         .write_all(format!("{}\n{mask}\n", data.len()).as_bytes())
@@ -523,10 +534,9 @@ fn stalled_chunk(writer: &mut TcpStream, data: &[u8], mask: &str) -> bool {
     if !sent {
         return false;
     }
-    // Longer than any single socket timeout this client has ever used, so the
-    // read really does come back empty-handed — and long enough that the
-    // five-second timeout this code shipped with would have failed here.
-    std::thread::sleep(STALL);
+    // Longer than one socket poll either way, so the read really does come back
+    // empty-handed rather than being absorbed by timing luck.
+    std::thread::sleep(how_long);
     writer.write_all(&data[half..]).is_ok()
 }
 
@@ -546,11 +556,21 @@ fn attr_key(words: &[&str]) -> String {
     parts.join("/")
 }
 
-/// How long the fake goes quiet mid-buffer in
-/// [`a_gap_in_the_middle_of_a_buffer_does_not_end_the_stream`]. Six seconds is
-/// chosen against the field report: the socket timeout that used to end the
-/// stream was five, so the gap that produced `EAGAIN` there was at least that
-/// long, and a shorter stall here would pass with or without the fix.
+/// A mid-buffer gap short enough that the client should wait it out on the
+/// socket it already has.
+///
+/// Over the one-second socket poll, so the read genuinely comes back empty and
+/// the retry loop is what carries it; under the payload deadline, so the answer
+/// under test is patience rather than the reconnect below.
+const HICCUP: Duration = Duration::from_millis(1_200);
+
+/// A mid-buffer gap long enough that the client should stop waiting and replace
+/// the receive socket.
+///
+/// Six seconds is chosen against the field report: a LibreSDR over a saturated
+/// link went quiet mid-payload while `iiod` on the same board answered a fresh
+/// connection in six milliseconds. Waiting it out was eight seconds of dead
+/// audio for a fault a reconnect clears in fifty milliseconds.
 const STALL: Duration = Duration::from_secs(6);
 
 fn wait_for(what: &str, cond: impl FnMut() -> bool) {
@@ -740,21 +760,74 @@ fn an_attack_mode_does_not_take_the_gain_write_that_would_abort_the_open() {
 /// and no dropped packets.
 #[test]
 fn a_gap_in_the_middle_of_a_buffer_does_not_end_the_stream() {
-    let fake = Fake::start_that_stalls_mid_buffer();
+    let fake = Fake::start_that_hiccups_mid_buffer();
     let mut handle =
         PlutoHandle::open(&fake.address(), &config(), 435_000_000.0).expect("open the fake Pluto");
 
     let mut buf = vec![0f32; 4096];
     let mut got = 0;
-    wait_up_to(STALL + Duration::from_secs(5), "samples across the stall", || {
+    wait_up_to(HICCUP + Duration::from_secs(5), "samples across the gap", || {
         got = handle.rx_read(&mut buf);
         got > 0
     });
-    assert!(handle.is_alive(), "a stall must not take the connection down");
+    assert!(handle.is_alive(), "a gap must not take the connection down");
+    // On the same socket: three connections is what the open made, and waiting
+    // out a gap this short must not have cost a fourth. This is the half of the
+    // behaviour the reconnect below could otherwise quietly swallow — a client
+    // that redialled on every hiccup would still deliver samples and still pass
+    // every other assertion here.
+    assert_eq!(
+        fake.connections.load(Ordering::Relaxed),
+        3,
+        "a gap shorter than the payload deadline must be waited out, not redialled around"
+    );
     // The samples either side of the gap are still the ones the device sent,
     // in the right order — a retry that lost its place would interleave I and Q.
     assert!((buf[0] - (SAMPLE_I as f32 / 2048.0)).abs() < 1e-6, "I was {}", buf[0]);
     assert!((buf[1] - (SAMPLE_Q as f32 / 2048.0)).abs() < 1e-6, "Q was {}", buf[1]);
+    handle.release();
+}
+
+/// A gap too long to wait out costs one socket, not the whole radio.
+///
+/// The fault this is drawn from wedged a single TCP connection mid-payload for
+/// eight seconds while `iiod` on the same board answered a fresh connection in
+/// six milliseconds — so the board was never gone, and taking the rig down to
+/// redial it from scratch (context XML, whole front end, source swap) added a
+/// second of dead audio to a stall that was already the complaint. Replacing
+/// the one socket that failed is tens of milliseconds, and it leaves the dial,
+/// the gains and any transmission in progress alone.
+#[test]
+fn a_gap_too_long_to_wait_out_replaces_the_socket_and_keeps_the_radio() {
+    let fake = Fake::start_that_stalls_mid_buffer();
+    let mut handle =
+        PlutoHandle::open(&fake.address(), &config(), 435_000_000.0).expect("open the fake Pluto");
+    wait_for("the receive buffer", || fake.state.lock().unwrap().rx_buffer_open);
+
+    let mut buf = vec![0f32; 4096];
+    let mut got = 0;
+    wait_up_to(STALL + Duration::from_secs(5), "samples after the socket was replaced", || {
+        got = handle.rx_read(&mut buf);
+        got > 0
+    });
+    assert!(handle.is_alive(), "the board was never gone, and the connection must survive");
+    let connections = fake.connections.load(Ordering::Relaxed);
+    assert!(
+        connections >= 4,
+        "the receive socket should have been replaced; the fake saw {connections} connection(s)"
+    );
+    let opens = fake.state.lock().expect("lock").rx_buffer_opens;
+    assert!(opens >= 2, "the buffer should have been reopened, opened {opens} time(s)");
+    assert!((buf[0] - (SAMPLE_I as f32 / 2048.0)).abs() < 1e-6, "I was {}", buf[0]);
+    assert!((buf[1] - (SAMPLE_Q as f32 / 2048.0)).abs() < 1e-6, "Q was {}", buf[1]);
+
+    // And the control connection was never in the blast radius: a retune still
+    // reaches the oscillator afterwards, on the socket it was always on.
+    handle.set_rx_freq(144_200_000.0);
+    wait_for("a retune after the receive socket was replaced", || {
+        fake.state.lock().unwrap().get("ad9361-phy/OUTPUT/altvoltage0/frequency")
+            == Some("144200000")
+    });
     handle.release();
 }
 

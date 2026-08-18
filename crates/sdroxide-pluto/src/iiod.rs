@@ -61,7 +61,7 @@ pub const DEFAULT_PORT: u16 = 30431;
 const IO_POLL: Duration = Duration::from_secs(1);
 
 /// How long a read may go without a single byte before the connection counts as
-/// dead.
+/// dead, *while waiting for a reply to begin*.
 ///
 /// Sits just inside the engine's silence watchdog (`SILENCE_BEFORE_REOPEN` in
 /// `pluto_source`), so that when a link really has gone the failure is reported
@@ -69,7 +69,30 @@ const IO_POLL: Duration = Duration::from_secs(1);
 /// knows nothing arrived. The gap between the two is deliberate: a stall
 /// shorter than this is absorbed here and costs nothing, where it used to end
 /// the stream and force a full reopen.
+///
+/// It also has to clear [`SERVER_TIMEOUT_MS`] with room to spare: an idle
+/// device legitimately leaves a `READBUF` unanswered for that long before the
+/// server gives up on it and sends `-ETIMEDOUT`, and cutting the socket first
+/// would tear down a connection that was behaving exactly as designed.
 const IO_DEADLINE: Duration = Duration::from_secs(8);
+
+/// The same, for a read that is *part-way through a length-counted payload*.
+///
+/// Much shorter, because the two waits are not the same wait. Before the reply
+/// begins, the server may be blocked on the device and there is nothing to send
+/// — that is [`SERVER_TIMEOUT_MS`], and it is normal. Once it has announced a
+/// length and sent the channel mask, the bytes are already in its hand and all
+/// that is left is writing them to a socket: a gap there is the link, never the
+/// radio, and at 2 Msps a whole 128 KiB buffer normally crosses in ~16 ms.
+///
+/// Two seconds is about three TCP retransmission timeouts on a link with a
+/// millisecond of latency, so an ordinary lost segment is still ridden out.
+/// What it stops is the pathological case a Pluto on a saturated USB-Ethernet
+/// gadget produces: one connection wedged mid-payload for ten seconds or more
+/// while the daemon on the same board answers a fresh connection in six
+/// milliseconds. Every second spent waiting on that socket is a second of dead
+/// audio, and [`crate::stream::rx_thread`] can now redial in ~50 ms.
+const PAYLOAD_DEADLINE: Duration = Duration::from_secs(2);
 
 /// How long a write may block. Commands are tiny, so this only ever fires when
 /// the link itself has gone.
@@ -97,6 +120,11 @@ const SERVER_TIMEOUT_MS: u32 = 3_000;
 struct Patient {
     inner: TcpStream,
     trace: Trace,
+    /// How long this read may go without a byte before it gives up. Moved
+    /// between [`IO_DEADLINE`] and [`PAYLOAD_DEADLINE`] by
+    /// [`Connection::read_exact_into`], which is the only place that knows the
+    /// server has already committed to the bytes we are waiting for.
+    deadline: Duration,
 }
 
 /// Errors that mean "nothing yet", as opposed to "this connection is finished".
@@ -112,7 +140,7 @@ impl Read for Patient {
         let mut stalled = false;
         loop {
             match self.inner.read(buf) {
-                Err(ref e) if is_transient(e) && start.elapsed() < IO_DEADLINE => {
+                Err(ref e) if is_transient(e) && start.elapsed() < self.deadline => {
                     stalled = true;
                 }
                 outcome => {
@@ -165,7 +193,7 @@ impl Connection {
         // Nagle would hold them back waiting for company that never comes.
         let _ = sock.set_nodelay(true);
         let writer = sock.try_clone().map_err(|e| Error::io("clone socket", e))?;
-        let patient = Patient { inner: sock, trace: trace.clone() };
+        let patient = Patient { inner: sock, trace: trace.clone(), deadline: IO_DEADLINE };
         let mut conn = Connection {
             reader: BufReader::with_capacity(64 * 1024, patient),
             writer,
@@ -474,8 +502,15 @@ impl Connection {
         Ok(buf)
     }
 
+    /// Read exactly `buf.len()` bytes of a payload the server has already
+    /// announced, under the shorter [`PAYLOAD_DEADLINE`] — see there for why
+    /// this wait is held to a different standard than the one for a reply that
+    /// has not started yet.
     fn read_exact_into(&mut self, cmd: &str, buf: &mut [u8]) -> Result<()> {
-        self.reader.read_exact(buf).map_err(|e| match e.kind() {
+        self.reader.get_mut().deadline = PAYLOAD_DEADLINE;
+        let outcome = self.reader.read_exact(buf);
+        self.reader.get_mut().deadline = IO_DEADLINE;
+        outcome.map_err(|e| match e.kind() {
             std::io::ErrorKind::UnexpectedEof => Error::Protocol {
                 cmd: cmd.to_string(),
                 what: format!(

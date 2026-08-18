@@ -129,6 +129,19 @@ pub(crate) enum Ctrl {
 /// State the three threads and the handle share.
 pub(crate) struct Shared {
     pub phy: Phy,
+    /// Where the device is, so the receive thread can redial its own socket
+    /// without going back through [`PlutoRig::open`] — see
+    /// [`crate::stream::redial_rx`].
+    pub addr: SocketAddr,
+    /// The *live* receive socket, kept here for [`RigInner::release`] to break
+    /// a blocked read on.
+    ///
+    /// Not in `RigInner::shutdowns` with the other two, because this is the one
+    /// connection that can be replaced under us: a handle taken at open goes
+    /// stale the first time the receive thread redials, and shutting down a
+    /// socket that is already closed leaves the *new* read blocked until its
+    /// own deadline — a shutdown that no longer shuts anything down.
+    pub rx_shutdown: Mutex<Option<std::net::TcpStream>>,
     /// Receive buffer should be open. Cleared for the length of an over.
     pub rx_enabled: AtomicBool,
     /// Receive buffer *is* open — the acknowledgement the control thread waits
@@ -188,6 +201,36 @@ impl Shared {
             tracing::warn!("PlutoSDR: {what} stopped: {e}");
             self.trace.note(format!("!! {what} stopped: {e}"));
         }
+    }
+
+    /// Break the current receive socket at both ends and forget it.
+    ///
+    /// Both halves matter. The shutdown is what a server blocked writing into a
+    /// wedged socket notices, and it is what starts `iiod` reaping the device
+    /// buffer this client holds — the buffer a reconnect would otherwise meet
+    /// as `-EBUSY`. Forgetting it is what stops [`RigInner::release`] later
+    /// shutting down a socket nobody is on any more while the *live* one, by
+    /// then a different socket entirely, goes untouched.
+    pub(crate) fn drop_rx_socket(&self) {
+        if let Some(sock) = self.rx_shutdown.lock().unwrap_or_else(|e| e.into_inner()).take() {
+            let _ = sock.shutdown(std::net::Shutdown::Both);
+        }
+    }
+
+    /// Adopt `conn`'s socket as the one [`RigInner::release`] should break.
+    ///
+    /// Refused once the connection is being torn down. The mutex is what makes
+    /// that check sound: `release` clears `alive` *before* it takes this lock,
+    /// so whichever of the two gets there first, the other sees its work — a
+    /// handle installed in time is shut down, and one that missed the window is
+    /// rejected here rather than left blocking a read nobody can reach.
+    pub(crate) fn adopt_rx_socket(&self, conn: &Connection) -> Result<()> {
+        let mut slot = self.rx_shutdown.lock().unwrap_or_else(|e| e.into_inner());
+        if !self.alive.load(Ordering::Relaxed) {
+            return Err(Error::Msg("this connection is closing".into()));
+        }
+        *slot = conn.shutdown_handle();
+        Ok(())
     }
 }
 
@@ -252,6 +295,9 @@ impl RigInner {
         for sock in &self.shutdowns {
             let _ = sock.shutdown(std::net::Shutdown::Both);
         }
+        // After `alive` was cleared, so a receive thread racing to install a
+        // replacement socket is refused rather than leaving one behind us.
+        self.shared.drop_rx_socket();
         for j in self.joins.lock().unwrap_or_else(|e| e.into_inner()).drain(..) {
             let _ = j.join();
         }
@@ -426,6 +472,8 @@ impl PlutoRig {
         let buffer_samples = cfg.buffer_samples.clamp(1024, 1 << 20);
         let shared = Arc::new(Shared {
             phy: phy.clone(),
+            addr,
+            rx_shutdown: Mutex::new(None),
             rx_enabled: AtomicBool::new(true),
             rx_active: AtomicBool::new(false),
             tx_enabled: AtomicBool::new(false),
@@ -473,9 +521,13 @@ impl PlutoRig {
 
         // Taken before the connections are handed to their threads: after that
         // the only way to reach a socket is through the thread that is blocked
-        // on it, which is precisely the situation these exist to break.
+        // on it, which is precisely the situation these exist to break. The
+        // receive socket is not among them — it is the one that gets replaced
+        // under us, so it lives in `Shared::rx_shutdown` where the receive
+        // thread can keep it current.
         let shutdowns: Vec<std::net::TcpStream> =
-            [&control, &rx_conn, &tx_conn].iter().filter_map(|c| c.shutdown_handle()).collect();
+            [&control, &tx_conn].iter().filter_map(|c| c.shutdown_handle()).collect();
+        shared.adopt_rx_socket(&rx_conn)?;
 
         let (ctrl_tx, ctrl_rx) = crossbeam_channel::unbounded();
         let rx_shared = Arc::clone(&shared);

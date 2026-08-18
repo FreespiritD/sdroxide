@@ -3985,6 +3985,15 @@ configured in exactly the same way as one on your desk.
   session and surprise the next program to open the radio. Run with
   `RUST_LOG=sdroxide_pluto=debug` and the log prints the measured clock error
   after about twenty seconds — that is the number to enter.
+- **Buffer size** — how much the radio holds before each transfer, in complex
+  samples, with the airtime and byte count it works out to shown beside it. The
+  default of 32768 is about 16 ms at 2 Msps: long enough that the per-transfer
+  round trip is not the bottleneck, short enough that a retune is not visibly
+  late. **Halve it if the log reports the receive socket being replaced** (see
+  *When the link stalls*, below) — a smaller transfer is both less likely to be
+  caught by a hiccup part-way through and quicker to make good afterwards.
+  Raise it to trade retune latency for fewer round trips. Takes effect on
+  Apply.
 - **RX / TX port** — the AD9361's `rf_port_select`. A stock Pluto wires one of
   each (`A_BALANCED` and `A`), so leave these empty unless you have a board that
   does not.
@@ -4042,6 +4051,26 @@ The cure is to ask for less: **2.083 Msps**, the lowest a stock Pluto accepts,
 is plenty for voice and leaves the most headroom. Reaching the radio over real
 Ethernet rather than the USB gadget helps too, and so does taking it off a USB
 hub.
+
+**When the link stalls.** A Pluto reached over a link with no headroom left —
+the USB Ethernet gadget at a high sample rate is the usual one — sometimes goes
+quiet part-way through a transfer while the board itself stays perfectly
+healthy. sdroxide waits a couple of seconds for the data to resume, which
+covers ordinary network jitter; past that it replaces the receive connection
+and reopens the buffer, and logs
+
+```
+PlutoSDR: the receive socket failed (…) — replacing it
+```
+
+That costs a few tens of milliseconds of audio and leaves your dial, your gains
+and any transmission in progress alone — the control connection is a separate
+socket and is not touched. If it happens **once in a while**, ignore it. If it
+happens **repeatedly**, the link is the thing to fix: lower the sample rate,
+halve **Buffer size**, move the radio off a USB hub, or reach it over real
+Ethernet instead of the USB gadget. Should the receive connection fail to come
+back at all, the radio is reported as disconnected and reconnected from scratch
+in the usual way.
 
 **Transmit, the first time.** Set TX gain to its minimum, key into a **dummy
 load**, and check the signal is where the dial says before you raise it. The

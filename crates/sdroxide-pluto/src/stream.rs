@@ -14,7 +14,7 @@ use rtrb::{Consumer, Producer};
 
 use crate::error::Error;
 use crate::iiod::Connection;
-use crate::net::{STATS_INTERVAL, Shared};
+use crate::net::{CONNECT_TIMEOUT, STATS_INTERVAL, Shared};
 
 /// I and Q of the transmit buffer's one pair. `Phy::probe` guarantees it sits
 /// at scan indices 0 and 1; a 2R2T device's second transmit pair stays
@@ -27,6 +27,35 @@ const TX_IQ_CHANNELS: usize = 2;
 const EAGAIN: i64 = -11;
 /// `-ETIMEDOUT`, the other spelling of the same thing.
 const ETIMEDOUT: i64 = -110;
+/// `-EBUSY`: somebody already holds this buffer. Ordinarily that is another
+/// program and there is nothing to do about it — but for the few hundred
+/// milliseconds after [`redial_rx`] drops a socket, it is *us*, on the
+/// connection `iiod` has not finished reaping yet. See [`BUSY_PATIENCE`].
+const EBUSY: i64 = -16;
+
+/// How long a receive buffer that answers `-EBUSY` is retried before the
+/// refusal is taken at face value.
+///
+/// The reconnect in [`redial_rx`] closes one socket and opens another straight
+/// away, and `iiod` frees a client's device buffer from the connection thread
+/// that noticed the close — so for a moment the daemon believes the buffer is
+/// still held by a client that is already gone. Waiting it out is the
+/// difference between a reconnect that works and one that reports the radio as
+/// busy with itself.
+const BUSY_PATIENCE: Duration = Duration::from_millis(1_500);
+
+/// How many times the receive socket may be replaced without a single sample
+/// arriving in between before the connection is given up on.
+///
+/// A redial is cheap and worth trying, but a link that stalls again the moment
+/// it is re-established is not one this layer can fix by trying harder. Giving
+/// up hands the radio to the engine's reopen, which backs off, re-reads the
+/// device and puts the reason on screen — all things this thread cannot do.
+const MAX_BLIND_REDIALS: u32 = 5;
+
+/// How long to wait before replacing the receive socket, so a link that fails
+/// instantly on every attempt cannot become a tight loop of TCP handshakes.
+const REDIAL_BACKOFF: Duration = Duration::from_millis(100);
 
 /// The shortest a receive buffer may go without producing a sample before it is
 /// closed and reopened rather than read again — see [`silence_before_restart`].
@@ -214,6 +243,77 @@ fn push_iq(ring: &mut Producer<f32>, iq: &[f32], stats: &mut Stats) {
     chunk.commit_all();
 }
 
+/// Replace the receive socket after it has failed, without taking the rest of
+/// the connection down with it.
+///
+/// A stalled receive socket is not a stalled radio, and the difference is
+/// measurable: the fault this exists for wedges one TCP connection mid-payload
+/// for seconds at a time while `iiod` on the same board answers a *fresh*
+/// connection in single-digit milliseconds. The old response was
+/// [`Shared::die`], which clears `alive` for the whole rig — control and
+/// transmit sockets included — and leaves the engine to redial the device from
+/// scratch: read the context XML again, set the whole front end again, and
+/// swap the source. That is about a second of dead audio on top of however
+/// long the read waited before giving up.
+///
+/// Dialling one socket and reopening one buffer is ~50 ms, and it keeps the
+/// control connection — with it the dial, the gain and a transmission in
+/// progress — untouched.
+///
+/// Returns `None` when the connection should be given up on, having already
+/// reported why through [`Shared::die`].
+fn redial_rx(shared: &Shared, cause: &Error) -> Option<Connection> {
+    tracing::warn!("PlutoSDR: the receive socket failed ({cause}) — replacing it");
+    shared.trace.note(format!("~~ receive socket failed ({cause}); redialling"));
+    // First, and before anything is dialled. `iiod` will not hand the same
+    // buffer to two connections, and until it has noticed that this one is
+    // finished the replacement's `OPEN` meets our own ghost as `-EBUSY` —
+    // which is why `open_rx_buffer` waits that answer out rather than
+    // believing it. Shutting the socket down at both ends is what a server
+    // blocked writing into it actually notices; the descriptor itself goes
+    // when the caller installs the replacement a few milliseconds later.
+    shared.drop_rx_socket();
+    std::thread::sleep(REDIAL_BACKOFF);
+    if !shared.alive.load(Ordering::Relaxed) {
+        return None;
+    }
+    let conn = match Connection::connect(shared.addr, CONNECT_TIMEOUT, shared.trace.clone()) {
+        Ok(conn) => conn,
+        Err(e) => {
+            // The board is not merely stalled, it is unreachable — which is the
+            // engine's problem to solve, and it names the original fault rather
+            // than the redial so the report says what actually broke.
+            shared.die("the receive stream", cause);
+            shared.trace.note(format!("!! the receive socket could not be replaced: {e}"));
+            return None;
+        }
+    };
+    if let Err(e) = shared.adopt_rx_socket(&conn) {
+        tracing::debug!("PlutoSDR: receive socket replaced during shutdown ({e})");
+        return None;
+    }
+    tracing::info!("PlutoSDR: receive socket replaced; reopening the buffer");
+    Some(conn)
+}
+
+/// Open the receive buffer, riding out the `-EBUSY` that follows our own
+/// reconnect — see [`BUSY_PATIENCE`].
+fn open_rx_buffer(conn: &mut Connection, shared: &Shared, pairs: usize) -> Result<(), Error> {
+    let deadline = Instant::now() + BUSY_PATIENCE;
+    loop {
+        match conn.open_buffer(&shared.phy.rx_buffer_id, shared.buffer_samples, pairs * 2) {
+            Err(Error::Remote { code: EBUSY, .. }) if Instant::now() < deadline => {
+                shared.trace.note("~~ receive buffer still busy; waiting for iiod to release it");
+                std::thread::sleep(Duration::from_millis(50));
+                if !shared.alive.load(Ordering::Relaxed) {
+                    return Err(Error::Msg("this connection is closing".into()));
+                }
+            }
+            other => return other,
+        }
+    }
+}
+
 /// Owns the receive buffer.
 ///
 /// The buffer is opened with one or two I/Q pairs enabled, following
@@ -234,6 +334,9 @@ pub(crate) fn rx_thread(mut conn: Connection, shared: Arc<Shared>, mut ring: Pro
     // when it started, not from the last one's death.
     let patience = silence_before_restart(shared.buffer_samples, shared.rate_hz);
     let mut last_sets = Instant::now();
+    // Consecutive socket replacements with no samples in between — see
+    // [`MAX_BLIND_REDIALS`].
+    let mut blind_redials = 0u32;
 
     while shared.alive.load(Ordering::Relaxed) {
         let want_pairs = shared.rx_pairs.load(Ordering::Relaxed).clamp(1, max_pairs);
@@ -254,9 +357,7 @@ pub(crate) fn rx_thread(mut conn: Connection, shared: Arc<Shared>, mut ring: Pro
             tracing::debug!("PlutoSDR: receive buffer reopening for {want_pairs} pair(s)");
         }
         if open_pairs == 0 {
-            if let Err(e) =
-                conn.open_buffer(&phy.rx_buffer_id, shared.buffer_samples, want_pairs * 2)
-            {
+            if let Err(e) = open_rx_buffer(&mut conn, &shared, want_pairs) {
                 shared.die("the receive buffer", &e);
                 break;
             }
@@ -299,9 +400,27 @@ pub(crate) fn rx_thread(mut conn: Connection, shared: Arc<Shared>, mut ring: Pro
         let n = match conn.read_buf(&phy.rx_buffer_id, open_pairs * 2, &mut raw[..want_bytes]) {
             Ok(n) => n,
             Err(Error::Remote { code, .. }) if code == EAGAIN || code == ETIMEDOUT => continue,
-            Err(e) => {
+            // The server answered, so the link works and the refusal is
+            // considered: that is the engine's to act on, not ours to retry.
+            Err(e @ Error::Remote { .. }) => {
                 shared.die("the receive stream", &e);
                 break;
+            }
+            // Anything else — a socket that stopped delivering, framing that no
+            // longer makes sense — is this connection being finished, which is
+            // not the same as the radio being finished. Replace it in place.
+            Err(e) => {
+                if blind_redials >= MAX_BLIND_REDIALS {
+                    shared.die("the receive stream", &e);
+                    break;
+                }
+                blind_redials += 1;
+                let Some(fresh) = redial_rx(&shared, &e) else { break };
+                conn = fresh;
+                open_pairs = 0;
+                stats.closed();
+                shared.rx_active.store(false, Ordering::Relaxed);
+                continue;
             }
         };
         let sets = n / set_bytes;
@@ -309,6 +428,7 @@ pub(crate) fn rx_thread(mut conn: Connection, shared: Arc<Shared>, mut ring: Pro
             continue;
         }
         last_sets = Instant::now();
+        blind_redials = 0;
         let i_bytes = phy.rx_scan[0].bytes();
         iq.clear();
         iq1.clear();

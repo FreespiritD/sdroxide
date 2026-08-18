@@ -42,11 +42,17 @@ impl SharedDevice for PlutoRig {
 /// dead and the engine starts reconnecting. This is a network rig, and a Pluto
 /// that has just been re-plugged takes a while to bring its interface back up.
 ///
-/// The backstop, not the primary detector: the IIOD layer gives up on a silent
-/// socket two seconds sooner and says *why*, so what reaches this point is a
-/// stream that stopped without the connection failing. It was five seconds,
-/// which is shorter than a stall the link recovers from on its own — so a
-/// hiccup the read layer had already absorbed still cost a teardown here.
+/// The backstop, not the primary detector. A socket that stops delivering is
+/// now handled where it happens: the IIOD layer waits out a short gap, and
+/// failing that replaces the receive socket and reopens the buffer on its own
+/// (`stream::redial_rx`), which costs tens of milliseconds against the second
+/// or more a reopen from here costs. What still reaches this point is the case
+/// that cannot be fixed one socket at a time — a board that has gone away, or
+/// one whose receive keeps stalling however often it is redialled.
+///
+/// It was five seconds, which is shorter than a stall the link recovers from
+/// on its own — so a hiccup the read layer had already absorbed still cost a
+/// teardown here.
 const SILENCE_BEFORE_REOPEN: Duration = Duration::from_secs(10);
 
 pub struct PlutoSource {

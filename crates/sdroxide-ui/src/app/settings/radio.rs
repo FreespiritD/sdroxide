@@ -2074,6 +2074,53 @@ pub(in crate::app) fn settings_pluto_tab(
         );
         ui.end_row();
 
+        // Next to Full duplex because it belongs to the same subject: both are
+        // about what the link between here and the board can carry, not about
+        // what the AD9361 can do. This one used to be reachable only by hand-
+        // editing radio.json, which is no use to the operator who needs it —
+        // the one whose log is reporting a replaced receive socket.
+        ui.label("Buffer size").on_hover_text(
+            "How much the device holds before each transfer, in complex samples. \
+             The default of 32768 is about 16 ms at 2 Msps: long enough that the \
+             per-transfer round trip is not the bottleneck, short enough that a \
+             retune is not visibly late.\n\nHalve it if the log reports the receive \
+             socket being replaced. A marginal link — a Pluto reached over its USB \
+             cable at a high sample rate is the usual one — stalls part-way through a \
+             transfer, and a smaller transfer is both less likely to be caught mid-\
+             flight and quicker to make good afterwards. Raise it to trade retune \
+             latency for fewer round trips.\n\nTakes effect on Apply.",
+        );
+        ui.horizontal(|ui| {
+            let mut samples = cfg.pluto.buffer_samples as i64;
+            if ui
+                .add(
+                    DragValue::new(&mut samples)
+                        .range(1024..=1_048_576)
+                        .speed(256.0)
+                        .suffix(" samples"),
+                )
+                .changed()
+            {
+                // Kept a multiple of 1024, as the transmit buffer is, so the
+                // byte count stays comfortably aligned for the device's DMA.
+                cfg.pluto.buffer_samples =
+                    (samples.clamp(1024, 1_048_576) as usize / 1024 * 1024).max(1024);
+            }
+            // Samples are the unit the device takes; milliseconds are the unit
+            // the decision is made in. Worked out against the rate set two rows
+            // up rather than left to the operator.
+            let rate = cfg.pluto.sample_rate_hz.max(1.0);
+            ui.label(
+                RichText::new(format!(
+                    "≈ {:.1} ms, {} KiB per transfer",
+                    cfg.pluto.buffer_samples as f64 / rate * 1e3,
+                    cfg.pluto.buffer_samples * 4 / 1024,
+                ))
+                .weak(),
+            );
+        });
+        ui.end_row();
+
         ui.label("RX / TX port").on_hover_text(
             "The AD9361's rf_port_select. A stock Pluto wires one of each, so leave \
              these empty unless you have a board that does not. Takes effect on Apply.",
