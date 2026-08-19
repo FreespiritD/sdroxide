@@ -25,12 +25,6 @@ pub enum Error {
     #[error("the LimeRFE replied with {got} bytes, expected {want} — the link is out of sync")]
     ShortReply { want: usize, got: usize },
 
-    #[error(
-        "the LimeRFE answered command {echoed:#04x} to command {sent:#04x} — the link is out \
-         of sync"
-    )]
-    Desync { sent: u8, echoed: u8 },
-
     /// A refusal from the board, already turned into the fix for it.
     #[error("{0}")]
     Board(String),

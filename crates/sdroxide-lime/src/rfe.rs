@@ -99,6 +99,11 @@ impl RfeTransport for BoardTransport {
             unsafe { f(self.rfe, buf.as_mut_ptr()) }
         };
         self.check(rc)?;
+        // `cinfo[0]` is the firmware version here, where the *raw wire* puts it
+        // at `buf[1]` — see `sdroxide_limerfe::frame::decode_info`. Not an
+        // inconsistency to tidy away: the C API has already stripped the echoed
+        // command byte that the serial transport still has to skip. Making the
+        // two agree would break one of them.
         Ok(RfeInfo { firmware: buf[0], hardware: buf[1] })
     }
 

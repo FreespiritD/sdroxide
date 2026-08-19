@@ -5356,6 +5356,19 @@ Two links, and the choice is worth making deliberately:
 
 If you change band often, use the cable.
 
+> **If the LimeRFE will not answer**, there is a standalone check that talks to
+> it directly and prints what happened at each step, without the rest of the
+> program in the way:
+>
+> ```sh
+> cargo run -p sdroxide-limerfe --example rfe -- /dev/ttyUSB0
+> ```
+>
+> With no port named it lists the ports it can see. It only says hello and reads
+> the board's identity; add `--configure` to also set a receive-only wideband
+> configuration, which is the gentlest thing the board can be asked to do.
+> Nothing it does keys an amplifier.
+
 **Band** — with *Follow the dial* on, the operating frequency picks the channel
 and the filters are switched **before any RF appears**. Tuning within one band
 puts nothing on the control link at all; changing band always does. The mapping

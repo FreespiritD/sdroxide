@@ -602,6 +602,9 @@ starting sdroxide before the rig is fine:
   **Not verified against hardware.** No LimeSDR has been attached to this code.
   **Copy diagnostic report** on the Radio tab dumps the session's library calls,
   and `cargo run -p sdroxide-lime --example probe` does the same from a terminal.
+  For the LimeRFE specifically, `cargo run -p sdroxide-limerfe --example rfe --
+  /dev/ttyUSB0` talks to the board on its own and prints what happened at each
+  step.
 
 - **PlutoSDR (network)** — an ADALM-Pluto, driven directly over the **IIOD**
   protocol its on-board daemon serves. **No SoapySDR and no libiio**, so it

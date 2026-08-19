@@ -24,3 +24,10 @@ serialport = { version = "4.7", default-features = false }
 crossbeam-channel.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+tracing-subscriber.workspace = true
+# For the pty in tests/serial_protocol.rs — a fake board is the only way to
+# check this protocol without the hardware, and the first release proved that
+# unit tests over my own reading of it were not enough.
+libc = "0.2"
