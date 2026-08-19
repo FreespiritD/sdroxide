@@ -535,8 +535,19 @@ sdroxide brings the receiver back up where you left it rather than on defaults.
   Switching it off leaves the levels wherever you set them (the floor and
   ceiling in the FFT popup are yours to keep only while FIT is off).
 - **PEAK** — show a decaying peak-hold trace over the spectrum.
-- **SPEC** — show or hide the spectrum line above the waterfall (lit when the
-  spectrum is shown).
+- **SPEC** — opens the **Layers** popup, which switches the two halves of the
+  panadapter on and off independently: **SPECTRUM** (the spectrum line) and
+  **WATERFALL** (the scrolling display below it). All four displays are
+  available — spectrum only, waterfall only, both, or neither — and the chip is
+  lit while both layers are shown.
+  - With one of them off the other takes the full height, with the frequency
+    scale still along its edge; dragging that scale brings the hidden layer
+    back at the split you drag to. Skimmer and spot boxes move onto the
+    spectrum while the waterfall is off.
+  - With **both** off there is no panadapter at all. In a mode with an
+    operating panel under it — the digital modes, and CW — the panel takes the
+    whole height; in the other modes the area is simply left empty. The SPEC
+    chip is the way back.
 - **WIDE** — show or hide the **full-band strip**: a shallow second waterfall
   above the panadapter covering everything the receiver can see at once, with a
   blue outline around the slice the panadapter is receiving and an amber line on
@@ -579,7 +590,8 @@ UI itself — colour theme, button shape and window shape — independently of t
 waterfall's palette; the screenshots in this manual show the **Default** theme.
 
 You can also resize the split between the spectrum line and the waterfall by
-dragging the frequency-scale strip between them.
+dragging the frequency-scale strip between them, and hide either or both of
+them altogether from the **SPEC** popup in the Display module.
 
 ![Waterfall colour schemes](images/05-colormaps.png)
 
@@ -7141,7 +7153,7 @@ row of menu buttons:
 | **VFO** | A↔B, A→B, SPLIT, SUB, and the RIT/XIT offsets |
 | **SUB** | The second receiver's frequency, mode, filter and level (only while it is running) |
 | **TX** | TUNE, the voice keyer, and the drive, tune and mic levels |
-| **DISP** | FIT, PEAK, SPEC, WIDE, the skimmers, and the spectrum floor/ceiling and FFT size |
+| **DISP** | FIT, PEAK, WIDE, the spectrum/waterfall layers, the skimmers, and the spectrum floor/ceiling and FFT size |
 | **SYS** | LOG, SPOTS, AWARDS, BANDS, MEM, SETTINGS, HELP |
 
 A menu stays open until you tap outside it or tap its button again — the top-bar

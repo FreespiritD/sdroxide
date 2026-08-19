@@ -2597,7 +2597,12 @@ impl SdroxideApp {
     /// box's top row, and the head of the DISP menu's row. `extra` stretches
     /// each chip past its label; the popup passes 0, which draws exactly the
     /// chip it always drew.
-    fn display_view_chips(&mut self, ui: &mut egui::Ui, extra: f32) {
+    ///
+    /// `narrow` marks the menu, which cannot open SPEC's popup — a popup
+    /// opened from a popup counts as a click outside the first and closes it,
+    /// exactly as for SKIM and FFT below — so the menu leaves the chip out
+    /// here and [`Self::display_controls`] inlines the layer chips instead.
+    fn display_view_chips(&mut self, ui: &mut egui::Ui, narrow: bool, extra: f32) {
         let [fit, peak, spec, wide] = DISPLAY_VIEW_CHIPS;
         // Only a front end with a full-band lane has ever sent one of these, so
         // its presence is what says the strip is on offer at all — there is no
@@ -2629,13 +2634,8 @@ impl SdroxideApp {
         {
             self.view.peak_hold = !self.view.peak_hold;
         }
-        // Lit when the spectrum line is visible (not collapsed).
-        if picks_layers
-            && chip_stretched(ui, !self.view.spectrum_collapsed, spec, extra)
-                .on_hover_text("Show/hide the spectrum line above the waterfall")
-                .clicked()
-        {
-            self.view.spectrum_collapsed = !self.view.spectrum_collapsed;
+        if picks_layers && !narrow {
+            self.layers_button(ui, spec, extra);
         }
         if picks_layers
             && has_wide
@@ -2652,6 +2652,62 @@ impl SdroxideApp {
             // seconds. Start it again from now instead.
             self.wide_wf.clear();
         }
+    }
+
+    /// The SPEC chip: the spectrum/waterfall layer switches, behind a popup.
+    /// Lit while both layers are drawn, so a display with one of them switched
+    /// off says so from the strip without the popup being opened.
+    fn layers_button(&mut self, ui: &mut egui::Ui, label: &str, extra: f32) {
+        let both = self.view.spectrum_visible() && self.view.waterfall_visible();
+        let btn = chip_stretched(ui, both, label, extra).on_hover_text(
+            "Spectrum and waterfall — either layer, both, or neither. Lit while both are shown.",
+        );
+        let popup_id = egui::Popup::default_response_id(&btn);
+        let now = ui.input(|i| i.time);
+        let alpha =
+            crate::chrome::popup_fade_alpha(ui.ctx(), popup_id, now, &mut self.layers_popup_since);
+        let resp = egui::Popup::from_toggle_button_response(&btn)
+            .frame(crate::chrome::window_frame_alpha(alpha))
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .show(|ui| {
+                ui.set_opacity(alpha);
+                crate::chrome::window_body_bg(ui);
+                ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
+                crate::chrome::menu_caption(ui, "Layers");
+                self.layer_chips(ui);
+            });
+        if let Some(r) = &resp {
+            crate::chrome::paint_popup_cut_border(ui.ctx(), &r.response, alpha);
+            if r.response.contains_pointer() {
+                self.layers_popup_since = Some(now); // keep it up while the pointer is on it
+            }
+        }
+    }
+
+    /// One chip per panadapter layer, switched independently — spectrum,
+    /// waterfall, both, or neither. Switching both off is a display in its own
+    /// right and not a state to be talked out of: the panadapter is not drawn
+    /// at all, a mode with an operating panel gives it the whole height, and
+    /// this chip in the Display module is the way back.
+    ///
+    /// Its own function because the DISP menu has to inline it rather than
+    /// open it as a popup, for the reason given on [`Self::skimmer_controls`].
+    fn layer_chips(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            let (spec_on, wf_on) = (self.view.spectrum_visible(), self.view.waterfall_visible());
+            if crate::chrome::chip(ui, spec_on, "SPECTRUM")
+                .on_hover_text("The spectrum line above the waterfall")
+                .clicked()
+            {
+                self.view.set_spectrum_visible(!spec_on);
+            }
+            if crate::chrome::chip(ui, wf_on, "WATERFALL")
+                .on_hover_text("The scrolling waterfall below the spectrum")
+                .clicked()
+            {
+                self.view.set_waterfall_visible(!wf_on);
+            }
+        });
     }
 
     /// The solar, skimmer and FFT chips — the condensed Display box's bottom
@@ -2700,10 +2756,15 @@ impl SdroxideApp {
     /// [`crate::chrome::control_row`] for `narrow`.
     fn display_controls(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>, narrow: bool) {
         crate::chrome::control_row(ui, narrow, |ui| {
-            self.display_view_chips(ui, 0.0);
+            self.display_view_chips(ui, narrow, 0.0);
             self.display_tool_chips(ui, cmds, narrow, 0.0);
         });
         if narrow {
+            // A phone draws the waterfall alone, so there are no layers to pick.
+            if !crate::layout::tier(ui.ctx()).waterfall_only() {
+                crate::chrome::menu_caption(ui, "Layers");
+                self.layer_chips(ui);
+            }
             crate::chrome::menu_caption(ui, "Skimmers");
             self.skimmer_controls(ui, cmds);
             self.spectrum_controls(ui);
@@ -2732,7 +2793,7 @@ impl SdroxideApp {
         crate::chrome::module_bare_h(ui, w, crate::chrome::MODULE_TALL_H, |ui| {
             ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(MODULE_ROW_SPACING, MODULE_ROW_SPACING);
-                ui.horizontal(|ui| self.display_view_chips(ui, extra1));
+                ui.horizontal(|ui| self.display_view_chips(ui, false, extra1));
                 ui.horizontal(|ui| self.display_tool_chips(ui, cmds, false, extra2));
             });
         });

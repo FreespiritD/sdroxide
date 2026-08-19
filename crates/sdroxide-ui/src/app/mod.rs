@@ -281,6 +281,8 @@ pub struct SdroxideApp {
     mode_popup_since: Option<f64>,
     fft_popup_since: Option<f64>,
     skimmer_popup_since: Option<f64>,
+    /// Fade clock for the SPEC popup's layer chips, like `skimmer_popup_since`.
+    layers_popup_since: Option<f64>,
     /// Fade clock for the sub-audible tone popup, like `skimmer_popup_since`.
     tone_popup_since: Option<f64>,
     /// Fade clock for the noise-reduction picker, like `tone_popup_since`.
@@ -861,6 +863,7 @@ impl SdroxideApp {
             mode_popup_since: None,
             fft_popup_since: None,
             skimmer_popup_since: None,
+            layers_popup_since: None,
             tone_popup_since: None,
             nr_popup_since: None,
             // Corrected on the first frame, once the viewport size is known.

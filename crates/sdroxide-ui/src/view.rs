@@ -40,6 +40,17 @@ pub struct ViewState {
     /// Hide the spectrum line, showing only the waterfall (and, in FT8/FT4,
     /// giving the freed height to the operating panel).
     pub spectrum_collapsed: bool,
+    /// Hide the waterfall, giving its height to the spectrum line — the other
+    /// half of the pair the SPEC popup switches.
+    ///
+    /// Independent of [`ViewState::spectrum_collapsed`], both directions: the
+    /// four combinations are spectrum, waterfall, both and neither, and the
+    /// last one is a display the popup can be left in on purpose. With neither
+    /// layer the panadapter is not drawn at all (see `app::frame`) — the
+    /// operating panel takes the height in a mode that has one — and the SPEC
+    /// chip in the Display module is the way back.
+    #[serde(default)]
+    pub waterfall_collapsed: bool,
     /// Scroll the waterfall upwards: the newest row sits at the *bottom* and
     /// history flows up and off the top, the way several other SDR programs
     /// draw it. Affects the time gridlines and the spot lanes too.
@@ -458,6 +469,7 @@ impl Default for ViewState {
             spectrum_fraction: 0.35,
             peak_hold: false,
             spectrum_collapsed: false,
+            waterfall_collapsed: false,
             waterfall_flip: false,
             wide_waterfall: wide_waterfall_default(),
             prop_on_map: false,
@@ -480,9 +492,45 @@ impl Default for ViewState {
 }
 
 impl ViewState {
-    /// Effective spectrum-height fraction (0 when collapsed).
+    /// Whether the spectrum line is drawn.
+    pub fn spectrum_visible(&self) -> bool {
+        !self.spectrum_collapsed
+    }
+
+    /// Whether the waterfall is drawn.
+    pub fn waterfall_visible(&self) -> bool {
+        !self.waterfall_collapsed
+    }
+
+    /// Whether the panadapter is drawn at all. False with both layers switched
+    /// off, which is what tells the layout to skip the widget and hand its
+    /// height to whatever else the pane holds.
+    pub fn panadapter_visible(&self) -> bool {
+        self.spectrum_visible() || self.waterfall_visible()
+    }
+
+    /// Show or hide the spectrum line.
+    pub fn set_spectrum_visible(&mut self, on: bool) {
+        self.spectrum_collapsed = !on;
+    }
+
+    /// Show or hide the waterfall.
+    pub fn set_waterfall_visible(&mut self, on: bool) {
+        self.waterfall_collapsed = !on;
+    }
+
+    /// Effective spectrum-height fraction: 0 with the spectrum hidden, the
+    /// whole strip with the waterfall hidden, the operator's split otherwise.
+    ///
+    /// Pure geometry for the strip the panadapter is given — whether it is
+    /// given one at all is [`Self::panadapter_visible`], which the layout
+    /// checks first.
     pub fn effective_spectrum_fraction(&self) -> f32 {
-        if self.spectrum_collapsed { 0.0 } else { self.spectrum_fraction }
+        match (self.spectrum_visible(), self.waterfall_visible()) {
+            (false, _) => 0.0,
+            (_, false) => 1.0,
+            _ => self.spectrum_fraction,
+        }
     }
 
     pub fn span(&self) -> f64 {
@@ -620,6 +668,9 @@ mod tests {
         assert!(v.wide_waterfall, "the full-band strip stays on offer after an upgrade");
         assert_eq!(v.spot_kinds_shown, [true; SPOT_KINDS], "no spot kind is hidden by upgrading");
         assert!(v.auto_fit, "auto-fit is on for everyone, not only for fresh installs");
+        // The layer the SPEC popup added: a blob from before it must come back
+        // with the waterfall shown, not hidden.
+        assert!(v.waterfall_visible(), "upgrading hid the waterfall");
     }
 
     /// The same trap as the spot filters above, one layer down: a propagation
@@ -656,6 +707,35 @@ mod tests {
         let back: ViewState = ron::from_str(&ron::to_string(&v).unwrap()).unwrap();
         assert_eq!(back.spot_kinds_shown, [true, true, true, false, true, true]);
         assert!(!back.wide_waterfall);
+    }
+
+    /// The SPEC popup's two chips are independent switches, so all four
+    /// displays are reachable: spectrum, waterfall, both, and neither. Each one
+    /// has to give the layout the height split it expects.
+    #[test]
+    fn the_layer_chips_reach_all_four_displays() {
+        let mut v = ViewState::default();
+        assert!(v.panadapter_visible(), "both layers by default");
+        assert_eq!(v.effective_spectrum_fraction(), v.spectrum_fraction);
+
+        // Spectrum off: the waterfall has the strip.
+        v.set_spectrum_visible(false);
+        assert!(v.panadapter_visible());
+        assert_eq!(v.effective_spectrum_fraction(), 0.0);
+
+        // Waterfall off instead: the spectrum has the strip.
+        v.set_spectrum_visible(true);
+        v.set_waterfall_visible(false);
+        assert!(v.panadapter_visible());
+        assert_eq!(v.effective_spectrum_fraction(), 1.0);
+
+        // Neither: no panadapter at all — the layout skips the widget rather
+        // than allocating it a strip.
+        v.set_spectrum_visible(false);
+        assert!(!v.panadapter_visible(), "both chips off still drew a panadapter");
+
+        v.set_waterfall_visible(true);
+        assert!(v.panadapter_visible());
     }
 
     #[test]

@@ -85,6 +85,9 @@ pub enum Action {
     ZoomOut,
     PeakHold,
     SpectrumCollapse,
+    /// Hide/show the waterfall — the twin of [`Action::SpectrumCollapse`],
+    /// both of them switches on the SPEC popup's pair of layers.
+    WaterfallCollapse,
     WaterfallFlip,
     ToggleHelp,
     ToggleSettings,
@@ -139,7 +142,9 @@ impl Action {
             Ptt | TuneCarrier | TxDrive | TuneDrive | MicGain | DigiAudioFreq | AbortTx
             | VoicePlay(_) | VoiceStop => "Transmit",
             SpectrumZoom | SpectrumPan | SpectrumFloorDb | SpectrumCeilDb | FitSpan | ZoomIn
-            | ZoomOut | PeakHold | SpectrumCollapse | WaterfallFlip => "Display",
+            | ZoomOut | PeakHold | SpectrumCollapse | WaterfallCollapse | WaterfallFlip => {
+                "Display"
+            }
             ToggleHelp | ToggleSettings | ToggleLogbook | ToggleSpots | ToggleMemories
             | ToggleVoice => "Windows",
             SpeakStatus | SpeakRepeat | SpeechSilence | SpeechToggle => "Speech",
@@ -195,6 +200,7 @@ impl Action {
             ZoomOut => "Zoom out",
             PeakHold => "Peak hold",
             SpectrumCollapse => "Collapse spectrum",
+            WaterfallCollapse => "Collapse waterfall",
             WaterfallFlip => "Flip waterfall",
             ToggleHelp => "Manual window",
             ToggleSettings => "Settings window",
@@ -286,6 +292,7 @@ impl Action {
             ZoomOut,
             PeakHold,
             SpectrumCollapse,
+            WaterfallCollapse,
             WaterfallFlip,
             ToggleHelp,
             ToggleSettings,

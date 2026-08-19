@@ -349,7 +349,16 @@ pub(crate) fn apply_action(
             }
         }
         PeakHold => ui.view.peak_hold = !ui.view.peak_hold,
-        SpectrumCollapse => ui.view.spectrum_collapsed = !ui.view.spectrum_collapsed,
+        // The two panadapter layers, switched independently — with both off
+        // the panadapter is not drawn at all (see `app::frame`).
+        SpectrumCollapse => {
+            let on = ui.view.spectrum_visible();
+            ui.view.set_spectrum_visible(!on);
+        }
+        WaterfallCollapse => {
+            let on = ui.view.waterfall_visible();
+            ui.view.set_waterfall_visible(!on);
+        }
         WaterfallFlip => ui.view.waterfall_flip = !ui.view.waterfall_flip,
         ToggleHelp => *ui.help = !*ui.help,
         ToggleSettings => *ui.settings = !*ui.settings,
@@ -953,7 +962,8 @@ fn indicator(act: Action, state: &RadioState, view: &ViewState) -> Option<u8> {
         XitEnable => on(state.xit.enabled),
         RecordToggle => on(state.recording),
         PeakHold => on(view.peak_hold),
-        SpectrumCollapse => on(view.spectrum_collapsed),
+        SpectrumCollapse => on(!view.spectrum_visible()),
+        WaterfallCollapse => on(!view.waterfall_visible()),
         WaterfallFlip => on(view.waterfall_flip),
         VfoSelect(v) => on(state.active_vfo == v),
         Volume => frac(state.rx[0].volume),

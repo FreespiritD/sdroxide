@@ -866,26 +866,36 @@ pub fn show_ext(
     }
 
     // Layout first — interactions depend on which strip the pointer is in.
-    // A collapsed spectrum shows only the waterfall.
+    // Either layer can be switched off in the SPEC popup: with the spectrum
+    // hidden the waterfall has the lot, with the waterfall hidden the spectrum
+    // does, and the frequency scale stays between them either way.
     // A phone draws the waterfall and nothing else: a spectrum trace in a
     // 360 pt-wide window is a strip too thin to read that costs the waterfall a
-    // third of its height. The operator's own `spectrum_collapsed` and
+    // third of its height. The operator's own layer switches and
     // `spectrum_fraction` are only overridden here, never written, so a wider
     // window gets back exactly the split it was left with.
     let waterfall_only = crate::layout::tier(ui.ctx()).waterfall_only();
     let frac = if waterfall_only { 0.0 } else { view.effective_spectrum_fraction() };
-    let spec_h = if frac <= 0.0 { 0.0 } else { ((rect.height() - scale_h()) * frac).max(40.0) };
+    let usable = rect.height() - scale_h();
+    let spec_h = if frac <= 0.0 { 0.0 } else { (usable * frac).max(40.0).min(usable.max(0.0)) };
     let spec_rect = Rect::from_min_size(rect.min, vec2(rect.width(), spec_h));
     let scale_rect =
         Rect::from_min_size(pos2(rect.left(), spec_rect.bottom()), vec2(rect.width(), scale_h()));
     let wf_rect = Rect::from_min_max(pos2(rect.left(), scale_rect.bottom()), rect.max);
 
+    // Where the spot lanes and their ticks go. Normally the waterfall, since
+    // that is what they label; with the waterfall switched off they move onto
+    // the spectrum rather than vanish — the boxes are the skimmers' only
+    // output on the panadapter, and the painter clips to `rect`, so laid out
+    // over a zero-height strip they would silently be gone.
+    let lanes_rect = if wf_rect.height() > 1.0 { wf_rect } else { spec_rect };
+
     // Skimmer boxes are laid out up front so the click hit-test (below) and the
     // draw pass (bottom) agree on their rects. Boxes fit their text: callsign
     // only for FT8 (digital), callsign + message tail for the CW skimmer.
-    let spot_boxes = layout_spots(&painter, view, &rect, &wf_rect, skimmer, click_sets_offset);
-    let net_boxes = layout_net_spots(&painter, view, &rect, &wf_rect, net_spots);
-    let ism_boxes = layout_ism_labels(&painter, view, &rect, &wf_rect, ism);
+    let spot_boxes = layout_spots(&painter, view, &rect, &lanes_rect, skimmer, click_sets_offset);
+    let net_boxes = layout_net_spots(&painter, view, &rect, &lanes_rect, net_spots);
+    let ism_boxes = layout_ism_labels(&painter, view, &rect, &lanes_rect, ism);
 
     // --- interactions -----------------------------------------------------
     // Model: grabbing a filter edge (left button, spectrum strip) always
@@ -1125,7 +1135,11 @@ pub fn show_ext(
         if let Some(p) = resp.interact_pointer_pos() {
             let usable = (rect.height() - scale_h()).max(1.0);
             view.spectrum_fraction = ((p.y - rect.top()) / usable).clamp(0.10, 0.85);
-            view.spectrum_collapsed = false; // dragging it open implies visible
+            // Dragging the divider asks for a split, so whichever layer was
+            // switched off comes back — this is the way out of either
+            // one-layer view without going back to the SPEC popup.
+            view.spectrum_collapsed = false;
+            view.waterfall_collapsed = false;
         }
     } else if let (Some((rx, is_hi)), true) = (edge, resp.dragged_by(egui::PointerButton::Primary))
     {
@@ -1793,7 +1807,7 @@ pub fn show_ext(
             ),
             a,
         );
-        painter.vline(b.sig_x, wf_rect.y_range(), Stroke::new(1.0, vcol));
+        painter.vline(b.sig_x, lanes_rect.y_range(), Stroke::new(1.0, vcol));
         // Horizontal leader from the signal to the box, with a junction node.
         painter.line_segment(
             [pos2(b.sig_x, cy), pos2(b.rect.left(), cy)],
@@ -1823,7 +1837,7 @@ pub fn show_ext(
             ),
             a,
         );
-        painter.vline(b.sig_x, wf_rect.y_range(), Stroke::new(1.0, vcol));
+        painter.vline(b.sig_x, lanes_rect.y_range(), Stroke::new(1.0, vcol));
         painter.line_segment(
             [pos2(b.sig_x, cy), pos2(b.rect.left(), cy)],
             Stroke::new(1.0, fade(border, a)),
@@ -1842,7 +1856,7 @@ pub fn show_ext(
         let cy = b.rect.center().y;
         painter.vline(
             b.sig_x,
-            wf_rect.y_range(),
+            lanes_rect.y_range(),
             Stroke::new(
                 1.0,
                 Color32::from_rgba_unmultiplied(

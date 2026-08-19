@@ -368,7 +368,13 @@ impl eframe::App for SdroxideApp {
             // The waterfall is the tab past the last of the mode's own panes.
             let on_waterfall =
                 phone && self.digi_pane(mode) == crate::app::panels::panel_panes(mode).len();
-            let show_wf = !phone || on_waterfall;
+            // Both panadapter layers switched off in the SPEC popup means no
+            // panadapter: the decode panel takes the whole height rather than
+            // sharing it with an empty strip. Never on a phone, which draws the
+            // waterfall alone and ignores the layer switches (see
+            // `spectrum_view::show_ext`), so they cannot empty its screen.
+            let layers = tier.waterfall_only() || self.view.panadapter_visible();
+            let show_wf = (!phone || on_waterfall) && layers;
             let show_panel = !phone || !on_waterfall;
 
             // Manual vertical split with a draggable divider: the operating
@@ -379,6 +385,8 @@ impl eframe::App for SdroxideApp {
             let (wf_h, panel_h) = if phone {
                 // Whichever one is showing gets all of it.
                 (total, total)
+            } else if !layers {
+                (0.0, total)
             } else {
                 // The handle plus the gap the layout inserts on each side of it.
                 let divider = handle_h + 2.0 * ui.spacing().item_spacing.y;
@@ -425,7 +433,10 @@ impl eframe::App for SdroxideApp {
                     );
                 });
             }
-            if !phone {
+            // Only between two things: with the panadapter switched off there
+            // is nothing above the panel for the handle to divide, and a drag
+            // on it would silently rewrite a split with nothing to show for it.
+            if !phone && show_wf {
                 // Resize handle between the waterfall and the FT8/FT4 panel.
                 let hresp = crate::chrome::split_handle(
                     ui,
@@ -514,14 +525,20 @@ impl eframe::App for SdroxideApp {
             // the pitch being copied, which a click on the waterfall moves.
             let cw_mode = self.state.rx[0].mode == Mode::Cw;
             let phone = tier == crate::layout::Tier::Phone;
+            // As on the digital path above: no layers, no panadapter. In a mode
+            // with nothing under it that leaves the pane empty, which is what
+            // switching both off asks for.
+            let layers = tier.waterfall_only() || self.view.panadapter_visible();
             let (wf_h, panel_h, show_wf, show_panel) = if !cw_mode {
-                (ui.available_height(), 0.0, true, false)
+                (ui.available_height(), 0.0, layers, false)
             } else if phone {
                 self.digi_tabs(ui, Mode::Cw);
                 let on_wf =
                     self.digi_pane(Mode::Cw) == crate::app::panels::panel_panes(Mode::Cw).len();
                 let h = ui.available_height();
                 (h, h, on_wf, !on_wf)
+            } else if !layers {
+                (0.0, ui.available_height(), false, true)
             } else {
                 let total = ui.available_height();
                 let divider = 7.0 + 2.0 * ui.spacing().item_spacing.y;
@@ -562,7 +579,7 @@ impl eframe::App for SdroxideApp {
                 });
             }
             if show_panel {
-                if !phone {
+                if !phone && show_wf {
                     let hresp = crate::chrome::split_handle(
                         ui,
                         egui::vec2(width, 7.0),
