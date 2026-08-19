@@ -778,6 +778,19 @@ mod tests {
             assert_eq!(&back, m);
         }
 
+        // The scanner's settings cross the link whole, skip lists included — a
+        // remote client is where a range scan gets its SKIP pressed.
+        let scanner = ServerMsg::Scanner(sdroxide_types::ScannerConfig {
+            kind: sdroxide_types::ScanKind::Range,
+            skip: vec![3, 9],
+            skip_freq_hz: vec![145_312_500.0, 145_600_000.0],
+            skip_freq_for: (144_000_000.0, 146_000_000.0, 12_500.0),
+            ..Default::default()
+        });
+        let bytes = encode(&scanner).unwrap();
+        let back: ServerMsg = decode(&bytes).unwrap();
+        assert_eq!(back, scanner);
+
         // RIFP carries pixels, a manifest summary, and a per-chunk map.
         let rifp = [
             ServerMsg::RifpRows { image_id: 2, y: 11, w: 4, h: 20, rows: vec![9, 8, 7, 6] },

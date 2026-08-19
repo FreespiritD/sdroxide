@@ -844,6 +844,19 @@ the channel to the skip list. Touching the dial, changing band, recalling a
 memory or transmitting all stop the scan where it is — as on any scanner, and so
 that the radio is not fighting you for the VFO.
 
+**SKIP works in a range scan too**, and it is remembered. There is no stored
+channel to mark, so the frequency itself goes on a skip list shown under the
+range — a row of chips, one per channel, with **CLEAR** to empty it. The list
+is saved with the rest of the settings, so a data channel, a pager or a birdie
+dismissed once stays dismissed for the rest of the evening and for every later
+run over the same range, instead of costing a stop every pass. Click a chip to
+put its channel back into the scan.
+
+The list belongs to **the range it was taken in**: change the From, the to or
+the Step and it is emptied, because a channel dismissed on 2 m says nothing
+about 70 cm — and a scanner quietly refusing to stop somewhere you do not
+remember dismissing is worse than one that stops too often.
+
 The **SCAN** button in the System module lights while a scan is running, in cyan
 while it is sweeping and green while it is stopped on something, so you can
 close the window and still see what it is doing. Settings are remembered in

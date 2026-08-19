@@ -117,6 +117,7 @@ fn range_cfg() -> ScannerConfig {
         resume: ScanResume::Carrier,
         resume_ms: 300,
         skip: Vec::new(),
+        ..ScannerConfig::default()
     }
 }
 
@@ -133,6 +134,9 @@ struct Watch {
     holding: bool,
     held_at: Option<f64>,
     notices: Vec<String>,
+    /// The settings as the engine last persisted them — which is where a skip
+    /// taken during a scan has to end up if it is to survive the next run.
+    scanner: Option<ScannerConfig>,
 }
 
 struct Rig {
@@ -183,6 +187,7 @@ impl Rig {
                         }
                     }
                     RadioEvent::Notice(Some(n)) => self.w.notices.push(n),
+                    RadioEvent::Scanner(c) => self.w.scanner = Some(c),
                     _ => {}
                 }
             }
@@ -364,6 +369,73 @@ fn a_memory_scan_passes_over_skipped_channels() {
     rig.forget();
     rig.send(Command::SetScanning(true));
     assert_eq!(rig.pump(2.5, true).held_at, None, "it stopped on a channel it was told to skip");
+}
+
+/// SKIP on a range scan means the same as SKIP on a memory scan: not this one,
+/// not now and not next time round either. There is no channel to name, so the
+/// frequency is what gets remembered — and it has to survive the scan being
+/// stopped and started, or an operator dismissing a data channel would have to
+/// dismiss it again after every pause.
+#[test]
+fn a_skipped_range_channel_stays_skipped_across_runs() {
+    const SIGNAL: f64 = 145_312_500.0;
+    let mut rig = Rig::new(Some(SIGNAL));
+    rig.send(Command::SetScannerConfig(range_cfg()));
+    rig.send(Command::SetScanning(true));
+    let held = rig.pump(6.0, true).held_at.expect("did not stop on the carrier to begin with");
+    assert!((held - SIGNAL).abs() <= 12_500.0, "stopped on {held}, not near {SIGNAL}");
+
+    rig.send(Command::ScanSkip);
+    rig.forget();
+    let w = rig.pump(3.0, true);
+    assert!(w.running, "SKIP is not STOP");
+    assert_eq!(w.held_at, None, "it stopped again on the channel it was told to skip");
+
+    // Persisted, not merely held in the running scan's queue.
+    let saved = w.scanner.clone().expect("the engine should have announced the saved settings");
+    assert!(
+        saved.skips_freq(SIGNAL),
+        "the skipped channel is not in the saved settings: {:?}",
+        saved.skip_freq_hz
+    );
+
+    // A new run of the same range honours it.
+    rig.send(Command::SetScanning(false));
+    rig.send(Command::SetScanning(true));
+    rig.forget();
+    let w = rig.pump(3.0, true);
+    assert!(w.running, "the second run should be going");
+    assert_eq!(w.held_at, None, "a fresh run forgot the skip");
+}
+
+/// The skips belong to the range they were taken in. Scanning somewhere else
+/// starts with a clean sheet — a channel dismissed on 2 m says nothing about
+/// the same arithmetic on 70 cm, and a scanner silently refusing to stop
+/// somewhere the operator does not remember dismissing is a bug they cannot see.
+#[test]
+fn retuning_the_range_forgets_its_skips() {
+    const SIGNAL: f64 = 145_312_500.0;
+    let mut rig = Rig::new(Some(SIGNAL));
+    rig.send(Command::SetScannerConfig(range_cfg()));
+    rig.send(Command::SetScanning(true));
+    assert!(rig.pump(6.0, true).held_at.is_some(), "did not stop on the carrier");
+    rig.send(Command::ScanSkip);
+    rig.forget();
+    assert_eq!(rig.pump(2.0, true).held_at, None, "the skip did not take");
+
+    // Move the range, then move it back: the skip taken in the old one is gone.
+    rig.send(Command::SetScanning(false));
+    rig.send(Command::SetScannerConfig(ScannerConfig {
+        range_lo_hz: 430_000_000.0,
+        range_hi_hz: 432_000_000.0,
+        ..range_cfg()
+    }));
+    rig.send(Command::SetScannerConfig(range_cfg()));
+    rig.send(Command::SetScanning(true));
+    rig.forget();
+    let w = rig.pump(6.0, true);
+    let held = w.held_at.expect("the skip should not have followed the range away and back");
+    assert!((held - SIGNAL).abs() <= 12_500.0, "stopped on {held}, not near {SIGNAL}");
 }
 
 /// Asking for a scan that could never stop anywhere says so rather than

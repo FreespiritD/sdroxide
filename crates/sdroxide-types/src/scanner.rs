@@ -91,6 +91,21 @@ pub struct ScannerConfig {
     pub resume_ms: u32,
     /// Memory ids to pass over.
     pub skip: Vec<u32>,
+    /// Frequencies (Hz, on the channel grid) a range scan passes over.
+    ///
+    /// The range-scan twin of [`Self::skip`], and it has to be a frequency
+    /// rather than an index because a range scan has no stored channels to
+    /// index: what it finds depends on what is on the air at the time. Kept
+    /// across runs so a band worked through in several passes does not stop on
+    /// the same repeater tail, packet node or birdie every time round.
+    pub skip_freq_hz: Vec<f64>,
+    /// The `(lo, hi, step)` [`Self::skip_freq_hz`] was collected under.
+    ///
+    /// "Skip this one" means "not this channel, *here*", and says nothing about
+    /// a different band or a different grid — so retuning the scan somewhere
+    /// else empties the list rather than carrying stale channels into a range
+    /// they were never chosen in. See [`Self::forget_stale_skips`].
+    pub skip_freq_for: (f64, f64, f64),
 }
 
 impl Default for ScannerConfig {
@@ -109,6 +124,8 @@ impl Default for ScannerConfig {
             resume: ScanResume::Carrier,
             resume_ms: 2_000,
             skip: Vec::new(),
+            skip_freq_hz: Vec::new(),
+            skip_freq_for: (0.0, 0.0, 0.0),
         }
     }
 }
@@ -124,10 +141,133 @@ impl ScannerConfig {
         }
     }
 
+    /// What [`Self::skip_freq_hz`] is tied to: the range, and the grid the
+    /// skipped channels were snapped to.
+    fn skip_key(&self) -> (f64, f64, f64) {
+        let (lo, hi) = self.range();
+        (lo, hi, self.step_hz)
+    }
+
+    /// Throw the range skips away if they belong to a different range or grid,
+    /// and stamp the list with the one they belong to now.
+    ///
+    /// Called wherever an edited config is adopted, so that moving the scan to
+    /// another band starts with a clean sheet — and moving it back does *not*
+    /// bring the old skips with it, which would be a scanner quietly refusing
+    /// to stop on channels the operator no longer remembers dismissing.
+    pub fn forget_stale_skips(&mut self) {
+        let key = self.skip_key();
+        if self.skip_freq_for != key {
+            self.skip_freq_hz.clear();
+            self.skip_freq_for = key;
+        }
+    }
+
+    /// Add a range-scan skip, snapped to the channel grid the scan searches on
+    /// — which is the grid every candidate it could offer is already on.
+    pub fn skip_freq(&mut self, hz: f64) {
+        let step = self.step_hz.max(1.0);
+        let snapped = (hz / step).round() * step;
+        self.forget_stale_skips();
+        if !self.skips_freq(snapped) {
+            self.skip_freq_hz.push(snapped);
+        }
+    }
+
+    /// Whether a range scan should pass over `hz`.
+    ///
+    /// Compared with half a channel of slack rather than exactly: a candidate
+    /// comes from an FFT bin and is snapped to the grid, and the arithmetic
+    /// that snapped it need not land on the same last bit as the arithmetic
+    /// that snapped the skip.
+    pub fn skips_freq(&self, hz: f64) -> bool {
+        let tol = self.step_hz.max(1.0) / 2.0;
+        self.skip_freq_hz.iter().any(|&f| (f - hz).abs() < tol)
+    }
+
     /// Whether the settings describe a scan that could ever stop anywhere.
     pub fn range_is_usable(&self) -> bool {
         let (lo, hi) = self.range();
         lo.is_finite() && hi.is_finite() && lo > 0.0 && hi - lo >= self.step_hz.max(1.0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cfg() -> ScannerConfig {
+        let mut c = ScannerConfig {
+            kind: ScanKind::Range,
+            range_lo_hz: 144_000_000.0,
+            range_hi_hz: 146_000_000.0,
+            step_hz: 12_500.0,
+            ..ScannerConfig::default()
+        };
+        c.forget_stale_skips();
+        c
+    }
+
+    /// A candidate arrives from an FFT bin and is snapped to the grid; the
+    /// arithmetic that snapped it need not produce the same last bit as the
+    /// arithmetic that snapped the skip, so the match has to have slack in it —
+    /// but not so much that it swallows the neighbouring channel.
+    #[test]
+    fn a_skip_matches_its_own_channel_and_no_other() {
+        let mut c = cfg();
+        c.skip_freq(145_312_500.0);
+        assert!(c.skips_freq(145_312_500.0));
+        assert!(c.skips_freq(145_312_500.0 + 1.0), "a hertz of rounding must not miss it");
+        assert!(!c.skips_freq(145_325_000.0), "the next channel up is a different channel");
+        assert!(!c.skips_freq(145_300_000.0), "and so is the one below");
+    }
+
+    /// Anything inside a channel of the grid means that channel — an operator
+    /// pressing SKIP is pointing at where the dial is, which is wherever the
+    /// sweep put it, not at an exact multiple of the step.
+    #[test]
+    fn a_skip_is_stored_on_the_grid() {
+        let mut c = cfg();
+        c.skip_freq(145_310_000.0);
+        assert_eq!(c.skip_freq_hz, vec![145_312_500.0]);
+        // And asking twice does not list it twice.
+        c.skip_freq(145_313_000.0);
+        assert_eq!(c.skip_freq_hz.len(), 1, "{:?}", c.skip_freq_hz);
+    }
+
+    #[test]
+    fn skips_belong_to_the_range_they_were_taken_in() {
+        let mut c = cfg();
+        c.skip_freq(145_312_500.0);
+
+        // A different band: nothing carries over, and going back does not bring
+        // it back either — a skip nobody remembers taking is invisible.
+        let mut moved = ScannerConfig { range_lo_hz: 430e6, range_hi_hz: 432e6, ..c.clone() };
+        moved.forget_stale_skips();
+        assert!(moved.skip_freq_hz.is_empty(), "{:?}", moved.skip_freq_hz);
+        let mut back = ScannerConfig { range_lo_hz: 144e6, range_hi_hz: 146e6, ..moved };
+        back.forget_stale_skips();
+        assert!(back.skip_freq_hz.is_empty(), "the old skips came back");
+
+        // A different grid describes different channels, so it counts as a move.
+        let mut regridded = ScannerConfig { step_hz: 25_000.0, ..c.clone() };
+        regridded.forget_stale_skips();
+        assert!(regridded.skip_freq_hz.is_empty(), "{:?}", regridded.skip_freq_hz);
+
+        // The same range typed the other way round is the same range.
+        let mut flipped = ScannerConfig { range_lo_hz: 146e6, range_hi_hz: 144e6, ..c.clone() };
+        flipped.forget_stale_skips();
+        assert_eq!(flipped.skip_freq_hz, c.skip_freq_hz, "swapping the edges is not a new range");
+    }
+
+    /// The stored default has never been stamped, so the first config the
+    /// engine adopts must not be read as "skips taken in an unknown range".
+    #[test]
+    fn a_default_config_has_nothing_to_forget() {
+        let mut c = ScannerConfig::default();
+        c.forget_stale_skips();
+        assert!(c.skip_freq_hz.is_empty());
+        assert_eq!(c.skip_freq_for, (144_000_000.0, 146_000_000.0, 12_500.0));
     }
 }
 

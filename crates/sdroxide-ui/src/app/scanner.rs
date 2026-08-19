@@ -129,6 +129,59 @@ impl SdroxideApp {
                 .color(crate::theme::ALERT()),
             );
         }
+        // Done after the edits above, so retuning the range takes its skipped
+        // channels off the screen at once rather than a round trip later.
+        cfg.forget_stale_skips();
+        self.scanner_range_skips(ui, cfg);
+    }
+
+    /// The channels a range scan has been told to pass over, and the way back.
+    ///
+    /// Shown rather than merely remembered: a scanner that silently refuses to
+    /// stop somewhere is indistinguishable from a scanner that cannot hear it,
+    /// and the operator who pressed SKIP three passes ago is exactly the person
+    /// who will wonder why the repeater never comes up.
+    fn scanner_range_skips(&self, ui: &mut egui::Ui, cfg: &mut ScannerConfig) {
+        if cfg.skip_freq_hz.is_empty() {
+            ui.label(
+                RichText::new("SKIP while it is holding to pass over that channel from now on")
+                    .size(10.0)
+                    .weak(),
+            );
+            return;
+        }
+        let listed: Vec<f64> = cfg.skip_freq_hz.clone();
+        let mut drop_at: Option<usize> = None;
+        let mut clear = false;
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Skipping").size(10.5).weak());
+            if crate::chrome::chip(ui, false, "CLEAR")
+                .on_hover_text("Stop passing over any of them")
+                .clicked()
+            {
+                clear = true;
+            }
+        });
+        // Bounded: an evening spent dismissing a busy band's pagers and data
+        // channels runs to dozens of them, and they must not push the rest of
+        // the window off the bottom.
+        egui::ScrollArea::vertical().id_salt("scan-skips").max_height(72.0).show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                for (i, f) in listed.iter().enumerate() {
+                    if crate::chrome::chip(ui, true, format!("{:.4}", f / 1e6))
+                        .on_hover_text("Stop passing over this channel")
+                        .clicked()
+                    {
+                        drop_at = Some(i);
+                    }
+                }
+            });
+        });
+        if clear {
+            cfg.skip_freq_hz.clear();
+        } else if let Some(i) = drop_at {
+            cfg.skip_freq_hz.remove(i);
+        }
     }
 
     fn scanner_memories(&self, ui: &mut egui::Ui, cfg: &mut ScannerConfig) {

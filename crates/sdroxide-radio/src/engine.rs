@@ -1769,7 +1769,10 @@ fn engine_thread(
 
     let memories = sdroxide_config::load_memories();
     let mem_folders = sdroxide_config::load_memory_folders();
-    let scan_cfg = engine_cfg.store.load_scanner_config();
+    let mut scan_cfg = engine_cfg.store.load_scanner_config();
+    // A hand-edited `scanner.json` can name a range and a skip list that were
+    // never taken in it; the list is the part that goes.
+    scan_cfg.forget_stale_skips();
     let stacks = sdroxide_config::load_bandstacks();
     let digi_config = sdroxide_config::load_digi_config();
 
@@ -3961,8 +3964,11 @@ impl Engine {
             SetAutoNotch { rx, on } => self.state.rx[rx.index()].auto_notch = on,
             SetWfmStereo { rx, on } => self.state.rx[rx.index()].wfm_stereo = on,
             SetToneSquelch { rx, tone } => self.state.rx[rx.index()].tone_sql = tone,
-            SetScannerConfig(cfg) => {
+            SetScannerConfig(mut cfg) => {
                 let restart = self.state.scan.running && cfg.kind != self.scan_cfg.kind;
+                // Retuning the range (or changing the grid under it) retires the
+                // channels skipped in the old one — they described *that* band.
+                cfg.forget_stale_skips();
                 self.scan_cfg = cfg;
                 if restart {
                     // A different kind of scan is a different scan; starting it
@@ -6519,8 +6525,14 @@ impl Engine {
             self.scan_cfg.step_hz.max(1.0),
             self.scan_threshold_db(),
         );
+        // Dropped here rather than at the stop: a skipped channel then costs
+        // nothing at all, instead of a dwell each time round to rediscover that
+        // the operator does not want it.
+        let cfg = &self.scan_cfg;
+        let keep: Vec<ScanTarget> =
+            found.into_iter().filter(|&f| !cfg.skips_freq(f)).map(ScanTarget::Freq).collect();
         if let Some(sc) = self.scan.as_mut() {
-            sc.queue.extend(found.into_iter().map(ScanTarget::Freq));
+            sc.queue.extend(keep);
         }
         self.scan_advance(now);
     }
@@ -6650,27 +6662,54 @@ impl Engine {
     fn scan_next_stepped(&mut self) -> Refill {
         let (lo, hi) = self.scan_cfg.range();
         let step = self.scan_cfg.step_hz.max(1.0);
-        let Some(sc) = self.scan.as_mut() else { return Refill::Stopped };
-        if sc.stepped.is_empty() {
-            // Capped: a whole band on a 5 kHz grid is a few thousand channels,
-            // and asking a CAT rig to visit a hundred thousand is not a scan.
-            const MAX: usize = 8192;
-            let n = (((hi - lo) / step).floor() as usize + 1).min(MAX);
-            sc.stepped = (0..n).map(|i| lo + i as f64 * step).collect();
+        let mut picked = None;
+        {
+            let cfg = &self.scan_cfg;
+            let Some(sc) = self.scan.as_mut() else { return Refill::Stopped };
             if sc.stepped.is_empty() {
-                self.stop_scan(Some("scan stopped: the range is not a usable one"));
-                return Refill::Stopped;
+                // Capped: a whole band on a 5 kHz grid is a few thousand
+                // channels, and asking a CAT rig to visit a hundred thousand is
+                // not a scan.
+                const MAX: usize = 8192;
+                let n = (((hi - lo) / step).floor() as usize + 1).min(MAX);
+                sc.stepped = (0..n).map(|i| lo + i as f64 * step).collect();
+            }
+            // One channel per refill: every one on this path has to be listened
+            // to, so queueing the whole band up front would buy nothing.
+            //
+            // Bounded by one lap round the grid, because a skipped channel is
+            // passed over here rather than dwelt on: with every channel in the
+            // range skipped there is nothing left to visit, and hunting for
+            // ever would spin the DSP thread instead of saying so.
+            for _ in 0..sc.stepped.len() {
+                if sc.step_at >= sc.stepped.len() {
+                    sc.step_at = 0;
+                }
+                let f = sc.stepped[sc.step_at];
+                sc.step_at += 1;
+                if !cfg.skips_freq(f) {
+                    picked = Some(f);
+                    break;
+                }
+            }
+            if let Some(f) = picked {
+                sc.queue.push_back(ScanTarget::Freq(f));
             }
         }
-        // One channel per refill: every one on this path has to be listened to,
-        // so queueing the whole band up front would buy nothing.
-        if sc.step_at >= sc.stepped.len() {
-            sc.step_at = 0;
+        if picked.is_some() {
+            return Refill::Queued;
         }
-        let f = sc.stepped[sc.step_at];
-        sc.step_at += 1;
-        sc.queue.push_back(ScanTarget::Freq(f));
-        Refill::Queued
+        // Nothing to visit at all — either the range yielded no grid, or every
+        // channel on it is skipped. Both are dead ends, and both have to be
+        // said: a scanner that is running and never stopping anywhere looks
+        // exactly like one that is broken.
+        let had_grid = self.scan.as_ref().is_some_and(|sc| !sc.stepped.is_empty());
+        self.stop_scan(Some(if had_grid {
+            "scan stopped: every channel in the range is skipped"
+        } else {
+            "scan stopped: the range is not a usable one"
+        }));
+        Refill::Stopped
     }
 
     /// Park the receiver on a candidate and start listening to it.
@@ -6712,17 +6751,29 @@ impl Engine {
         if !self.state.scan.running {
             return;
         }
-        // Whichever memory the dial is actually sitting on, rather than
+        // Whichever channel the dial is actually sitting on, rather than
         // whichever one the queue last dealt: a recall can be refused, and the
         // operator means "this one, the one I am listening to".
-        if forever && self.scan_cfg.kind == ScanKind::Memories {
-            let here = self.state.active_freq_hz();
-            if let Some(id) =
-                self.memories.iter().find(|m| (m.freq_hz - here).abs() < 1.0).map(|m| m.id)
-                && !self.scan_cfg.skip.contains(&id)
-            {
-                self.scan_cfg.skip.push(id);
-                self.save_scanner_config();
+        let here = self.state.active_freq_hz();
+        match (forever, self.scan_cfg.kind) {
+            (false, _) => {}
+            (true, ScanKind::Memories) => {
+                if let Some(id) =
+                    self.memories.iter().find(|m| (m.freq_hz - here).abs() < 1.0).map(|m| m.id)
+                    && !self.scan_cfg.skip.contains(&id)
+                {
+                    self.scan_cfg.skip.push(id);
+                    self.save_scanner_config();
+                }
+            }
+            // A range scan has no channel to name, so the frequency itself is
+            // what is remembered — and it is persisted, so the pager that fires
+            // every three minutes is dismissed once rather than every pass.
+            (true, ScanKind::Range) => {
+                if !self.scan_cfg.skips_freq(here) {
+                    self.scan_cfg.skip_freq(here);
+                    self.save_scanner_config();
+                }
             }
         }
         self.scan_advance(Instant::now());
