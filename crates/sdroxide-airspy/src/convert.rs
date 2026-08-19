@@ -64,9 +64,10 @@ pub const SAMPLE_SCALE: f32 = 1.0 / 2048.0;
 /// which is not enough — the transition is still open where the image of a
 /// signal near the band edge lands. 63 reaches −61 dB there with 0.008 dB of
 /// passband ripple, and costs **less** than libairspy's 47 in practice: the
-/// half-band's zeros, its parity split and its symmetry between them leave 16
-/// multiplies per output sample against the reference's 24 (see [`HostDsp`]).
-/// The length is a quality decision and the structure pays for it.
+/// half-band's zeros and its parity split leave the real branch a 32-tap dot
+/// product over contiguous memory — eight four-wide multiplies — against the
+/// reference's 24 scalar ones (see [`HostDsp`]). The length is a quality
+/// decision and the structure pays for it.
 ///
 /// Odd, so the filter has an exact centre tap and therefore an integer group
 /// delay.
@@ -129,10 +130,15 @@ const EVEN_TAPS: usize = HALFBAND_TAPS.div_ceil(2);
 const RING: usize = EVEN_TAPS.next_power_of_two();
 const MASK: usize = RING - 1;
 
+/// How many partial sums the real branch accumulates into — see `HostDsp::filter`.
+const LANES: usize = 4;
+
 /// How far back the imaginary branch reaches, in output samples.
 const IM_DELAY: usize = (HALFBAND_TAPS / 2).div_ceil(2);
 
 const _: () = assert!(EVEN_TAPS <= RING, "the ring must hold every even tap");
+const _: () =
+    assert!(EVEN_TAPS.is_multiple_of(LANES), "the tap count must divide into whole lanes");
 const _: () = assert!(
     HALFBAND_TAPS % 4 == 3,
     "the centre tap must land on an odd index and the even taps must pair up"
@@ -158,23 +164,28 @@ const _: () = assert!(
 ///   lands on an imaginary one. So the imaginary branch is not a filter at all:
 ///   it is a delay and one multiply.
 ///
-/// That leaves 32 real taps, and a linear-phase filter is symmetric, so the
-/// pairs `(k, EVEN_TAPS-1-k)` share a coefficient and can be added before
-/// multiplying: **16 multiplies per output sample** where the direct form did
-/// 66, on a ring indexed by a mask rather than by `% 63`.
+/// That leaves the real branch a 32-tap dot product and the imaginary branch a
+/// single multiply — where the direct form did 66 complex-tap multiplies over a
+/// ring indexed by `% 63`. The 32 are then arranged to be *cheap* as well as
+/// few: the history is mirrored so the window is contiguous, and the sum is
+/// carried in four independent lanes, which together are what let a compiler
+/// emit four-wide multiplies instead of thirty-two scalar ones.
 ///
 /// This is the structure libairspy uses (`fir_interleaved` on the even samples,
 /// `delay_interleaved` on the odd ones), reached from its own arithmetic rather
 /// than copied — and the test below holds it against the direct form, which is
 /// the definition it has to keep matching.
 pub struct HostDsp {
-    /// Folded even taps: `fold[k]` is `h[2k]`, and serves both members of the
-    /// symmetric pair in one multiply.
-    fold: Vec<f32>,
+    /// Every even tap, `h[2k]`, in order — the real branch's whole kernel.
+    even: Vec<f32>,
     /// The centre tap — the whole of the imaginary branch.
     centre: f32,
-    /// Even-phase (real) history, indexed by output number.
-    re_hist: [f32; RING],
+    /// Even-phase (real) history, indexed by output number and **mirrored**:
+    /// every sample is stored at `k` and again at `k + RING`, so that any run
+    /// of `EVEN_TAPS` consecutive samples is one contiguous slice however the
+    /// ring has wrapped. One extra store per output buys a dot product over a
+    /// straight slice, which is the form a compiler will vectorise.
+    re_hist: [f32; RING * 2],
     /// Odd-phase (imaginary) history, likewise.
     im_hist: [f32; RING],
     /// Which complex output is being built. Carried across calls: the
@@ -204,13 +215,19 @@ impl HostDsp {
 
     pub fn new() -> HostDsp {
         let full = halfband(HALFBAND_TAPS);
-        // Half of the even taps: each entry is used twice, once for each end of
-        // the symmetric pair it belongs to.
-        let fold = (0..EVEN_TAPS / 2).map(|k| full[2 * k]).collect();
+        // Every even tap, in order. The set is a palindrome — `h[2k]` equals
+        // `h[2(EVEN_TAPS-1-k)]`, because the kernel is symmetric — so the
+        // window can be walked forwards against it with nothing reversed,
+        // which is what keeps the inner loop a plain dot product.
+        let even: Vec<f32> = (0..EVEN_TAPS).map(|k| full[2 * k]).collect();
+        debug_assert!(
+            (0..EVEN_TAPS).all(|k| (even[k] - even[EVEN_TAPS - 1 - k]).abs() <= 1e-6),
+            "the even taps must be symmetric (to f32) for a forward walk to be right"
+        );
         HostDsp {
-            fold,
+            even,
             centre: full[HALFBAND_TAPS / 2],
-            re_hist: [0.0; RING],
+            re_hist: [0.0; RING * 2],
             im_hist: [0.0; RING],
             m: 0,
             phase: 0,
@@ -227,7 +244,7 @@ impl HostDsp {
     /// an endpoint stall. Without this the taps carry a few dozen samples of
     /// the *previous* band into the new one.
     pub fn reset(&mut self) {
-        self.re_hist = [0.0; RING];
+        self.re_hist = [0.0; RING * 2];
         self.im_hist = [0.0; RING];
         self.m = 0;
         self.phase = 0;
@@ -276,7 +293,11 @@ impl HostDsp {
                 // Even sample: the real branch, and the instant an output falls
                 // on. The imaginary partner of this output arrived long ago —
                 // see `IM_DELAY` — so nothing waits for the sample after it.
-                self.re_hist[self.m & MASK] = v;
+                let k = self.m & MASK;
+                // Stored twice, RING apart, so the filter's window is always
+                // contiguous — see `re_hist`.
+                self.re_hist[k] = v;
+                self.re_hist[k + RING] = v;
                 out.push(self.filter());
             } else {
                 self.im_hist[self.m & MASK] = v;
@@ -288,20 +309,37 @@ impl HostDsp {
 
     /// One complex output, from the two real delay lines.
     ///
-    /// The real branch is the folded half-band; the imaginary branch is one
+    /// The real branch is the even-tap half-band; the imaginary branch is one
     /// multiply on a sample `IM_DELAY` outputs back, which is where the
     /// filter's group delay puts it. See [`HostDsp`] for why that is the whole
     /// of it.
     fn filter(&self) -> Complex32 {
-        let m = self.m;
-        let mut re = 0.0f32;
-        for (k, c) in self.fold.iter().enumerate() {
-            // The two ends of a symmetric pair, added before the multiply.
-            let a = self.re_hist[m.wrapping_sub(k) & MASK];
-            let b = self.re_hist[m.wrapping_sub(EVEN_TAPS - 1 - k) & MASK];
-            re += (a + b) * c;
+        // The 32 most recent real samples, oldest first, as one contiguous
+        // run — which is the whole reason `re_hist` is written twice. A dot
+        // product over a straight slice is what the compiler can turn into
+        // vector FMAs; the masked ring this replaced could not be vectorised at
+        // all, and on a machine whose NEON does four lanes at a time that is
+        // most of the cost of this driver.
+        let base = (self.m + 1) & MASK;
+        let window = &self.re_hist[base..base + EVEN_TAPS];
+        // Four partial sums rather than one.
+        //
+        // A single accumulator makes the loop a serial dependency chain, and
+        // because float addition is not associative the compiler is not allowed
+        // to break it up on its own — so it stays scalar however contiguous the
+        // memory is. Summing four independent lanes and combining them at the
+        // end is the same arithmetic in a different order, which is a choice
+        // this code is allowed to make and the compiler is not. It is also what
+        // lets a machine with four-wide float SIMD do this in a quarter of the
+        // instructions.
+        let mut acc = [0.0f32; LANES];
+        for (xs, ts) in window.chunks_exact(LANES).zip(self.even.chunks_exact(LANES)) {
+            for i in 0..LANES {
+                acc[i] += xs[i] * ts[i];
+            }
         }
-        Complex32::new(re, self.centre * self.im_hist[m.wrapping_sub(IM_DELAY) & MASK])
+        let re = (acc[0] + acc[1]) + (acc[2] + acc[3]);
+        Complex32::new(re, self.centre * self.im_hist[self.m.wrapping_sub(IM_DELAY) & MASK])
     }
 }
 
@@ -449,10 +487,10 @@ mod tests {
     /// here is the obvious form, written as plainly as it can be, held against
     /// it sample for sample.
     ///
-    /// If this ever fails, the folded filter is wrong and the direct form is
+    /// If this ever fails, the fast filter is wrong and the direct form is
     /// right — it is the one that says what the conversion *is*.
     #[test]
-    fn the_folded_form_matches_the_direct_convolution() {
+    fn the_fast_form_matches_the_direct_convolution() {
         let h = halfband(HALFBAND_TAPS);
         // Noise-like, so no accidental symmetry in the input can hide a
         // misplaced tap, and full-scale enough that a wrong one shows.
@@ -499,7 +537,7 @@ mod tests {
         for (i, (a, b)) in got.iter().zip(&want).enumerate() {
             assert!(
                 (a.re - b.re).abs() < 1e-6 && (a.im - b.im).abs() < 1e-6,
-                "output {i}: folded {a:?} vs direct {b:?}"
+                "output {i}: fast {a:?} vs direct {b:?}"
             );
         }
         // And the direct form really did produce signal, so this is not two
