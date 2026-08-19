@@ -79,7 +79,17 @@ impl Trace {
 
     /// A CI-V frame the radio sent.
     pub fn civ_rx(&self, frame: &[u8]) {
-        self.lock().counters.civ_frames += 1;
+        {
+            let mut g = self.lock();
+            g.counters.civ_frames += 1;
+            // Counted here rather than at the point the sweep is assembled, so
+            // the figure answers the question a report is filed to answer: is
+            // the radio sending its scope at all? Zero sweeps against a healthy
+            // CI-V count says the `27 10`/`27 11` writes did not take.
+            if is_scope_sweep(frame) {
+                g.counters.scope_sweeps += 1;
+            }
+        }
         self.note(format!("← CI-V {}", hex_elided(frame)));
     }
 
@@ -87,10 +97,6 @@ impl Trace {
         let mut g = self.lock();
         g.counters.audio_packets += 1;
         g.counters.audio_bytes += bytes as u64;
-    }
-
-    pub fn scope_sweep(&self) {
-        self.lock().counters.scope_sweeps += 1;
     }
 
     pub fn sent(&self) {
@@ -153,6 +159,11 @@ impl Trace {
     }
 }
 
+/// Whether an inbound frame is a `27 00` scope sweep: `FE FE <to> <from> 27 00`.
+fn is_scope_sweep(frame: &[u8]) -> bool {
+    frame.len() > 6 && frame[..2] == [0xfe, 0xfe] && frame[4] == 0x27 && frame[5] == 0x00
+}
+
 /// Hex, but a scope sweep does not get to fill the buffer on its own.
 fn hex_elided(frame: &[u8]) -> String {
     const HEAD: usize = 12;
@@ -179,19 +190,36 @@ mod tests {
         t.civ_tx(&[0xfe, 0xfe, 0xb6, 0xe0, 0x03, 0xfd]);
         t.civ_rx(&[0xfe, 0xfe, 0xe0, 0xb6, 0x03, 0x00, 0x50, 0x45, 0x14, 0x00, 0xfd]);
         t.audio_packet(1920);
-        t.scope_sweep();
 
         let d = t.dump();
         assert!(d.contains("→ CI-V fe fe b6 e0 03 fd"));
         assert!(d.contains("← CI-V fe fe e0 b6"));
         assert!(d.contains("audio packets     1 (1920 bytes)"));
-        assert!(d.contains("scope sweeps      1"));
+        // A frequency report is not a sweep.
+        assert!(d.contains("scope sweeps      0"));
+    }
+
+    #[test]
+    fn a_sweep_is_counted_as_one_and_a_report_with_none_says_so() {
+        // The counter answers the one question a report about a missing
+        // full-band waterfall is filed to answer. It used to be incremented
+        // nowhere at all, so it always read zero — worse than absent, because
+        // zero looked like an answer.
+        let t = Trace::new();
+        let mut sweep = vec![0xfe, 0xfe, 0xe0, 0xa4, 0x27, 0x00, 0x00, 0x01, 0x01];
+        sweep.extend(std::iter::repeat_n(0x40u8, 487));
+        sweep.push(0xfd);
+        t.civ_rx(&sweep);
+        t.civ_rx(&[0xfe, 0xfe, 0xe0, 0xa4, 0x03, 0x00, 0x50, 0x45, 0x14, 0x00, 0xfd]);
+        assert_eq!(t.counters().scope_sweeps, 1);
+        assert_eq!(t.counters().civ_frames, 2);
     }
 
     #[test]
     fn a_scope_sweep_does_not_fill_the_buffer() {
         let t = Trace::new();
         t.civ_rx(&vec![0x33u8; 490]);
+        assert_eq!(t.counters().scope_sweeps, 0, "junk is not a sweep");
         let d = t.dump();
         assert!(d.contains("… (490 bytes)"));
         assert!(d.len() < 2000);

@@ -203,6 +203,37 @@ fn the_scope_sweep_arrives_whole_the_way_a_lan_icom_sends_it() {
 }
 
 #[test]
+fn the_opening_burst_survives_the_streams_still_coming_up() {
+    // `connect` reports the moment the radio names its CI-V port, which is
+    // several round trips before that stream is a session the radio will accept
+    // anything on. A client configures the radio right then — the menu writes,
+    // the offset clear, the scope enable — and nothing ever re-sends those.
+    // Written straight out they carry a session id the radio has not issued and
+    // are discarded: on loopback the race was usually won, over WiFi never, so
+    // the scope never started on a real radio.
+    let sim = Sim::start(SimOptions { scope: false, ..Default::default() }).unwrap();
+    let dev = connect(&sim, |_| {}).expect("connect");
+
+    // Menu *reads*, so the burst is inert whatever it is pointed at.
+    let burst: Vec<Vec<u8>> =
+        (0..8).map(|i| vec![0xFE, 0xFE, 0xB6, 0xE0, 0x1A, 0x05, 0x00, i, 0xFD]).collect();
+    for f in &burst {
+        dev.send_civ(f.clone());
+    }
+
+    wait_for("the whole opening burst", Duration::from_secs(5), || {
+        let got = sim.civ_frames();
+        burst.iter().all(|f| got.contains(f))
+    });
+    // And in the order the client asked for: a menu write that overtakes the
+    // read of the item it is writing would report the old value.
+    let got = sim.civ_frames();
+    let at: Vec<usize> =
+        burst.iter().map(|f| got.iter().position(|g| g == f).expect("present")).collect();
+    assert!(at.windows(2).all(|w| w[0] < w[1]), "the burst was reordered: {at:?}");
+}
+
+#[test]
 fn transmit_audio_reaches_the_radio() {
     let sim = Sim::start(SimOptions { scope: false, ..Default::default() }).unwrap();
     let dev = connect(&sim, |_| {}).expect("connect");

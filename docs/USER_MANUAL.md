@@ -4319,7 +4319,12 @@ That sets a hard ceiling on what any program, sdroxide or RS-BA1 alike, can show
   magnitude bins, so nothing can be tuned *inside* it without moving the dial,
   but it is where you watch a band.
 
-If that strip comes up barely wider than the panadapter, the span is the reason:
+The strip appears on its own once the first sweep arrives, and the **WIDE** chip
+appears with it. If neither ever shows up, the radio is not sending its scope:
+**Copy diagnostic report** and look at the `scope sweeps` counter — zero against
+a healthy `CI-V frames in` count means the `27 10`/`27 11` writes did not take.
+
+If the strip is there but barely wider than the panadapter, the span is the reason:
 the radio sweeps whatever span was last chosen on its own screen, and that is
 often a few kHz. **Scope span** sets it from here.
 

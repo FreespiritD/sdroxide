@@ -296,7 +296,13 @@ impl SimStream {
             }
             ctrl::DISCONNECT | ctrl::IDLE if n == proto::CONTROL_SIZE => {}
             _ => {
-                if n > proto::CONTROL_SIZE {
+                // A real radio drops a payload addressed to a session id it
+                // never issued, and a client that writes into a stream before
+                // the handshake has finished loses everything it sent. The
+                // simulator has to be just as unforgiving: accepting those
+                // frames hid exactly that bug — one that never showed on
+                // loopback and always showed on a radio across a WiFi hop.
+                if n > proto::CONTROL_SIZE && h.rcvd_id == self.my_id {
                     out.clear();
                     out.extend_from_slice(pkt);
                     return true;

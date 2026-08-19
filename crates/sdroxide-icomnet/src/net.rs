@@ -325,6 +325,23 @@ struct SessionThread {
     connection: String,
 }
 
+/// How many CI-V frames to hold while the CI-V stream comes up.
+///
+/// A session opens with about a dozen — the offset clear, the reads, the menu
+/// writes, the scope enable — and then polls two or three every 200 ms, so this
+/// is several seconds of stall. Past it the stream is not coming up and the
+/// queue is not the problem.
+const CIV_PENDING_MAX: usize = 64;
+
+/// Put one CI-V frame on the CI-V stream.
+fn send_civ(c: &mut Stream, frame: &[u8], inner_seq: &mut u16, trace: &Trace) {
+    trace.civ_tx(frame);
+    let (a, b) = c.ids();
+    let p = proto::civ_data(frame, *inner_seq, a, b);
+    *inner_seq = inner_seq.wrapping_add(1);
+    c.send_tracked(p);
+}
+
 impl SessionThread {
     fn run(mut self) {
         if let Err(e) = self.drive() {
@@ -368,6 +385,13 @@ impl SessionThread {
         let mut next_token = Instant::now() + Duration::from_millis(timing::TOKEN_RENEWAL);
         let mut next_civ_open = Instant::now();
         let mut last_civ_data = Instant::now();
+        // CI-V frames the source handed over before the radio's CI-V stream was
+        // in a state to carry them — see `CIV_PENDING_MAX`.
+        let mut civ_pending: Vec<Vec<u8>> = Vec::new();
+        let mut civ_preamble: Vec<Vec<u8>> = Vec::new();
+        let mut civ_ready = false;
+        let mut civ_overflowed = false;
+        let mut audio_ready = false;
         let mut rate_window = Instant::now();
         let mut rate_frames: u32 = 0;
         let mut pcm = Vec::<f32>::with_capacity(4096);
@@ -386,12 +410,27 @@ impl SessionThread {
             loop {
                 match self.ctrl_rx.try_recv() {
                     Ok(Ctrl::Civ(frame)) => {
-                        if let Some(c) = civ.as_mut() {
-                            self.trace.civ_tx(&frame);
-                            let (a, b) = c.ids();
-                            let p = proto::civ_data(&frame, civ_inner, a, b);
-                            civ_inner = civ_inner.wrapping_add(1);
-                            c.send_tracked(p);
+                        match civ.as_mut() {
+                            Some(c) if civ_ready => {
+                                send_civ(c, &frame, &mut civ_inner, &self.trace);
+                            }
+                            // The socket exists from the moment the radio names
+                            // its port, but it is not yet a session: the radio
+                            // discards a datagram carrying an id it never
+                            // issued. Hold on to the frame instead of writing it
+                            // into a conversation that has not started.
+                            _ if civ_pending.len() < CIV_PENDING_MAX => {
+                                civ_pending.push(frame);
+                            }
+                            _ => {
+                                if !civ_overflowed {
+                                    civ_overflowed = true;
+                                    self.trace.note(
+                                        "the CI-V stream has not come up; commands sent \
+                                         meanwhile are being dropped",
+                                    );
+                                }
+                            }
                         }
                         worked = true;
                     }
@@ -520,12 +559,28 @@ impl SessionThread {
                             let p = proto::open_close(true, next_seq(&mut civ_inner), a, b);
                             c.send_tracked(p);
                             next_civ_open = Instant::now() + Duration::from_millis(100);
+                            // Everything the source asked for while the stream
+                            // was coming up goes out now, in the order it was
+                            // asked for. These are the one-shot frames — the
+                            // menu writes, the offset clear, the scope enable —
+                            // and nothing re-sends them, so dropping them on the
+                            // floor cost the session its scope for good.
+                            if !civ_ready {
+                                civ_ready = true;
+                                civ_preamble = std::mem::take(&mut civ_pending);
+                                for f in &civ_preamble {
+                                    send_civ(c, f, &mut civ_inner, &self.trace);
+                                }
+                            }
                             worked = true;
                         }
                         Event::Data => {
                             worked = true;
                             if let Some(frame) = proto::parse_civ_data(&buf) {
                                 last_civ_data = Instant::now();
+                                // The radio is answering, so the open request
+                                // and everything after it landed.
+                                civ_preamble.clear();
                                 self.trace.civ_rx(frame);
                                 if self.civ_tx.send(frame.to_vec()).is_err() {
                                     return Ok(());
@@ -547,6 +602,13 @@ impl SessionThread {
                     let (a, b) = c.ids();
                     let p = proto::open_close(true, next_seq(&mut civ_inner), a, b);
                     c.send_tracked(p);
+                    // The open request is not the only thing that can have been
+                    // lost. Nothing has answered yet, so the session's opening
+                    // commands are still unaccounted for — send them again. All
+                    // of them are idempotent, which is what makes this safe.
+                    for f in &civ_preamble {
+                        send_civ(c, f, &mut civ_inner, &self.trace);
+                    }
                 }
                 c.tick();
             }
@@ -556,8 +618,17 @@ impl SessionThread {
                 loop {
                     match a.poll(&mut buf) {
                         Event::Idle => break,
+                        // Either answer means the radio has issued a session
+                        // id and will accept what we send. `IAmHere` is enough
+                        // on its own, and taking it rather than only `Ready`
+                        // keeps transmit working on a radio that skips one.
+                        Event::IAmHere | Event::Ready => {
+                            audio_ready = true;
+                            worked = true;
+                        }
                         Event::Data => {
                             worked = true;
+                            audio_ready = true;
                             if let Some(payload) = proto::parse_audio_data(&buf) {
                                 self.trace.audio_packet(payload.len());
                                 pcm.clear();
@@ -579,8 +650,12 @@ impl SessionThread {
                     }
                 }
 
-                // Transmit whatever the engine has queued.
-                let want = self.tx_in.slots().min(tx_scratch.len());
+                // Transmit whatever the engine has queued — but not before the
+                // stream has handshaken. Audio written into a session the radio
+                // has not issued an id for is discarded by it, and unlike a CI-V
+                // command there is nothing sensible to replay later: the ring
+                // holds it instead, which is what a transmit ring is for.
+                let want = if audio_ready { self.tx_in.slots().min(tx_scratch.len()) } else { 0 };
                 if want > 0 {
                     for slot in tx_scratch.iter_mut().take(want) {
                         *slot = self.tx_in.pop().unwrap_or(0.0);
