@@ -45,8 +45,31 @@ const SMETER_W: f32 = 250.0;
 /// Width of the sub-receiver box at its design size.
 const SUB_W: f32 = 404.0;
 /// How much a box that grows by lengthening its slider rails or widening its
-/// offset fields (RX, TX, VFO/RIT, SUB) may add to them.
+/// offset fields (RX, TX, SUB) may add to them.
 const RAIL_STRETCH_MAX: f32 = 240.0;
+/// How much the VFO/RIT box may add to its controls. Far short of
+/// [`RAIL_STRETCH_MAX`], because unlike a rail neither of its rows has
+/// anything to *do* with the width: past its label a chip is padding, and past
+/// a signed 4-digit offset an Hz field is empty. Left uncapped it took the
+/// whole of a row's slack — a 500 pt box of four huge chips over two 230 pt
+/// fields reading "0 Hz", with the leftover it still couldn't absorb justified
+/// into a gap beside it — while the row below overflowed onto a third.
+const VFO_STRETCH_MAX: f32 = 72.0;
+/// Length the strip's stretchable rails — the RX box's Vol and SQL, the TX
+/// box's Drive and Tune — are *priced* at when a box is measured, and drawn at
+/// when its row has nothing to spare.
+///
+/// Deliberately shorter than the style's `slider_width`: a box reserves its
+/// widest row, and every point of that reservation is a point the packer has
+/// to find before it can keep two boxes on one row. The rails are the one
+/// thing on those rows that reads the same at any length, so they are what
+/// gives — and they get it all straight back as the box's stretch, so nothing
+/// changes on a row with room to spare. Reserving the full 84 pt each cost the
+/// strip a whole row on the narrowest desktop window: RX, TX, Display and
+/// System together came to 1425 pt of a 1377 pt pane and Display and System
+/// spilled onto a third row, which costs the waterfall far more height than
+/// two short rails cost the eye. See `the_desktop_strip_packs_a_cat_rig_into_two_rows`.
+const STRIP_RAIL_W: f32 = 48.0;
 /// How much a box that grows by widening its chips (Display, System) may be
 /// stretched to, as a factor of its natural width.
 const CHIP_STRETCH_FACTOR: f32 = 2.0;
@@ -637,7 +660,7 @@ impl SdroxideApp {
             (Kind::Smeter, StripBox { w: SMETER_W, flex: 3.0, max_w: f32::INFINITY }),
             (Kind::VfoRit, {
                 let w = self.vfo_rows_w(ui);
-                StripBox { w, flex: 1.0, max_w: w + RAIL_STRETCH_MAX }
+                StripBox { w, flex: 1.0, max_w: w + VFO_STRETCH_MAX }
             }),
             (Kind::RxFilter, {
                 let w = self.rx_filter_w(ui);
@@ -1557,7 +1580,7 @@ impl SdroxideApp {
         crate::chrome::module_bare_h(ui, w, crate::chrome::MODULE_TALL_H, |ui| {
             ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(MODULE_ROW_SPACING, MODULE_ROW_SPACING);
-                ui.spacing_mut().slider_width += extra;
+                ui.spacing_mut().slider_width = STRIP_RAIL_W + extra;
                 self.rx_controls(ui, cmds, false);
             });
         });
@@ -2413,7 +2436,8 @@ impl SdroxideApp {
         let (fixed1, fixed2) = tx_rows_fixed_w(ui, keyer);
         let inner = w - 2.0 * crate::chrome::MODULE_MARGIN_X - 4.0;
         let rows_w = inner - TX_MIC_GAP - TX_MIC_COL_W;
-        let (rail1, rail2) = ((rows_w - fixed1).max(60.0), (rows_w - fixed2).max(60.0));
+        let (rail1, rail2) =
+            ((rows_w - fixed1).max(STRIP_RAIL_W), (rows_w - fixed2).max(STRIP_RAIL_W));
         crate::chrome::module_bare_h(ui, w, crate::chrome::MODULE_TALL_H, |ui| {
             ui.spacing_mut().item_spacing = egui::vec2(MODULE_ROW_SPACING, MODULE_ROW_SPACING);
             ui.vertical(|ui| {
@@ -2988,12 +3012,12 @@ fn tx_rows_fixed_w(ui: &egui::Ui, keyer: bool) -> (f32, f32) {
 }
 
 /// The condensed TX box's natural width: the wider of its rows' fixed parts
-/// plus a rail at the current style width, the mic column and its padding,
-/// the box margins, and a few points of rounding slack.
+/// plus a rail at [`STRIP_RAIL_W`], the mic column and its padding, the box
+/// margins, and a few points of rounding slack.
 fn tx_rows_w_for(ui: &egui::Ui, keyer: bool) -> f32 {
     let (row1, row2) = tx_rows_fixed_w(ui, keyer);
     row1.max(row2)
-        + ui.spacing().slider_width
+        + STRIP_RAIL_W
         + TX_MIC_GAP
         + TX_MIC_COL_W
         + 2.0 * crate::chrome::MODULE_MARGIN_X
@@ -3039,8 +3063,9 @@ fn db_rail_w(ui: &egui::Ui) -> f32 {
 /// last chips over the edge of the window.
 fn rx_rows_w(ui: &egui::Ui, gain: bool, decim: bool, agc_off: bool, mode: Mode) -> (f32, f32) {
     let g = MODULE_ROW_SPACING;
-    // The Vol and SQL rails, which is what the box's stretch lengthens.
-    let rail = ui.spacing().slider_width;
+    // The Vol and SQL rails, which is what the box's stretch lengthens — so
+    // they are priced at the floor they fall back to, not the style width.
+    let rail = STRIP_RAIL_W;
     let label =
         |s: &str| crate::chrome::text_width(ui, s, egui::TextStyle::Body.resolve(ui.style()));
     let chip = |s: &str| crate::chrome::chip_width(ui, s, None);
@@ -3885,7 +3910,9 @@ mod tests {
             let _ = ctx.run_ui(input, |ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(MODULE_ROW_SPACING, MODULE_ROW_SPACING);
                 let (fixed1, fixed2) = tx_rows_fixed_w(ui, keyer);
-                let rail = ui.spacing().slider_width;
+                // Both rows are drawn at the rail the box reserves for them.
+                let rail = STRIP_RAIL_W;
+                ui.spacing_mut().slider_width = rail;
                 // 100% is the widest the readouts get, so the rows are laid
                 // out at it.
                 let (mut drive, mut tune, mut mic) = (1.0f32, 1.0f32, 1.0f32);
@@ -4105,6 +4132,94 @@ mod tests {
         assert_eq!(w, 450.0);
     }
 
+    /// Every box on the desktop strip, priced the way [`SdroxideApp::desktop_strip`]
+    /// prices it, for a transmit-capable CAT rig with a full-band lane and no
+    /// front-end gain or decimation of its own — an IC-705 over the LAN, which
+    /// is the shape the strip first ran out of room on. Widths only; the boxes
+    /// that need an app to measure (the frequency readout's side columns) are
+    /// priced at their design figures, which is what a desktop gets.
+    fn cat_rig_strip_boxes(ui: &egui::Ui, mode: Mode) -> Vec<StripBox> {
+        let fit = ReadoutFit::measure(ui);
+        let freq_w = 8.0
+            + AB_W
+            + 10.0
+            + fit.width(crate::layout::Tier::Desktop.digit_cap())
+            + 12.0
+            + RIGHT_W
+            + 8.0;
+        let vfo = chip_row_w(ui, &VFO_CHIPS).max(vfo_offsets_w(ui, true))
+            + 2.0 * crate::chrome::MODULE_MARGIN_X
+            + 4.0;
+        let (rx_row, noise_row) = rx_rows_w(ui, false, false, false, mode);
+        let rx = rx_row.max(noise_row) + 2.0 * crate::chrome::MODULE_MARGIN_X + 4.0;
+        let tx = tx_rows_w_for(ui, mode.allows_voice_keyer());
+        let display = chip_row_w(ui, &DISPLAY_VIEW_CHIPS).max(chip_row_w(ui, &DISPLAY_TOOL_CHIPS))
+            + 2.0 * crate::chrome::MODULE_MARGIN_X;
+        let system = system_rows_w(ui);
+        vec![
+            StripBox { w: freq_w, flex: 0.0, max_w: freq_w },
+            StripBox { w: SMETER_W, flex: 3.0, max_w: f32::INFINITY },
+            StripBox { w: vfo, flex: 1.0, max_w: vfo + VFO_STRETCH_MAX },
+            StripBox { w: rx, flex: 2.0, max_w: rx + RAIL_STRETCH_MAX },
+            StripBox { w: tx, flex: 2.0, max_w: tx + RAIL_STRETCH_MAX },
+            StripBox { w: display, flex: 1.0, max_w: display * CHIP_STRETCH_FACTOR },
+            StripBox { w: system, flex: 1.0, max_w: system * CHIP_STRETCH_FACTOR },
+        ]
+    }
+
+    /// The narrowest window the desktop tier takes still packs the whole strip
+    /// into two rows.
+    ///
+    /// It did not, and that is what [`STRIP_RAIL_W`] is for: with the Vol, SQL,
+    /// Drive and Tune rails each reserved at the style's 84 pt, RX + TX +
+    /// Display + System came to more than one row could hold, so System — and
+    /// on a slightly narrower pane Display with it — spilled onto a third row
+    /// while the S-meter above sat stretched over 300 pt of slack it had no use
+    /// for. A third row costs the waterfall a whole module height; two shorter
+    /// rails cost it nothing.
+    #[test]
+    fn the_desktop_strip_packs_a_cat_rig_into_two_rows() {
+        let (ctx, input) = desktop_ctx();
+        let _ = ctx.run_ui(input, |ui| {
+            // `top_bar` sets the strip's own inter-box gap before it packs.
+            let gap = 8.0;
+            // 1400 pt is where `layout::tier_for` starts calling a window a
+            // desktop; the top panel's 8+8 margin and `angled_frame`'s 10+10
+            // come off it before the packer sees it.
+            let avail = 1400.0 - 16.0 - 20.0;
+            let boxes = cat_rig_strip_boxes(ui, Mode::Lsb);
+            let widths: Vec<f32> = boxes.iter().map(|b| b.w).collect();
+            assert_eq!(
+                rows_needed(avail, gap, &boxes),
+                2,
+                "the strip wants {rows} rows of a {avail} pt pane; boxes {widths:?}",
+                rows = rows_needed(avail, gap, &boxes),
+            );
+        });
+    }
+
+    /// And the box the packer's slack lands on stays a control box rather than
+    /// becoming a 500 pt banner: whatever the row has spare, the VFO/RIT box
+    /// takes at most [`VFO_STRETCH_MAX`] of it.
+    #[test]
+    fn the_vfo_box_does_not_swallow_a_rows_slack() {
+        let (ctx, input) = desktop_ctx();
+        let _ = ctx.run_ui(input, |ui| {
+            let boxes = cat_rig_strip_boxes(ui, Mode::Lsb);
+            let plan = plan_top_strip(1364.0, 8.0, &boxes);
+            let vfo = plan
+                .rows
+                .iter()
+                .find_map(|r| r.boxes.clone().position(|i| i == 2).map(|j| r.widths[j]))
+                .expect("the VFO box was placed");
+            assert!(
+                vfo <= boxes[2].w + VFO_STRETCH_MAX + 0.5,
+                "the VFO box came out {vfo} pt against a natural {}",
+                boxes[2].w,
+            );
+        });
+    }
+
     /// Lay the condensed VFO/RIT box's rows out with real chips and drag
     /// values at desktop metrics and check both fit the width
     /// [`vfo_offsets_w`] and [`chip_row_w`] price — which is what keeps
@@ -4234,6 +4349,10 @@ mod tests {
                         let _ = ctx.run_ui(input, |ui| {
                             ui.spacing_mut().item_spacing =
                                 egui::vec2(MODULE_ROW_SPACING, MODULE_ROW_SPACING);
+                            // The box draws its Vol and SQL rails at what it
+                            // reserved for them, so the rows are laid out here
+                            // at the same figure.
+                            ui.spacing_mut().slider_width = STRIP_RAIL_W;
                             let (room1, room2) = rx_rows_w(ui, gain, decim, agc_off, mode);
                             let (mut vol, mut db) = (0.5f32, -88.8f32);
                             // The deepest threshold, which is the longest the
