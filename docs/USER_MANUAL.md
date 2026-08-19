@@ -540,7 +540,10 @@ sdroxide brings the receiver back up where you left it rather than on defaults.
 - **WIDE** — show or hide the **full-band strip**: a shallow second waterfall
   above the panadapter covering everything the receiver can see at once, with a
   blue outline around the slice the panadapter is receiving and an amber line on
-  the tuned frequency. Click anywhere on it to tune there. Hovering it shows a
+  the tuned frequency. A scale along its top labels round frequencies across the
+  band and both of its **limits** — the lowest and highest frequency the strip
+  covers, named in MHz at the two ends, so it is always clear what the strip is
+  showing. Click anywhere on it to tune there. Hovering it shows a
   crosshair and the frequency under the cursor, and **shift+drag** measures a
   span across it, both exactly as on the main waterfall. The button appears
   only on receivers that produce a full-band view — a direct-sampling front end

@@ -245,26 +245,62 @@ pub fn show(
         StrokeKind::Inside,
     );
 
-    // Megahertz grid, ticked at the top so it does not sit over the newest rows.
-    let step_mhz = if frame.span_hz > 20e6 { 5.0 } else { 1.0 };
-    let mut mhz = (lo / 1e6).ceil();
-    while mhz * 1e6 <= hi {
-        let x = x_of(mhz * 1e6);
-        let major = (mhz / step_mhz).fract().abs() < 1e-6;
-        painter.line_segment(
-            [Pos2::new(x, rect.top()), Pos2::new(x, rect.top() + if major { 7.0 } else { 3.0 })],
-            Stroke::new(1.0, Color32::from_white_alpha(90)),
-        );
-        if major {
-            painter.text(
-                Pos2::new(x + 2.0, rect.top() + 1.0),
+    // Frequency scale, ticked and labelled along the top so it stays clear of the
+    // newest rows. The step is the panadapter's own, so a strip and the
+    // panadapter under it never divide the same band differently — and unlike
+    // the fixed megahertz grid this replaces, it still labels a front end whose
+    // whole window is narrower than 1 MHz, such as a rig's own band scope.
+    let (lo_text, hi_text, lines) = scale_labels(lo, hi);
+    let font = egui::FontId::monospace(9.0 * crate::theme::panadapter_font_scale());
+    let tick = Stroke::new(1.0, Color32::from_white_alpha(90));
+
+    // The band's own limits. On a strip whose span the hardware fixes these are
+    // what says which band this is, and a window that starts on no round number
+    // gets no gridline near its edges at all.
+    let lo_box = backed_label(
+        &painter,
+        Pos2::new(rect.left() + 3.0, rect.top() + 1.0),
+        egui::Align2::LEFT_TOP,
+        &lo_text,
+        &font,
+        Color32::from_white_alpha(235),
+    );
+    let hi_box = backed_label(
+        &painter,
+        Pos2::new(rect.right() - 3.0, rect.top() + 1.0),
+        egui::Align2::RIGHT_TOP,
+        &hi_text,
+        &font,
+        Color32::from_white_alpha(235),
+    );
+
+    // Minor ticks between the labelled lines, at a round fraction of the step.
+    let minor = minor_step(spectrum_view::freq_grid_step(lo, hi));
+    let mut hz = (lo / minor).ceil() * minor;
+    while hz <= hi {
+        let x = x_of(hz);
+        painter.line_segment([Pos2::new(x, rect.top()), Pos2::new(x, rect.top() + 3.0)], tick);
+        hz += minor;
+    }
+
+    for (hz, text) in lines {
+        let x = x_of(hz);
+        painter.line_segment([Pos2::new(x, rect.top()), Pos2::new(x, rect.top() + 7.0)], tick);
+        // A label that would run into either edge label is dropped rather than
+        // drawn over it: the limits outrank a gridline that is one tick away
+        // from being spelled out already.
+        let pos = Pos2::new(x + 2.0, rect.top() + 1.0);
+        let w = painter.layout_no_wrap(text.clone(), font.clone(), Color32::WHITE).size().x;
+        if pos.x - 4.0 > lo_box.right() && pos.x + w + 4.0 < hi_box.left() {
+            backed_label(
+                &painter,
+                pos,
                 egui::Align2::LEFT_TOP,
-                format!("{mhz:.0}"),
-                egui::FontId::proportional(9.0 * crate::theme::panadapter_font_scale()),
-                Color32::from_white_alpha(150),
+                &text,
+                &font,
+                Color32::from_white_alpha(170),
             );
         }
-        mhz += 1.0;
     }
 
     // The tuned frequency.
@@ -328,6 +364,56 @@ pub fn show(
     }
 }
 
+/// The scale's text: the two edge labels — the only ones carrying the unit, so
+/// the rest can stay bare numbers — and a `(frequency, label)` pair per
+/// gridline, each with just enough decimals to tell its neighbours apart.
+fn scale_labels(lo: f64, hi: f64) -> (String, String, Vec<(f64, String)>) {
+    let step = spectrum_view::freq_grid_step(lo, hi);
+    let dec = mhz_decimals(step);
+    // The edges are not on the grid, so they need the resolution of the band
+    // rather than of the step: kilohertz at least, more when the step is finer.
+    let edge_dec = dec.max(3);
+    let lines = spectrum_view::freq_gridlines(lo, hi)
+        .into_iter()
+        .map(|hz| (hz, format!("{:.*}", dec, hz / 1e6)))
+        .collect();
+    (format!("{:.*} MHz", edge_dec, lo / 1e6), format!("{:.*} MHz", edge_dec, hi / 1e6), lines)
+}
+
+/// Decimals needed to write a step of `step_hz` in MHz without losing it.
+fn mhz_decimals(step_hz: f64) -> usize {
+    let mhz = step_hz / 1e6;
+    if mhz <= 0.0 || !mhz.is_finite() {
+        return 3;
+    }
+    (-mhz.log10().floor()).clamp(0.0, 6.0) as usize
+}
+
+/// Tick spacing between two labelled gridlines: a fifth of the step, or a half
+/// when the step is 2·10^k — the two that land on round frequencies.
+fn minor_step(step_hz: f64) -> f64 {
+    let mag = 10f64.powf(step_hz.log10().floor());
+    if (step_hz / mag).round() == 2.0 { step_hz / 2.0 } else { step_hz / 5.0 }
+}
+
+/// Draw a scale label with a dark backing and return the box it took. Without
+/// the backing a label over a strong carrier — the brightest thing on the strip
+/// — is the one place the scale cannot be read.
+fn backed_label(
+    p: &egui::Painter,
+    pos: Pos2,
+    align: egui::Align2,
+    text: &str,
+    font: &egui::FontId,
+    color: Color32,
+) -> Rect {
+    let galley = p.layout_no_wrap(text.to_string(), font.clone(), color);
+    let bg = align.anchor_size(pos, galley.size()).expand2(Vec2::new(2.0, 0.5));
+    p.rect_filled(bg, 2.0, Color32::from_black_alpha(120));
+    p.galley(align.anchor_size(pos, galley.size()).min, galley, color);
+    bg
+}
+
 /// The frequency at screen `x`, clamped to the band the strip is showing —
 /// a measuring drag is free to leave the strip, the front end is not.
 fn hz_at(rect: &Rect, lo: f64, hi: f64, x: f32) -> f64 {
@@ -382,6 +468,45 @@ mod tests {
         // lets the hover readout show the click's own frequency.
         assert!((tuned(hz) - hz).abs() <= CLICK_STEP / 2.0);
         assert_eq!(tuned(14_074_063.0), 14_074_100.0);
+    }
+
+    /// The strip's whole point is showing a band at once, so its two limits are
+    /// labelled outright — they are what names the band, and a window that
+    /// starts on no round number has no gridline near its edges to imply them.
+    #[test]
+    fn the_scale_labels_the_bands_own_limits() {
+        let (lo_text, hi_text, lines) = scale_labels(0.0, 32.4e6);
+        assert_eq!(lo_text, "0.000 MHz");
+        assert_eq!(hi_text, "32.400 MHz");
+        // ...and every 5 MHz, as bare numbers under that unit. The line on the
+        // low edge keeps its tick, but the drawing drops its label in favour of
+        // the edge's own — nobody needs "0" and "0.000 MHz" side by side.
+        assert_eq!(
+            lines.iter().map(|(_, t)| t.as_str()).collect::<Vec<_>>(),
+            ["0", "5", "10", "15", "20", "25", "30"]
+        );
+    }
+
+    /// The grid this replaced was a fixed 1 MHz, which left a front end whose
+    /// whole window is narrower than that — a rig's own band scope, an Icom's
+    /// 100 kHz sweep — with a scale carrying no label at all.
+    #[test]
+    fn a_window_narrower_than_a_megahertz_is_still_labelled() {
+        let (lo_text, hi_text, lines) = scale_labels(14.05e6, 14.15e6);
+        assert_eq!((lo_text.as_str(), hi_text.as_str()), ("14.050 MHz", "14.150 MHz"));
+        assert!(lines.len() >= 4, "a 100 kHz window got {} labels", lines.len());
+        // Two decimals: enough to tell 20 kHz apart, and no more.
+        assert_eq!(lines.iter().map(|(_, t)| t.as_str()).collect::<Vec<_>>()[0], "14.06");
+    }
+
+    /// Minor ticks have to land on round frequencies for every step the grid
+    /// picks, or they read as noise between the labels.
+    #[test]
+    fn minor_ticks_land_on_round_frequencies() {
+        for (step, want) in [(1e6, 200e3), (2e6, 1e6), (5e6, 1e6), (20e3, 10e3), (50e3, 10e3)] {
+            let got = minor_step(step);
+            assert!((got - want).abs() < 1.0, "step {step} gave a {got} Hz tick, wanted {want}");
+        }
     }
 
     /// A measuring drag is free to leave the strip; the band it measures is not.

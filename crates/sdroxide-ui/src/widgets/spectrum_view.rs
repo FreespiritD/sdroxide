@@ -2277,7 +2277,7 @@ fn draw_grid(painter: &egui::Painter, view: &ViewState, rect: &Rect) {
             db += 20.0;
         }
     }
-    for hz in freq_gridlines(view) {
+    for hz in freq_gridlines(view.view_lo_hz, view.view_hi_hz) {
         let x = view.freq_to_x(hz, rect);
         painter.vline(x, rect.y_range(), grid);
     }
@@ -2285,7 +2285,7 @@ fn draw_grid(painter: &egui::Painter, view: &ViewState, rect: &Rect) {
 
 fn draw_scale(painter: &egui::Painter, view: &ViewState, rect: &Rect) {
     painter.rect_filled(*rect, 0.0, Color32::from_gray(20));
-    for hz in freq_gridlines(view) {
+    for hz in freq_gridlines(view.view_lo_hz, view.view_hi_hz) {
         let x = view.freq_to_x(hz, rect);
         painter.vline(
             x,
@@ -2318,16 +2318,23 @@ fn time_grid_step_s(visible_secs: f64) -> f64 {
     *STEPS.iter().find(|&&s| s >= target).unwrap_or(STEPS.last().expect("non-empty"))
 }
 
-/// Gridline frequencies at a 1/2/5·10^k step giving ~5–10 lines.
-fn freq_gridlines(view: &ViewState) -> Vec<f64> {
-    let span = view.span();
-    let raw = span / 8.0;
+/// Gridline spacing for a frequency range: a 1/2/5·10^k step giving ~5–10 lines.
+///
+/// Takes bare edges rather than a [`ViewState`] so the full-band strip
+/// ([`crate::widgets::wide_spectrum`]), whose axis is the front end's whole
+/// window rather than a panadapter viewport, divides its scale the same way.
+pub(crate) fn freq_grid_step(lo_hz: f64, hi_hz: f64) -> f64 {
+    let raw = (hi_hz - lo_hz) / 8.0;
     let mag = 10f64.powf(raw.log10().floor());
-    let step =
-        [1.0, 2.0, 5.0, 10.0].iter().map(|m| m * mag).find(|&s| s >= raw).unwrap_or(mag * 10.0);
+    [1.0, 2.0, 5.0, 10.0].iter().map(|m| m * mag).find(|&s| s >= raw).unwrap_or(mag * 10.0)
+}
+
+/// Gridline frequencies inside a range, at [`freq_grid_step`].
+pub(crate) fn freq_gridlines(lo_hz: f64, hi_hz: f64) -> Vec<f64> {
+    let step = freq_grid_step(lo_hz, hi_hz);
     let mut out = Vec::new();
-    let mut hz = (view.view_lo_hz / step).ceil() * step;
-    while hz <= view.view_hi_hz {
+    let mut hz = (lo_hz / step).ceil() * step;
+    while hz <= hi_hz {
         out.push(hz);
         hz += step;
     }
