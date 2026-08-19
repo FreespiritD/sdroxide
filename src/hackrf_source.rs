@@ -294,7 +294,7 @@ impl IqSource for HackRfSource {
     /// this — but a burst asks explicitly and gets a longer, blocking wait.
     fn tx_drain(&mut self) {
         let deadline = Instant::now() + TX_WRITE_TIMEOUT;
-        while self.handle.tx_pending() > 0 && Instant::now() < deadline {
+        while !self.handle.tx_drained() && Instant::now() < deadline {
             if !self.handle.is_alive() {
                 return;
             }

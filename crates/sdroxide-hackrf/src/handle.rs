@@ -38,7 +38,7 @@ use rtrb::{Consumer, Producer, RingBuffer};
 use sdroxide_types::HackRfConfig;
 
 use crate::error::Result;
-use crate::protocol::{BYTES_PER_SAMPLE, BoardKind, GainSetter};
+use crate::protocol::{BULK_PACKET, BYTES_PER_SAMPLE, BoardKind, GainSetter};
 use crate::trace::Trace;
 
 /// How often the stream thread emits a throughput line.
@@ -518,6 +518,20 @@ impl HackRfHandle {
     /// not.
     pub fn tx_pending(&self) -> usize {
         self.tx.buffer().capacity() - self.tx.slots()
+    }
+
+    /// Whether everything the pump can still move has left the ring.
+    ///
+    /// **Not `tx_pending() == 0`, and the difference is load-bearing.** The
+    /// pump submits whole bulk packets only — a short transfer mid-over ends the
+    /// radio's own fixed-size block early and puts the two out of step for the
+    /// rest of the over — so it deliberately leaves a remainder of under one
+    /// packet in the ring. That scrap goes out at key-up, where a short packet
+    /// is the correct end-of-data marker and the drain waits for it. Waiting for
+    /// zero here would therefore never be satisfied, and a caller would burn its
+    /// whole timeout on every burst.
+    pub fn tx_drained(&self) -> bool {
+        self.tx_pending() < BULK_PACKET
     }
 
     fn send(&self, c: Ctrl) {

@@ -55,6 +55,17 @@ const TX_DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
 /// samples meet a queue that is already running rather than starting one.
 const TX_PRIME_SECS: f64 = 0.050;
 
+/// How long a keyed radio may go without completing a single transfer before
+/// the trace says so out loud.
+///
+/// The one line a stuck key-down was missing. `HackRfSource::tx_write` gives up
+/// after two seconds and the engine then tears the whole source down, so
+/// without a notice well inside that window the trace shows a key-down, a
+/// silence, and a shutdown — which is indistinguishable from a dozen other
+/// faults. 250 ms is long enough that a slow first block never trips it (the
+/// prime alone is 50 ms) and short enough to land before the deadline does.
+const TX_STALL_NOTICE: Duration = Duration::from_millis(250);
+
 /// Transfer geometry, bounded against a hand-edited config the way the RTL-SDR
 /// backend bounds its own.
 ///
@@ -81,7 +92,101 @@ fn geometry(cfg: &HackRfConfig) -> (usize, usize) {
 /// to give one up to get the other — see the module header.
 enum Lane {
     Rx(nusb::Endpoint<Bulk, In>),
-    Tx(nusb::Endpoint<Bulk, Out>),
+    Tx(nusb::Endpoint<Bulk, Out>, TxStats),
+}
+
+/// What the transmit lane has actually done, for the trace.
+///
+/// Summarised rather than logged per transfer, and that is a constraint rather
+/// than a preference: a fifteen-second FT8 over submits well over a thousand
+/// transfers, and a line each would push the open sequence out of the ring (see
+/// [`Trace::CAPACITY`]) — losing exactly the context a transmit report has to be
+/// read against. So this records four moments instead: the endpoint opening,
+/// the *first* completion, the notice that there has not been one, and the
+/// summary at key-up.
+struct TxStats {
+    keyed: Instant,
+    submitted: u64,
+    completed: u64,
+    bytes: u64,
+    errors: u64,
+    stalls: u64,
+    /// Set once the radio has proved it is reading the endpoint at all.
+    moving: bool,
+    /// Set once [`TX_STALL_NOTICE`] has been reported, so it is said once.
+    notice_given: bool,
+}
+
+impl TxStats {
+    fn new() -> TxStats {
+        TxStats {
+            keyed: Instant::now(),
+            submitted: 0,
+            completed: 0,
+            bytes: 0,
+            errors: 0,
+            stalls: 0,
+            moving: false,
+            notice_given: false,
+        }
+    }
+
+    fn on_submit(&mut self, bytes: usize) {
+        self.submitted += 1;
+        self.bytes += bytes as u64;
+    }
+
+    /// A completion came back. The first one is the interesting one: it is the
+    /// moment the radio proves it is reading the bulk OUT endpoint, and until
+    /// it arrives every other explanation for a silent transmitter is still on
+    /// the table.
+    fn on_complete(&mut self, trace: &Trace) {
+        self.completed += 1;
+        if !self.moving {
+            self.moving = true;
+            trace.note(format!(
+                "the radio is taking transmit data ({:.0} ms after key-down)",
+                self.keyed.elapsed().as_secs_f64() * 1000.0
+            ));
+        }
+    }
+
+    /// Say — once — that the radio is keyed and reading nothing.
+    fn check_stalled(&mut self, pending: usize, trace: &Trace) {
+        if self.moving || self.notice_given || self.keyed.elapsed() < TX_STALL_NOTICE {
+            return;
+        }
+        self.notice_given = true;
+        let msg = format!(
+            "NOT ONE transmit transfer has completed {:.0} ms after key-down: {} submitted              ({} bytes), {} still pending, {} error(s), {} stall(s). The radio is keyed but              is not reading the bulk OUT endpoint.",
+            self.keyed.elapsed().as_secs_f64() * 1000.0,
+            self.submitted,
+            self.bytes,
+            pending,
+            self.errors,
+            self.stalls,
+        );
+        tracing::warn!("HackRF: {msg}");
+        trace.note(msg);
+    }
+
+    /// One line at key-up. The equivalent rate is the load-bearing figure: a
+    /// transmitter that consumed at anything other than the sample rate did not
+    /// put the over on the air the way the engine built it.
+    fn summary(&self) -> String {
+        let secs = self.keyed.elapsed().as_secs_f64();
+        let sps = if secs > 0.0 { self.bytes as f64 / BYTES_PER_SAMPLE as f64 / secs } else { 0.0 };
+        format!(
+            "{}/{} transfers completed, {} bytes over {:.2}s ({:.1} ksps equivalent),              {} error(s), {} stall(s)",
+            self.completed,
+            self.submitted,
+            self.bytes,
+            secs,
+            sps / 1e3,
+            self.errors,
+            self.stalls,
+        )
+    }
 }
 
 /// Open the radio and start the stream thread.
@@ -238,7 +343,7 @@ fn pump(
     let mut stats = RxStats::new(dev.rate_hz());
     let started = Instant::now();
     let mut logged_first = false;
-    let mut lane = open_rx(dev, in_flight, transfer_bytes)?;
+    let mut lane = open_rx(dev, in_flight, transfer_bytes, trace)?;
     let mut carry: Option<u8> = None;
     let mut tx_bytes: Vec<u8> = Vec::with_capacity(transfer_bytes);
 
@@ -275,7 +380,7 @@ fn pump(
                     shared.tx_active.store(false, Ordering::Relaxed);
                     let _ = dev.end_tx();
                     stats.restart_clock();
-                    open_rx(dev, in_flight, transfer_bytes)?
+                    open_rx(dev, in_flight, transfer_bytes, trace)?
                 }
             };
         }
@@ -297,8 +402,8 @@ fn pump(
                 )?;
                 stats.tick(trace);
             }
-            Lane::Tx(ep) => {
-                service_tx(ep, tx, &mut tx_bytes, in_flight, transfer_bytes)?;
+            Lane::Tx(ep, tx_stats) => {
+                service_tx(ep, tx_stats, tx, &mut tx_bytes, in_flight, transfer_bytes, trace)?;
             }
         }
     }
@@ -361,7 +466,7 @@ fn transition(
 ) -> Result<Lane> {
     match t {
         TxTransition::Begin { center_hz } => {
-            if matches!(lane, Lane::Tx(_)) {
+            if matches!(lane, Lane::Tx(..)) {
                 // Already keyed. A second Begin is a retune, not a second
                 // key-down — keying an already-keyed radio would tear the
                 // endpoint down mid-over for nothing.
@@ -371,16 +476,16 @@ fn transition(
             // Give up the receive endpoint *before* the mode changes.
             close(lane);
             dev.begin_tx(center_hz)?;
-            let ep = open_tx(dev, transfer_bytes)?;
+            let ep = open_tx(dev, trace)?;
             shared.tx_active.store(true, Ordering::Relaxed);
-            Ok(prime_tx(ep, dev.rate_hz(), in_flight, transfer_bytes))
+            Ok(prime_tx(ep, dev.rate_hz(), in_flight, transfer_bytes, trace))
         }
         TxTransition::Freq(hz) => {
             dev.set_tx_center_hz(hz)?;
             Ok(lane)
         }
         TxTransition::End => {
-            let Lane::Tx(mut ep) = lane else {
+            let Lane::Tx(mut ep, mut stats) = lane else {
                 // Not keyed. Nothing to unkey, and re-opening the receive
                 // endpoint here would drop the stream for no reason.
                 return Ok(lane);
@@ -388,34 +493,73 @@ fn transition(
             // Let the tail out before anything else. The engine only asks for
             // an explicit drain on the digital-burst path, so this is what
             // keeps an ordinary key-up from clipping the end of the over.
-            drain_tx(&mut ep, tx, transfer_bytes);
-            close(Lane::Tx(ep));
+            drain_tx(&mut ep, tx, transfer_bytes, &mut stats, trace);
+            trace.note(format!("transmit ended: {}", stats.summary()));
+            close(Lane::Tx(ep, stats));
             shared.tx_active.store(false, Ordering::Relaxed);
             dev.end_tx()?;
             trace.note("back to receive");
-            open_rx(dev, in_flight, transfer_bytes)
+            open_rx(dev, in_flight, transfer_bytes, trace)
         }
     }
 }
 
-fn open_rx(dev: &mut Device<UsbDev>, in_flight: usize, transfer_bytes: usize) -> Result<Lane> {
+/// Put the host's idea of an endpoint back in step with the radio's, before
+/// anything is submitted to it.
+///
+/// **This is not about a halt.** `SetTransceiverMode` makes the firmware
+/// re-initialise both bulk endpoints, and that resets the data toggle on the
+/// *radio's* side. Nothing resets it on the host's — claiming an interface that
+/// is already claimed leaves whatever the previous program left behind, so
+/// after a direction change the two can disagree about which of DATA0/DATA1
+/// comes next. A radio that disagrees does not stall and does not error: it
+/// ignores every packet, the host retries forever, and the transfers are simply
+/// never completed. That is indistinguishable from a wedged transmitter and it
+/// is what a stuck key-down looks like in a trace.
+///
+/// `CLEAR_FEATURE(ENDPOINT_HALT)` is the standard way to force the host's
+/// toggle back to DATA0, and it is a no-op on an endpoint that was not halted —
+/// so this is cheap insurance on both lanes rather than a fix for one.
+fn resync_endpoint(
+    what: &str,
+    r: impl MaybeFuture<Output = std::result::Result<(), nusb::Error>>,
+    trace: &Trace,
+) {
+    if let Err(e) = r.wait() {
+        // Not fatal: a radio whose toggle already matched works regardless, and
+        // one whose does not is about to say so far more loudly.
+        trace.note(format!("could not resynchronise the {what} endpoint: {e}"));
+    }
+}
+
+fn open_rx(
+    dev: &mut Device<UsbDev>,
+    in_flight: usize,
+    transfer_bytes: usize,
+    trace: &Trace,
+) -> Result<Lane> {
     let mut ep = dev
         .io()
         .interface()
         .endpoint::<Bulk, In>(BULK_IN)
         .map_err(|e| Error::Access(format!("cannot open the HackRF receive endpoint: {e}")))?;
+    resync_endpoint("receive", ep.clear_halt(), trace);
     for _ in 0..in_flight {
         ep.submit(ep.allocate(transfer_bytes));
     }
     Ok(Lane::Rx(ep))
 }
 
-fn open_tx(dev: &mut Device<UsbDev>, transfer_bytes: usize) -> Result<nusb::Endpoint<Bulk, Out>> {
-    let _ = transfer_bytes;
-    dev.io()
+fn open_tx(dev: &mut Device<UsbDev>, trace: &Trace) -> Result<nusb::Endpoint<Bulk, Out>> {
+    let mut ep = dev
+        .io()
         .interface()
         .endpoint::<Bulk, Out>(BULK_OUT)
-        .map_err(|e| Error::Access(format!("cannot open the HackRF transmit endpoint: {e}")))
+        .map_err(|e| Error::Access(format!("cannot open the HackRF transmit endpoint: {e}")))?;
+    // After the mode change, never before: the re-initialisation this is
+    // resynchronising against is the one `Device::begin_tx` just caused.
+    resync_endpoint("transmit", ep.clear_halt(), trace);
+    Ok(ep)
 }
 
 /// Pre-load the transmit queue with silence.
@@ -429,7 +573,9 @@ fn prime_tx(
     rate_hz: f64,
     in_flight: usize,
     transfer_bytes: usize,
+    trace: &Trace,
 ) -> Lane {
+    let mut stats = TxStats::new();
     let want = (rate_hz * BYTES_PER_SAMPLE as f64 * TX_PRIME_SECS) as usize;
     let blocks = (want / transfer_bytes).clamp(1, in_flight);
     for _ in 0..blocks {
@@ -437,8 +583,17 @@ fn prime_tx(
         buf.clear();
         buf.extend_fill(transfer_bytes, 0);
         ep.submit(buf);
+        stats.on_submit(transfer_bytes);
     }
-    Lane::Tx(ep)
+    // The counterpart to the `RX -> TX` banner: it says the control half of the
+    // key-down worked, so anything that goes wrong from here is the bulk half.
+    trace.note(format!(
+        "transmit endpoint open; primed with {blocks} x {transfer_bytes} B of silence \
+         ({:.0} ms at {:.3} Msps)",
+        (blocks * transfer_bytes / BYTES_PER_SAMPLE) as f64 / rate_hz * 1000.0,
+        rate_hz / 1e6,
+    ));
+    Lane::Tx(ep, stats)
 }
 
 /// Keep the receive queue full and move what comes back into the ring.
@@ -554,27 +709,41 @@ fn split_pairs<'a>(bytes: &'a [u8], carry: &Option<u8>) -> (&'a [u8], Option<u8>
     (&bytes[offset..offset + whole], tail)
 }
 
+/// The largest whole number of packets that fits in `avail`, capped at one
+/// transfer.
+///
+/// **Whole packets, not merely whole samples.** A bulk transfer whose length is
+/// not a multiple of [`BULK_PACKET`] ends in a short packet, and a short packet
+/// terminates the firmware's fixed-size bulk-OUT block early — so the radio
+/// hands its transmit buffer to the M0 part-filled and the host and the radio
+/// are out of step for the rest of the over. libhackrf never does this: it
+/// submits exactly its transfer size every time. [`BULK_PACKET`] is even, so
+/// this keeps whole I/Q pairs for free.
+///
+/// The remainder is not lost, it is left in the ring for the next pass. Only
+/// [`drain_tx`] may send a short transfer, because at key-up there is no next
+/// pass and the short packet is then the correct end-of-data marker.
+fn whole_packets(avail: usize, transfer_bytes: usize) -> usize {
+    avail.min(transfer_bytes) / BULK_PACKET * BULK_PACKET
+}
+
 /// Keep the transmit queue fed from the ring.
 fn service_tx(
     ep: &mut nusb::Endpoint<Bulk, Out>,
+    stats: &mut TxStats,
     tx: &mut Consumer<u8>,
     scratch: &mut Vec<u8>,
     in_flight: usize,
     transfer_bytes: usize,
+    trace: &Trace,
 ) -> Result<()> {
     // Reap what has gone out first, so the queue depth below is honest.
     while let Some(c) = ep.wait_next_complete(Duration::ZERO) {
-        match c.status {
-            Ok(()) | Err(TransferError::Cancelled) => {}
-            Err(TransferError::Disconnected) => {
-                return Err(Error::NotFound("the HackRF was unplugged".into()));
-            }
-            Err(e) => tracing::debug!("HackRF transmit transfer error: {e}"),
-        }
+        reap_tx(c.status, ep, stats, trace)?;
     }
 
     while ep.pending() < in_flight {
-        let take = tx.slots().min(transfer_bytes) & !1;
+        let take = whole_packets(tx.slots(), transfer_bytes);
         if take == 0 {
             break;
         }
@@ -592,15 +761,65 @@ fn service_tx(
         buf.clear();
         buf.extend_from_slice(scratch);
         ep.submit(buf);
+        stats.on_submit(take);
     }
+
+    // Said once, and well inside `tx_write`'s two-second deadline, so a radio
+    // that is keyed and reading nothing is named in the trace rather than
+    // leaving a silent gap between the key-down banner and the shutdown.
+    stats.check_stalled(ep.pending(), trace);
 
     // Nothing to send and nothing outstanding: wait briefly rather than spin.
     // The radio is keyed and idle, which is what the pause between two
     // paced blocks looks like.
     if ep.pending() == 0 {
         std::thread::sleep(Duration::from_micros(500));
-    } else {
-        let _ = ep.wait_next_complete(COMPLETE_TIMEOUT);
+    } else if let Some(c) = ep.wait_next_complete(COMPLETE_TIMEOUT) {
+        // Accounted for rather than dropped: this is where most completions are
+        // actually collected, and losing them here would hold back the "the
+        // radio is taking transmit data" line past the moment it happened.
+        reap_tx(c.status, ep, stats, trace)?;
+    }
+    Ok(())
+}
+
+/// Account for one transmit completion.
+///
+/// `Err` is reserved for the one status that ends the stream; everything else
+/// is recorded and carried through, because a transmitter that hits a bad
+/// transfer mid-over should finish the over.
+fn reap_tx(
+    status: std::result::Result<(), TransferError>,
+    ep: &mut nusb::Endpoint<Bulk, Out>,
+    stats: &mut TxStats,
+    trace: &Trace,
+) -> Result<()> {
+    match status {
+        Ok(()) => stats.on_complete(trace),
+        Err(TransferError::Cancelled) => {}
+        Err(TransferError::Disconnected) => {
+            return Err(Error::NotFound("the HackRF was unplugged".into()));
+        }
+        Err(TransferError::Stall) => {
+            // The receive lane has always cleared its halt; this one logged at
+            // `debug` and carried on, which meant a halted transmitter threw
+            // every later transfer away instantly and put nothing on the air —
+            // silently, and with the ring draining fast enough that from the
+            // engine's side it looked like it was working.
+            stats.stalls += 1;
+            tracing::warn!("HackRF transmit endpoint stalled; clearing");
+            trace.note("transmit endpoint stalled; cleared");
+            let _ = ep.clear_halt().wait();
+        }
+        Err(e) => {
+            stats.errors += 1;
+            // Once. A failing endpoint fails every transfer, and a line each
+            // would bury the sequence around the key-down.
+            if stats.errors == 1 {
+                trace.note(format!("transmit transfer error: {e}"));
+            }
+            tracing::debug!("HackRF transmit transfer error: {e}");
+        }
     }
     Ok(())
 }
@@ -609,11 +828,24 @@ fn service_tx(
 ///
 /// Bounded: past [`TX_DRAIN_TIMEOUT`] the tail is abandoned, because a
 /// transmitter that will not stop is worse than an over that ends early.
-fn drain_tx(ep: &mut nusb::Endpoint<Bulk, Out>, tx: &mut Consumer<u8>, transfer_bytes: usize) {
+fn drain_tx(
+    ep: &mut nusb::Endpoint<Bulk, Out>,
+    tx: &mut Consumer<u8>,
+    transfer_bytes: usize,
+    stats: &mut TxStats,
+    trace: &Trace,
+) {
     let deadline = Instant::now() + TX_DRAIN_TIMEOUT;
     let mut scratch = Vec::with_capacity(transfer_bytes);
     while Instant::now() < deadline {
-        let take = tx.slots().min(transfer_bytes) & !1;
+        let avail = tx.slots();
+        // Whole packets while there is at least one, then the last scrap of the
+        // over as a short transfer. This is the only place a short packet is
+        // correct: it *is* the end of the data, so terminating the radio's
+        // block early is what we want rather than something to avoid — and
+        // unlike `service_tx` there is no next pass to fold the remainder into.
+        let take =
+            if avail >= BULK_PACKET { whole_packets(avail, transfer_bytes) } else { avail & !1 };
         if take == 0 {
             break;
         }
@@ -630,11 +862,17 @@ fn drain_tx(ep: &mut nusb::Endpoint<Bulk, Out>, tx: &mut Consumer<u8>, transfer_
         buf.clear();
         buf.extend_from_slice(&scratch);
         ep.submit(buf);
-        let _ = ep.wait_next_complete(Duration::from_millis(20));
+        stats.on_submit(take);
+        if let Some(c) = ep.wait_next_complete(Duration::from_millis(20)) {
+            let _ = reap_tx(c.status, ep, stats, trace);
+        }
     }
     while ep.pending() > 0 && Instant::now() < deadline {
-        if ep.wait_next_complete(Duration::from_millis(20)).is_none() {
-            break;
+        match ep.wait_next_complete(Duration::from_millis(20)) {
+            Some(c) => {
+                let _ = reap_tx(c.status, ep, stats, trace);
+            }
+            None => break,
         }
     }
 }
@@ -660,7 +898,7 @@ fn close(lane: Lane) {
                 }
             }
         }
-        Lane::Tx(mut ep) => {
+        Lane::Tx(mut ep, _) => {
             ep.cancel_all();
             while ep.pending() > 0 && Instant::now() < deadline {
                 if ep.wait_next_complete(Duration::from_millis(20)).is_none() {
@@ -705,6 +943,36 @@ mod tests {
 
     /// A transfer ending between an I and its Q must not put the ring out of
     /// step. The tail is held back rather than pushed.
+    /// The invariant [`BULK_PACKET`] states and the transmit pump used to break:
+    /// a transfer is a whole number of packets. A short packet ends the radio's
+    /// own fixed-size bulk-OUT block early, so this is the difference between a
+    /// clean over and a host and radio out of step for the rest of it.
+    #[test]
+    fn transmit_transfers_are_whole_packets_and_strand_almost_nothing() {
+        let transfer_bytes = 64 * 1024;
+        for avail in [0usize, 1, 2, 511, 512, 513, 1023, 9_600, 40_000, 1 << 20] {
+            let take = whole_packets(avail, transfer_bytes);
+            assert_eq!(take % BULK_PACKET, 0, "{avail} available produced a short packet");
+            assert!(take <= avail, "{avail} available took more than the ring held");
+            assert!(take <= transfer_bytes, "{avail} available exceeded one transfer");
+            // At most one packet is ever held back, so the ring cannot build a
+            // backlog the pump will not touch. `drain_tx` releases that scrap.
+            assert!(
+                avail.min(transfer_bytes) - take < BULK_PACKET,
+                "{avail} available stranded a whole packet"
+            );
+        }
+
+        // Why the old even-length mask was not enough: neither block size the
+        // engine actually produces is a whole number of packets, so *every*
+        // transfer ended short.
+        let block = |rate: f64| (480.0 * rate / 48_000.0) as usize * BYTES_PER_SAMPLE;
+        assert_eq!(block(500_000.0), 10_000);
+        assert_ne!(block(500_000.0) % BULK_PACKET, 0, "500 ksps block was packet-aligned");
+        assert_eq!(block(2_000_000.0), 40_000);
+        assert_ne!(block(2_000_000.0) % BULK_PACKET, 0, "2 Msps block was packet-aligned");
+    }
+
     #[test]
     fn an_odd_completion_holds_its_last_byte_back() {
         // Even length, nothing carried: everything is usable.
