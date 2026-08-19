@@ -1806,9 +1806,8 @@ pub(in crate::app) fn settings_icomnet_tab(
 /// Kept as a function so the UI crate needs no dependency on the backend crate
 /// just to repeat one sentence.
 fn sdroxide_icomnet_hint() -> &'static str {
-    "Receiving is confirmed on an IC-705 over WiFi; every other model, and transmit, \
-     still rest on the documentation. If it misbehaves, please attach the diagnostic \
-     report to a bug report."
+    "Verified on an IC-705 over WiFi; every other model, and still rest on the documentation. \
+     If it misbehaves, please attach the diagnostic report to a bug report."
 }
 
 /// The outcome line under a "Test connection" button.
