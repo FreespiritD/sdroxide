@@ -93,6 +93,16 @@ const METER_MAX_AGE: Duration = Duration::from_millis(1500);
 /// How often to ask the radio where it is tuned and what its meter reads.
 const POLL_PERIOD: Duration = Duration::from_millis(200);
 
+/// How long a mode we have commanded outranks the mode the radio reports.
+///
+/// The mode is polled every [`POLL_PERIOD`], so a read issued just before the
+/// operator changed mode comes back carrying the mode the radio was in a moment
+/// ago — and adopting that would drag the app straight back off the mode it had
+/// just chosen. Several poll periods, to cover a WiFi link's latency, and no
+/// more: a radio that simply will not go where it was told has to be allowed to
+/// win, or the two stay out of step for the rest of the session.
+const MODE_SETTLE: Duration = Duration::from_millis(1000);
+
 /// A scope that has sent nothing for this long has stopped. Sweeps arrive
 /// about ten times a second, so this is a silence, not a slow sweep — and it is
 /// long enough to sit through a band change or a menu the operator opened on
@@ -153,6 +163,11 @@ pub struct IcomNetSource {
     scope_stalled: bool,
 
     last_poll: Instant,
+    /// The CI-V mode byte last commanded from here, and when — see
+    /// [`MODE_SETTLE`]. Held as the wire byte rather than a [`Mode`] because
+    /// the two do not spell the same thing: every digital mode is commanded as
+    /// plain USB, and comes back as plain USB.
+    mode_cmd: Option<(u8, Instant)>,
     last_signal: Option<(Instant, f32)>,
     last_telem: Option<TxTelemetry>,
     transmitting: bool,
@@ -233,6 +248,7 @@ impl IcomNetSource {
             scope_retry: SCOPE_RETRY,
             scope_stalled: false,
             last_poll: Instant::now(),
+            mode_cmd: None,
             last_signal: None,
             last_telem: None,
             transmitting: false,
@@ -418,7 +434,21 @@ impl IcomNetSource {
                 }
             }
             0x01 | 0x04 => {
-                if let Some(m) = reply.data.first().and_then(|&b| civ::civ_to_mode(b)) {
+                let Some(&b) = reply.data.first() else { return };
+                // A report that disagrees with a mode we have just commanded is
+                // the stale one — the read went out before the set did.
+                if let Some((want, at)) = self.mode_cmd {
+                    if b == want {
+                        self.mode_cmd = None;
+                    } else if at.elapsed() < MODE_SETTLE {
+                        return;
+                    } else {
+                        // Long enough: the radio is somewhere else and means
+                        // it. Its mode is the real one, so stop arguing.
+                        self.mode_cmd = None;
+                    }
+                }
+                if let Some(m) = civ::civ_to_mode(b) {
                     self.pending.push(ControlUpdate::Mode(m));
                 }
             }
@@ -592,7 +622,20 @@ impl IqSource for IcomNetSource {
         std::mem::take(&mut self.pending)
     }
 
+    /// The radio in front of us is the rig, so the mode control has to reach it
+    /// on both receive paths — including the 12 kHz IF, where sdroxide does the
+    /// demodulating but the radio's mode still picks the IF filter the stream
+    /// arrives through, and its own display would otherwise disagree with ours.
+    ///
+    /// Not [`IqSource::tracks_rx_mode`], which would also assert the session's
+    /// mode the moment the connection opens: this backend adopts the dial and
+    /// the mode the transceiver is already on, the way the CAT backend does.
+    fn commands_rx_mode(&self) -> bool {
+        true
+    }
+
     fn set_control_mode(&mut self, mode: Mode) -> Result<()> {
+        self.mode_cmd = Some((civ::mode_to_civ(mode), Instant::now()));
         self.send(civ::set_mode_frame(self.civ_addr, mode));
         Ok(())
     }
@@ -906,6 +949,57 @@ mod tests {
                 || src.center_hz() == 7_074_000.0
         });
         assert_eq!(src.center_hz(), 7_074_000.0);
+    }
+
+    #[test]
+    fn switching_mode_sends_the_radio_a_set_mode() {
+        // Field report, 2026-08-19: an IC-705 on the 12 kHz IF followed mode
+        // changes made at the radio but not ones made in sdroxide. The stream
+        // is not `audio_mode`, so the engine's "command the rig's mode" gate
+        // never fired — see `IqSource::commands_rx_mode`.
+        let sim = Sim::start(SimOptions { scope: false, ..Default::default() }).unwrap();
+        let mut c = cfg(&sim);
+        c.rx_source = IcomRxSource::If12k;
+        let mut src = IcomNetSource::open(&c).expect("open");
+        assert!(src.commands_rx_mode(), "the radio in front of us owns its mode");
+
+        src.set_control_mode(Mode::Lsb).unwrap();
+        wait_for("a set-mode frame selecting LSB", || {
+            sim.civ_frames().iter().any(|f| f.get(4) == Some(&0x06) && f.get(5) == Some(&0x00))
+        });
+    }
+
+    #[test]
+    fn a_poll_already_in_flight_does_not_drag_the_mode_back() {
+        // The mode is polled every 200 ms, so a read issued just before the
+        // operator switched comes back carrying the old mode. The simulator
+        // never actually changes mode — it answers every read with USB — which
+        // is the worst case: without the guard the app would be pulled straight
+        // back off the LSB it had just been put in.
+        let sim = Sim::start(SimOptions { scope: false, ..Default::default() }).unwrap();
+        let mut src = IcomNetSource::open(&cfg(&sim)).expect("open");
+        // Let the opening read of the mode go by first.
+        wait_for("the radio's opening mode report", || {
+            src.poll_control().iter().any(|u| matches!(u, ControlUpdate::Mode(_)))
+        });
+
+        src.set_control_mode(Mode::Lsb).unwrap();
+        let until = Instant::now() + Duration::from_millis(600);
+        while Instant::now() < until {
+            for u in src.poll_control() {
+                assert!(
+                    !matches!(u, ControlUpdate::Mode(_)),
+                    "a stale USB report was let through while LSB was settling"
+                );
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        // But only for a bounded while: a radio that will not go where it was
+        // told still gets the last word, or the two stay out of step for good.
+        wait_for("the radio winning after the settle window", || {
+            src.poll_control().iter().any(|u| matches!(u, ControlUpdate::Mode(Mode::Usb)))
+        });
     }
 
     #[test]

@@ -364,6 +364,24 @@ pub trait IqSource: Send {
         false
     }
 
+    /// Whether an operator's mode change has to be commanded to this front end,
+    /// *without* the mode also being imposed when the source is established.
+    ///
+    /// The weaker half of [`Self::tracks_rx_mode`], for a radio that is the rig
+    /// as well as the front end while sdroxide does the demodulating: an Icom
+    /// on its LAN port handing us the 12 kHz IF. Its mode still picks the IF
+    /// filter the stream comes through, and it is the mode the operator sees on
+    /// the radio's own display, so a mode chosen here has to reach it. But the
+    /// session must not push one at connect — this backend deliberately adopts
+    /// the dial and the mode the transceiver is already sitting on rather than
+    /// rearranging somebody's radio out of a config file.
+    ///
+    /// False everywhere else: an SDR has no mode of its own, and a rig that
+    /// only transmits for us is told the mode at key-down.
+    fn commands_rx_mode(&self) -> bool {
+        false
+    }
+
     /// Whether receive audio must be silenced while this source is
     /// transmitting, without the receiver being stopped.
     ///
@@ -798,6 +816,10 @@ impl IqSource for ConvertedSource {
 
     fn tracks_rx_mode(&self) -> bool {
         self.inner.tracks_rx_mode()
+    }
+
+    fn commands_rx_mode(&self) -> bool {
+        self.inner.commands_rx_mode()
     }
 
     fn mutes_rx_audio_on_tx(&self) -> bool {

@@ -4390,6 +4390,24 @@ Select`), which decides who does the demodulating:
 
 Transmit is unaffected by the choice: it is always audio the radio modulates.
 
+##### The dial and the mode belong to the radio
+
+Both travel in both directions, on either receive path. Turn the radio's dial or
+change its mode and sdroxide follows within a fifth of a second; change VFO or
+mode in sdroxide and the radio follows. On the 12 kHz IF the mode still matters
+even though sdroxide is the one demodulating — the IF you are given comes through
+the filter the radio's mode selects, and the radio's own display should not
+disagree with yours.
+
+What sdroxide will *not* do is impose the session's dial or mode when the
+connection opens: it adopts whatever the transceiver is already sitting on.
+Starting a session by retuning somebody's radio out of a config file is not what
+a transceiver operator expects — unlike an SDR dongle, this radio was somewhere
+deliberate before you connected.
+
+If the radio refuses a mode it does not have, it keeps the one it was in and
+sdroxide follows it back after about a second.
+
 ##### The rest of the tab
 
 - **Radio address** and **Control port** — the address from the radio's Network

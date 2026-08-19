@@ -3543,6 +3543,18 @@ impl Engine {
         self.push_control_filter();
     }
 
+    /// Whether an operator's mode change has to reach the radio in front of us.
+    ///
+    /// Wider than [`Self::push_rx_mode`]'s test, which is about asserting the
+    /// mode at establishment: a demod-audio rig has no other demodulator, a
+    /// panadapter pairing's receiver offset can depend on the mode, and an Icom
+    /// handing us its 12 kHz IF filters that IF by the mode it is in — all
+    /// three have to follow the mode control, even though only the middle one
+    /// wants it imposed the moment the source opens.
+    fn rig_follows_rx_mode(&self) -> bool {
+        self.audio_mode || self.source.tracks_rx_mode() || self.source.commands_rx_mode()
+    }
+
     /// Construct or tear down the digi controller to match the current mode.
     fn sync_digi_mode(&mut self) {
         let mode = self.state.rx[0].mode;
@@ -6122,8 +6134,10 @@ impl Engine {
         // A radio listening to its transceiver behind an attached panadapter
         // receiver commands the same two things, and for the same reason — the
         // rig is doing the receiving — but its display is the receiver's I/Q
-        // and a sideband flip does not move it.
-        if rx == RxId::Main && (self.audio_mode || self.source.tracks_rx_mode()) {
+        // and a sideband flip does not move it. An Icom on its LAN port
+        // commands the mode alone: we demodulate its 12 kHz IF, but that IF
+        // comes through the filter its mode picks.
+        if rx == RxId::Main && self.rig_follows_rx_mode() {
             let _ = self.source.set_control_mode(self.control_mode());
             // After the mode, never before: every family expresses a filter in
             // terms of the mode the rig is in, so a width sent ahead of the
@@ -7460,7 +7474,7 @@ impl Engine {
         if let Some(d) = self.main.as_mut().and_then(|c| c.demod.as_mut()) {
             d.set_filter(lo, hi);
         }
-        if self.audio_mode || self.source.tracks_rx_mode() {
+        if self.rig_follows_rx_mode() {
             let _ = self.source.set_control_mode(self.control_mode());
             self.push_control_filter();
         }
