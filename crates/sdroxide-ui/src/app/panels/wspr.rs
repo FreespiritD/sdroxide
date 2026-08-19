@@ -70,7 +70,10 @@ impl SdroxideApp {
         // list you scroll; the map takes the top right, where it is the first
         // thing in view, with the beacon's own state under it.
         let total_w = ui.available_width();
-        let left_w = (total_w * self.view.digi_split_fraction).clamp(240.0, total_w - 260.0);
+        // The upper bound is floored at the lower one: on a window too narrow
+        // for both halves it drops below it, and `clamp` panics on min > max.
+        let left_w =
+            (total_w * self.view.digi_split_fraction).clamp(240.0, (total_w - 260.0).max(240.0));
         ui.horizontal_top(|ui| {
             ui.vertical(|ui| {
                 ui.set_width(left_w);

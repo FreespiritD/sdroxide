@@ -195,6 +195,26 @@ fn average_in(avg: Option<(f32, f32)>, want: (f32, f32)) -> (f32, f32) {
     (mix(avg.0, want.0), mix(avg.1, want.1))
 }
 
+/// The window to ask the engine for: the visible span with 2× slack, centred on
+/// the view and kept inside the device window, so panning inside it needs no
+/// reconfiguration.
+///
+/// The upper bound on where it may start is floored at `dev_lo` because the two
+/// are not the same expression: once the slack covers the whole device window,
+/// `dev_hi - slack` *is* `dev_lo` in exact arithmetic, but `dev_lo` is
+/// `centre − span/2` while this is `(centre + span/2) − span`, and the two round
+/// differently. A few nanohertz of disagreement is nothing to a viewport and
+/// everything to [`f64::clamp`], which panics when its min exceeds its max —
+/// which is how scrolling an RX-888 to the top of its band crashed the app.
+fn slack_viewport(center_hz: f64, full_span: f64, (view_lo, view_hi): (f64, f64)) -> (f64, f64) {
+    let dev_lo = center_hz - full_span / 2.0;
+    let dev_hi = center_hz + full_span / 2.0;
+    let slack = ((view_hi - view_lo) * 2.0).min(full_span);
+    let center = (view_lo + view_hi) / 2.0;
+    let lo = (center - slack / 2.0).clamp(dev_lo, (dev_hi - slack).max(dev_lo));
+    (lo, lo + slack)
+}
+
 impl SdroxideApp {
     /// Desired engine-side spectrum config. The requested viewport gets 2×
     /// slack around the visible span so panning inside it needs no
@@ -202,16 +222,15 @@ impl SdroxideApp {
     /// grows with zoom for real resolution.
     pub(in crate::app) fn desired_spectrum_cfg(&self) -> SpectrumConfig {
         let full_span = self.state.sample_rate;
-        let dev_lo = self.state.center_hz - full_span / 2.0;
-        let dev_hi = self.state.center_hz + full_span / 2.0;
         let (viewport, zoom) = if !self.view.is_unset() && full_span > 0.0 {
-            let vspan = self.view.span();
-            let ratio = (full_span / vspan).max(1.0);
+            let ratio = (full_span / self.view.span()).max(1.0);
             if ratio > 1.05 {
-                let slack = (vspan * 2.0).min(full_span);
-                let center = (self.view.view_lo_hz + self.view.view_hi_hz) / 2.0;
-                let lo = (center - slack / 2.0).clamp(dev_lo, dev_hi - slack);
-                (Some((lo, lo + slack)), ratio)
+                let vp = slack_viewport(
+                    self.state.center_hz,
+                    full_span,
+                    (self.view.view_lo_hz, self.view.view_hi_hz),
+                );
+                (Some(vp), ratio)
             } else {
                 (None, 1.0)
             }
@@ -590,8 +609,37 @@ impl SdroxideApp {
 mod tests {
     use super::{
         AutoFit, FIT_ARRIVED_DB, FIT_MIN_GAP_S, FIT_SETTLE_S, FIT_STEP_S, average_in, fit_due,
-        glide_step, levels_drifted, pick_levels,
+        glide_step, levels_drifted, pick_levels, slack_viewport,
     };
+
+    /// The crash this replaced: an RX-888 scrolled to the top of its band, at a
+    /// zoom where the 2× slack covers the whole device window. `dev_hi - slack`
+    /// then lands one ULP *below* `dev_lo` — the numbers below are the ones from
+    /// the panic — and `f64::clamp` panics rather than pinning the value.
+    #[test]
+    fn a_viewport_at_the_top_of_the_band_does_not_panic() {
+        let (center, span) = (32_996_365.607_435_618_f64, 2_000_000.0_f64);
+        let (dev_lo, dev_hi) = (center - span / 2.0, center + span / 2.0);
+        assert!(dev_hi - span < dev_lo, "the rounding case being guarded stopped happening");
+
+        // A view wide enough that the slack saturates at the device span, and
+        // sitting at the very top of it.
+        let vspan = span / 1.5;
+        let vp = slack_viewport(center, span, (dev_hi - vspan, dev_hi));
+        assert_eq!(vp, (dev_lo, dev_lo + span), "the whole window is the only fit");
+    }
+
+    /// Away from that edge the slack still does its job: the window is twice the
+    /// visible span, centred on it, and inside the device window.
+    #[test]
+    fn a_zoomed_in_viewport_keeps_its_slack() {
+        let (center, span) = (16_000_000.0, 32_000_000.0);
+        let (lo, hi) = slack_viewport(center, span, (10_000_000.0, 11_000_000.0));
+        assert_eq!((lo, hi), (9_500_000.0, 11_500_000.0));
+        // ...and it is pushed inside the device window rather than hanging off it.
+        let (lo, hi) = slack_viewport(center, span, (31_500_000.0, 32_000_000.0));
+        assert_eq!((lo, hi), (31_000_000.0, 32_000_000.0));
+    }
 
     /// Map a dB value to the u8 code used by a frame spanning `[lo, hi]`.
     fn code(db: f32, lo: f32, hi: f32) -> u8 {

@@ -281,7 +281,9 @@ impl SdroxideApp {
             return;
         }
 
-        let left_w = (total_w * self.view.js8_split_fraction).clamp(160.0, total_w - 200.0);
+        // Floored at the lower bound — see the same guard in the WSPR panel.
+        let left_w =
+            (total_w * self.view.js8_split_fraction).clamp(160.0, (total_w - 200.0).max(160.0));
         ui.horizontal_top(|ui| {
             // ── Left: who is on the band ────────────────────────────────────
             ui.vertical(|ui| {
