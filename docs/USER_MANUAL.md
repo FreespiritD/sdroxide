@@ -3266,6 +3266,14 @@ breaking up while the waterfall still looks right is that symptom and not a
 DSP fault**; sdroxide logs a warning naming the count when it happens. If you
 see it, come back down a rate.
 
+That warning counts only what is dropped while you are **receiving**. A rig that
+transmits through its sound card is not being listened to for the length of the
+over, so its capture buffer overflows every time you key — those frames say
+nothing about your computer and are not counted. A warning that arrives once per
+transmission, and only then, is not this. The same warning on a **demod audio**
+rig names no rate to come down to, because that path is always opened at 48 kHz:
+there it means something else on the machine is taking the CPU away.
+
 Changing this takes effect on **Apply**, without restarting.
 
 **Invert spectrum (Swap I/Q)** (IQ format only) — mirrors the panadapter about

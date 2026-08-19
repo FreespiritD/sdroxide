@@ -19,13 +19,11 @@ pub struct AudioCatSource {
     in_stream: Option<sdroxide_audio::AudioInput>,
     in_consumer: rtrb::Consumer<f32>,
     in_rate: f64,
-    /// Capture frames the sound card had to throw away, as of the last check,
-    /// and when to look again. Watched because dropping them is silent
-    /// everywhere else: a spliced I/Q stream still paints a healthy panadapter,
-    /// and only the audio — which has to be continuous — gives it away. See
-    /// [`Self::check_dropped`].
-    dropped_seen: u64,
-    next_drop_check: std::time::Instant,
+    /// Capture frames the sound card had to throw away, and when that was last
+    /// looked at. Watched because dropping them is silent everywhere else: a
+    /// spliced I/Q stream still paints a healthy panadapter, and only the audio
+    /// — which has to be continuous — gives it away. See [`Self::check_dropped`].
+    drops: DropWatch,
     format: SoundFormat,
     /// What the right channel is multiplied by on the way into the complex
     /// stream: `1.0` normally, `-1.0` when the rig's I and Q are the other way
@@ -202,8 +200,7 @@ impl AudioCatSource {
             in_stream,
             in_consumer,
             in_rate,
-            dropped_seen: 0,
-            next_drop_check: std::time::Instant::now() + DROP_CHECK_INTERVAL,
+            drops: DropWatch::started(std::time::Instant::now()),
             format,
             q_sign,
             iq_shift,
@@ -235,33 +232,95 @@ impl AudioCatSource {
     /// with the sample rate: the faster the card runs, the less wall-clock time
     /// the machine has to empty it between callbacks, and a rate that a given
     /// machine cannot sustain shows up here and nowhere else.
+    ///
+    /// What it must not report is an over. Nobody reads this stream while the
+    /// rig transmits, so the ring overflows every time regardless of how fast
+    /// the machine is — see [`Self::discard_pending_rx`], which is where those
+    /// frames are excused.
     fn check_dropped(&mut self) {
-        let now = std::time::Instant::now();
-        if now < self.next_drop_check {
-            return;
-        }
-        self.next_drop_check = now + DROP_CHECK_INTERVAL;
         let Some(total) = self.in_stream.as_ref().map(|s| s.dropped_frames()) else { return };
-        let lost = total.saturating_sub(self.dropped_seen);
-        if lost == 0 {
+        let Some((lost, window)) = self.drops.check(std::time::Instant::now(), total) else {
             return;
-        }
-        self.dropped_seen = total;
+        };
+        // Which rate to blame depends on which card this is. An I/Q card runs
+        // at whatever rate the operator asked for, and that rate is the thing
+        // to lower. Demod audio is opened at 48 kHz and at nothing else, so
+        // sending its owner to a rate setting sends them somewhere that cannot
+        // help them — and a remedy that does not apply is how an operator
+        // learns to stop reading the warnings.
+        let remedy = match self.format {
+            SoundFormat::Iq => "Try a lower I/Q sample rate under Settings → Radio.",
+            SoundFormat::DemodAudio => {
+                "This card is fixed at 48 kHz, so there is no rate to lower — look instead at \
+                 what else on this machine is keeping sdroxide off the CPU."
+            }
+        };
+        // The window is measured, not assumed: reporting a fixed 5 s after a
+        // stall claimed twelve seconds of signal lost in five, and an operator
+        // who catches the arithmetic out has no reason to believe the rest.
         tracing::warn!(
-            "radio audio: {lost} capture frames dropped in the last {} s ({:.1} ms of signal) — \
-             this machine is not emptying a {:.0} Hz card fast enough. The panadapter will look \
-             fine and the demodulated audio will break up. Try a lower I/Q sample rate under \
-             Settings → Radio.",
-            DROP_CHECK_INTERVAL.as_secs(),
+            "radio audio: {lost} capture frames dropped in the last {:.1} s ({:.1} ms of signal) \
+             — this machine is not emptying a {:.0} Hz card fast enough. The panadapter will \
+             look fine and the demodulated audio will break up. {remedy}",
+            window.as_secs_f64(),
             lost as f64 * 1000.0 / self.in_rate,
             self.in_rate,
         );
     }
 }
 
-/// How often [`AudioCatSource::check_dropped`] looks. Long enough that a
-/// struggling machine is not also made to write a log line per block, short
-/// enough that the operator sees it while still at the radio.
+/// The capture counter's bookkeeping: what it read last time and when.
+///
+/// Split out of the source for the same reason [`fill_iq`] is a free function —
+/// the counter it watches lives behind a running sound card, and this is
+/// arithmetic about wall-clock time and a monotonic total, which is exactly
+/// where it went wrong before and exactly what should be checkable without a
+/// radio plugged in.
+struct DropWatch {
+    /// The card's lifetime drop total as of the last look.
+    seen: u64,
+    /// When that look happened — the time it *did*, not the time the next one
+    /// is due. The gap between two looks is not [`DROP_CHECK_INTERVAL`] and
+    /// cannot be assumed to be: the check rides on `read`, and `read` is not
+    /// called for the length of an over, so the first look after unkey spans
+    /// the whole transmission.
+    last_check: std::time::Instant,
+}
+
+impl DropWatch {
+    fn started(now: std::time::Instant) -> Self {
+        DropWatch { seen: 0, last_check: now }
+    }
+
+    /// Frames lost since the last look and the window they were lost in, or
+    /// `None` when it is not yet time to look or nothing was lost.
+    fn check(&mut self, now: std::time::Instant, total: u64) -> Option<(u64, std::time::Duration)> {
+        let window = now.duration_since(self.last_check);
+        if window < DROP_CHECK_INTERVAL {
+            return None;
+        }
+        self.last_check = now;
+        let lost = total.saturating_sub(self.seen);
+        if lost == 0 {
+            return None;
+        }
+        self.seen = total;
+        Some((lost, window))
+    }
+
+    /// Forget what the counter accumulated and start the window again from
+    /// `now` — for drops that happened while nobody was reading the stream and
+    /// so say nothing about whether this machine can keep up with it.
+    fn rebase(&mut self, now: std::time::Instant, total: u64) {
+        self.seen = total;
+        self.last_check = now;
+    }
+}
+
+/// The soonest [`AudioCatSource::check_dropped`] looks again. Long enough that
+/// a struggling machine is not also made to write a log line per block, short
+/// enough that the operator sees it while still at the radio. A floor rather
+/// than a period: nothing looks at all while the source is not being read.
 const DROP_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Drain interleaved (I, Q) pairs from the capture ring into `buf`, with the
@@ -366,6 +425,12 @@ impl IqSource for AudioCatSource {
     /// rig's audio once per I/Q block, and a sleep there would pace the whole
     /// receiver off a sound card that is not driving it.
     fn read_available(&mut self, buf: &mut [Complex32]) -> Result<usize> {
+        // Checked on this path too, not only in `read`: a rig lent out as
+        // another radio's panadapter is drained exclusively through here, and
+        // that is the arrangement where a card the machine cannot keep up with
+        // is *most* likely — two radios' streams on one machine — and the one
+        // where the drops went entirely unreported.
+        self.check_dropped();
         Ok(match self.format {
             SoundFormat::DemodAudio => {
                 let mut n = 0;
@@ -500,6 +565,25 @@ impl IqSource for AudioCatSource {
     fn discard_pending_rx(&mut self) {
         // The capture callback keeps filling this ring during TX too.
         while self.in_consumer.pop().is_ok() {}
+        // And it overflowed it long before the over was out. The engine stops
+        // reading a half-duplex source for the length of a transmission, so the
+        // ring is full within a second and every frame the card delivers after
+        // that is counted lost — 11.6 s of them behind one FT8 over. Those are
+        // not a machine that cannot keep up. They are frames nobody was reading,
+        // from a receiver nobody was listening to, and counting them told an
+        // operator with a perfectly healthy card to go and fix it.
+        //
+        // Re-baselining belongs here because here is exactly the unkey: the
+        // engine calls this at the end of an over and nowhere else, so the
+        // frames excused are precisely the ones TX caused, and every drop that
+        // happens while actually receiving still counts.
+        //
+        // The window goes with it: the next warning's starts at the unkey, not
+        // at the last look before the over, or the report that follows a
+        // transmission spans one.
+        if let Some(total) = self.in_stream.as_ref().map(|s| s.dropped_frames()) {
+            self.drops.rebase(std::time::Instant::now(), total);
+        }
     }
 
     fn tx_telemetry(&mut self) -> Option<TxTelemetry> {
@@ -576,6 +660,91 @@ mod tests {
     use super::*;
 
     const RATE: f32 = 48_000.0;
+
+    /// One FT8 over, as the capture counter sees it: the ring holds a second,
+    /// nobody empties it for the length of the transmission, and every frame
+    /// after that first second is counted lost.
+    const OVER: std::time::Duration = std::time::Duration::from_millis(12_640);
+    const OVER_DROPS: u64 = 606_597 - 48_000;
+
+    /// The window a warning reports is the one that was measured, not the
+    /// interval it hoped for.
+    ///
+    /// Nothing looks at the counter while the source is not being read, and a
+    /// half-duplex rig is not read for the length of an over — so the first
+    /// look afterwards covers the whole transmission. Reporting a fixed 5 s
+    /// there announced 11.6 s of lost signal inside a 5 s window, which cannot
+    /// happen, and an operator who catches the arithmetic out has no reason to
+    /// believe the diagnosis attached to it.
+    #[test]
+    fn the_reported_window_is_the_one_that_elapsed() {
+        let t0 = std::time::Instant::now();
+        let mut w = DropWatch::started(t0);
+        let (lost, window) = w.check(t0 + OVER, OVER_DROPS).expect("a stalled read must report");
+        assert_eq!(lost, OVER_DROPS);
+        assert!(
+            window >= OVER,
+            "{window:?} must span the whole stall, not {DROP_CHECK_INTERVAL:?}"
+        );
+        // And the loss has to fit inside the window it is reported in.
+        assert!(lost as f64 / 48_000.0 <= window.as_secs_f64());
+    }
+
+    /// An unkey excuses the frames the transmission caused.
+    ///
+    /// The engine stops reading a half-duplex source while it transmits, so the
+    /// ring overflows every over and the drops say nothing about this machine.
+    /// Re-baselining at the unkey is what keeps them out of the log.
+    #[test]
+    fn an_over_leaves_nothing_to_report() {
+        let t0 = std::time::Instant::now();
+        let mut w = DropWatch::started(t0);
+        let unkey = t0 + OVER;
+        w.rebase(unkey, OVER_DROPS);
+        assert_eq!(
+            w.check(unkey + DROP_CHECK_INTERVAL, OVER_DROPS),
+            None,
+            "frames lost while nobody was reading the ring are not this machine's fault"
+        );
+    }
+
+    /// A card that keeps losing frames while actually receiving is still
+    /// reported, and against a window that starts at the unkey.
+    ///
+    /// The half the excusing could take with it: forgive the over and forgive
+    /// everything, and the warning that matters never fires again. Nothing may
+    /// run between the unkey and the measurement here — [`DropWatch::check`]
+    /// restarts the window itself, so an intervening look would hide a `rebase`
+    /// that failed to.
+    #[test]
+    fn a_real_drop_after_the_over_still_reports() {
+        let t0 = std::time::Instant::now();
+        let mut w = DropWatch::started(t0);
+        let unkey = t0 + OVER;
+        w.rebase(unkey, OVER_DROPS);
+
+        let (lost, window) = w
+            .check(unkey + DROP_CHECK_INTERVAL, OVER_DROPS + 900)
+            .expect("a drop while receiving must report");
+        assert_eq!(lost, 900, "only what was lost while receiving");
+        assert_eq!(
+            window, DROP_CHECK_INTERVAL,
+            "measured from the unkey, not from before the over"
+        );
+    }
+
+    /// A look that comes too soon reports nothing and — the part that matters —
+    /// leaves the window running, so the frames it saw are still counted by
+    /// whichever look does report.
+    #[test]
+    fn an_early_look_neither_reports_nor_forgets() {
+        let t0 = std::time::Instant::now();
+        let mut w = DropWatch::started(t0);
+        assert_eq!(w.check(t0 + DROP_CHECK_INTERVAL / 2, 500), None);
+        let (lost, window) = w.check(t0 + DROP_CHECK_INTERVAL, 700).expect("due now");
+        assert_eq!(lost, 700, "the 500 the early look saw are still in the total");
+        assert!(window >= DROP_CHECK_INTERVAL);
+    }
 
     /// Push a complex tone at `hz` onto a ring as a sound card would deliver
     /// it: I on the left channel, Q on the right, interleaved.
