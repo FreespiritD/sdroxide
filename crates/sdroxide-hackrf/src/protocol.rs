@@ -169,16 +169,28 @@ impl Request {
     /// stall on an older firmware, and a stalled control transfer self-clears,
     /// so the only correct response is to carry on without whatever it would
     /// have told us.
+    ///
+    /// The levels are `hackrf.h`'s own "Requires USB API version" list, not a
+    /// reconstruction: getting one too *high* is not a safe error in the way it
+    /// looks, because it silently withholds a request from a radio that has it.
+    ///
+    /// Note what this table does **not** contain: the transmit path. Neither
+    /// `hackrf_start_tx` nor `hackrf_stop_tx` carries an API gate, and the
+    /// requests that key a radio — [`Request::SetTransceiverMode`],
+    /// [`Request::SetFreq`], [`Request::AmpEnable`] — have never been gated at
+    /// all. A radio that will not transmit is therefore never a radio whose
+    /// firmware is too new: everything added since 0x0102 is additive and
+    /// optional, and a host that ignores all of it still transmits.
     pub fn since_api(self) -> Option<u16> {
         match self {
             Request::SetHwSyncMode | Request::InitSweep => Some(0x0102),
             Request::ClkoutEnable => Some(0x0103),
-            Request::GetM0State | Request::SetTxUnderrunLimit | Request::SetRxOverrunLimit => {
-                Some(0x0106)
-            }
-            Request::BoardRevRead | Request::SupportedPlatformRead | Request::SetLeds => {
-                Some(0x0109)
-            }
+            Request::GetM0State
+            | Request::SetTxUnderrunLimit
+            | Request::SetRxOverrunLimit
+            | Request::BoardRevRead
+            | Request::SupportedPlatformRead => Some(0x0106),
+            Request::SetLeds => Some(0x0107),
             _ => None,
         }
     }

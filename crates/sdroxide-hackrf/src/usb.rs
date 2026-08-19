@@ -635,7 +635,7 @@ mod tests {
         // 0x0104 predates every gated request above 0x0103.
         let old = FakeTransport::new().with_api(0x0104);
         assert!(old.has(Request::ClkoutEnable), "0x0103 <= 0x0104");
-        assert!(!old.has(Request::SetLeds), "0x0109 > 0x0104");
+        assert!(!old.has(Request::SetLeds), "0x0107 > 0x0104");
         assert!(!old.optional_out(Request::SetLeds, 1, 0));
         assert!(old.calls().is_empty(), "a request the radio lacks must not go out");
 
