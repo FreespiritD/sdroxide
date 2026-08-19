@@ -370,6 +370,15 @@ impl Protocol for Yaesu {
         vec![b"FA;".to_vec(), b"MD0;".to_vec()]
     }
 
+    /// `TX;` read back. The reply's digit distinguishes *who* keyed the rig —
+    /// its own PTT/mic from a CAT key-down — but this is only ever asked while
+    /// sdroxide is not keying, so anything non-zero is the operator's hand and
+    /// the distinction is not relied on. Which numeral means which is the one
+    /// part of this the manuals state inconsistently.
+    fn tx_state_requests(&self) -> Vec<Vec<u8>> {
+        vec![b"TX;".to_vec()]
+    }
+
     fn tx_telemetry_requests(&self) -> Vec<Vec<u8>> {
         // `RM` reads one of the transmit meters, chosen by the digit: 6 is SWR
         // on every model of this generation. It is a read, not a meter
@@ -516,6 +525,13 @@ impl Protocol for Yaesu {
                 if let Some(m) = rest.chars().nth(1).and_then(mode_from_digit) {
                     out.push(CatUpdate::Mode(m));
                 }
+            } else if let Some(rest) = msg.strip_prefix("TX") {
+                // `TX<0|1|2>`: 0 is receive, and both other values are the
+                // transmitter on. See `tx_state_requests` for why the two are
+                // not told apart here.
+                if let Some(d) = rest.chars().next().filter(char::is_ascii_digit) {
+                    out.push(CatUpdate::Ptt(d != '0'));
+                }
             } else if msg == "?" {
                 // The rig refused the last command. Nothing identifies which,
                 // so this can only be a breadcrumb — but it is the difference
@@ -534,6 +550,21 @@ mod tests {
     fn parse_str(y: &mut Yaesu, s: &str) -> Vec<CatUpdate> {
         let mut buf = s.as_bytes().to_vec();
         y.parse(&mut buf)
+    }
+
+    /// `TX;` read back. Only "is it transmitting" is taken from it: which
+    /// non-zero numeral means the mic and which means CAT is stated
+    /// inconsistently across the manuals, and this is only ever asked while
+    /// sdroxide is not keying, so both mean the operator.
+    #[test]
+    fn the_transmit_read_treats_every_non_zero_as_on_the_air() {
+        let mut y = Yaesu::new();
+        assert_eq!(parse_str(&mut y, "TX0;"), vec![CatUpdate::Ptt(false)]);
+        assert_eq!(parse_str(&mut y, "TX1;"), vec![CatUpdate::Ptt(true)]);
+        assert_eq!(parse_str(&mut y, "TX2;"), vec![CatUpdate::Ptt(true)]);
+        // Not a digit: say nothing rather than guess.
+        assert!(parse_str(&mut y, "TX;").is_empty());
+        assert_eq!(frames(Yaesu::new().tx_state_requests()), vec!["TX;"]);
     }
 
     #[test]

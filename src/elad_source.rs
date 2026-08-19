@@ -331,6 +331,10 @@ impl IqSource for EladSource {
                 sdroxide_cat::CatUpdate::Mode(m) => out.push(ControlUpdate::Mode(m)),
                 // The power the rig came up on, read once when the port opened.
                 sdroxide_cat::CatUpdate::Power(frac) => out.push(ControlUpdate::TxDrive(frac)),
+                // The ELAD family asks for no transmit state (see
+                // `Protocol::tx_state_requests`), so this never arrives — but
+                // the day it does, it means the same thing here as anywhere.
+                sdroxide_cat::CatUpdate::Ptt(on) => out.push(ControlUpdate::RigTx(on)),
                 // Both meters arrive on their own telemetry channels, not here.
                 sdroxide_cat::CatUpdate::Swr(_) | sdroxide_cat::CatUpdate::Signal(_) => {}
             }

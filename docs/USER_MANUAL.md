@@ -3423,6 +3423,51 @@ is recording at all. Raising the rate raises that ceiling with it.
 Scroll down for **Apply / reconnect**, which reopens the rig with the new
 settings.
 
+##### When you key the radio itself
+
+Pressing the microphone button on the transceiver — or its foot switch, or
+letting its VOX or its own keyer key it — is an over sdroxide never asked for,
+and it is treated as one. sdroxide notices it within about a fifth of a second
+and follows it: the meter goes to transmit and reads the SWR of *that* over, and
+comes back to receive when you let go. It does not join in. No audio from the
+computer goes anywhere near it, and a PTT arriving in sdroxide meanwhile —
+the on-screen button, a key binding, a program on the rigctld or TCI server — is
+refused with a notice rather than queued, so an over cannot start the instant you
+release the microphone.
+
+That refusal is only ever for as long as your hand is on the button. It is also
+fail-safe in the direction that matters: if the control port goes quiet while the
+radio is keyed, sdroxide gives up on it after two seconds, says so in the log,
+and goes back to receive rather than sitting there refusing to transmit.
+
+Which radios can report it, and how:
+
+| Family | Read | Notes |
+| --- | --- | --- |
+| Icom / Xiegu | `1C 00` | The read form of the command that keys the rig. |
+| Yaesu | `TX;` | |
+| Elecraft | `TQ;` | |
+| Kenwood | `IF;` | One character of the status reply, taken by position. A rig whose status string is a different length reports nothing rather than a guess. |
+| Hamlib `rigctld` | `t` | Whatever the daemon's own backend supports. |
+| ELAD | — | No such read; an over keyed at the radio goes unnoticed. |
+
+**These reads need to be verified against real radios.** Each is taken
+from the manufacturer's published command reference, and the end-to-end
+behaviour was proven against a simulator written from the same documents — which
+demonstrates that sdroxide does the right thing with the answer, not that the
+question is the right one to ask. The Icom read is the one to trust furthest: it
+is the read form of the command sdroxide already keys Icoms with. The Kenwood
+read is the one to trust least, because it alone depends on a field *position*
+rather than a command of its own.
+
+A family that answers nothing at all simply leaves this feature switched off, and
+nothing else about the radio changes — which is also what a wrong guess degrades
+to, thanks to the length check on the Kenwood reply.
+
+The one thing this does *not* do is hold the station transmit interlock across
+radios: with two radios configured, keying one at its own microphone does not
+lock the other out. Only overs sdroxide keys take that interlock.
+
 **CW keying.** A transceiver told to be in CW keys its own transmitter: it does
 not modulate what arrives at its sound card, so a keyer's sidetone sent there
 reaches nothing at all. `Rig keyer (CAT)` — the default — therefore hands the CW

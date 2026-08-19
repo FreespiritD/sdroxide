@@ -504,6 +504,20 @@ impl IqSource for AudioCatSource {
                 // commanding the rig back — the radio's own setting is the
                 // operator's, not a stale one to overwrite.
                 sdroxide_cat::CatUpdate::Power(frac) => out.push(ControlUpdate::TxDrive(frac)),
+                // The operator keyed the radio itself — mic button, foot
+                // switch, VOX, its own keyer. Passed up as the thing it is, not
+                // as a request to transmit: see `ControlUpdate::RigTx`.
+                sdroxide_cat::CatUpdate::Ptt(on) => {
+                    // The SWR latched during that over belongs to that over.
+                    // `tx_end` does this for one we keyed; nothing calls it for
+                    // one we did not, and a stale ratio left on the meter would
+                    // read as the *receiver's* — the needle sitting at 2:1 on a
+                    // radio that is not transmitting at all.
+                    if !on {
+                        self.last_telem = None;
+                    }
+                    out.push(ControlUpdate::RigTx(on));
+                }
                 // Both meters arrive on their own telemetry channels, not here.
                 sdroxide_cat::CatUpdate::Swr(_) | sdroxide_cat::CatUpdate::Signal(_) => {}
             }

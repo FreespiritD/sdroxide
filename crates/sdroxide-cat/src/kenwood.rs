@@ -461,6 +461,18 @@ impl Protocol for Kenwood {
         reqs
     }
 
+    /// `IF;` — the whole-status reply, read for one character of it.
+    ///
+    /// This family has no "are you transmitting" command of its own, so the
+    /// transmit flag has to be picked out of the status string by position (see
+    /// [`if_transmitting`]). Only that one character is taken: `IF` also
+    /// carries the frequency and the mode, and reading those here would give
+    /// the engine a second, differently-timed opinion about both when `FA;`
+    /// and `MD;` are already answering for them.
+    fn tx_state_requests(&self) -> Vec<Vec<u8>> {
+        vec![b"IF;".to_vec()]
+    }
+
     fn tx_telemetry_requests(&self) -> Vec<Vec<u8>> {
         let Some((digit, _)) = self.caps.swr else {
             // No curve for this model: asking would only produce a number
@@ -648,6 +660,10 @@ impl Protocol for Kenwood {
                 {
                     out.push(CatUpdate::Swr(crate::interp(cal, v)));
                 }
+            } else if let Some(rest) = msg.strip_prefix("IF") {
+                if let Some(on) = if_transmitting(rest) {
+                    out.push(CatUpdate::Ptt(on));
+                }
             } else if let Some(rest) = msg.strip_prefix("DA") {
                 if let Some(d) = rest.chars().next() {
                     self.data_on = d == '1';
@@ -672,6 +688,33 @@ impl Protocol for Kenwood {
     }
 }
 
+/// Whether the rig is transmitting, from the body of an `IF;` reply (the
+/// 35 characters after `IF`, with the terminating `;` already removed).
+///
+/// Kenwood's status string is positional, so this is an offset and nothing
+/// else: 11 digits of frequency, 4 of step, a signed 5-digit RIT/XIT offset,
+/// RIT, XIT, the memory bank and a 2-digit channel — 26 characters — and then
+/// the transmit flag. `0` is receive and `1` is transmit.
+///
+/// ⚠️ Read out of the published command reference, never off a radio. The
+/// length is checked exactly rather than indexed into blindly, so a rig whose
+/// status string is laid out differently reports nothing at all instead of
+/// reporting whatever character happens to sit at offset 26 — a dialect that
+/// does not match must look like a rig that cannot answer, not like one that is
+/// permanently on the air.
+fn if_transmitting(body: &str) -> Option<bool> {
+    const TX_FLAG: usize = 26;
+    const IF_BODY_LEN: usize = 35;
+    if body.len() != IF_BODY_LEN {
+        return None;
+    }
+    match body.as_bytes()[TX_FLAG] {
+        b'0' => Some(false),
+        b'1' => Some(true),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -687,6 +730,59 @@ mod tests {
 
     fn frames(v: Vec<Vec<u8>>) -> Vec<String> {
         v.iter().map(|f| String::from_utf8_lossy(f).into_owned()).collect()
+    }
+
+    /// An `IF;` body built from its documented fields, so the offset this
+    /// parser indexes with is spelled out rather than counted by hand.
+    fn if_body(tx: bool) -> String {
+        let f = [
+            "00014074000", // P1  frequency, 11
+            "    ",        // P2  step, 4
+            "+00000",      // P3  RIT/XIT offset, sign + 5
+            "0",           // P4  RIT
+            "0",           // P5  XIT
+            "0",           // P6  memory bank
+            "00",          // P7  memory channel, 2
+                           //             // P8  is the transmit flag, appended below
+        ]
+        .concat();
+        let tail = [
+            "2",  // P9  mode
+            "0",  // P10 VFO/memory
+            "0",  // P11 scan
+            "0",  // P12 split
+            "0",  // P13 tone
+            "08", // P14 tone number
+            "0",  // P15 always zero
+        ]
+        .concat();
+        format!("{f}{}{tail}", if tx { '1' } else { '0' })
+    }
+
+    /// The one character of `IF;` this family reads, and the guard that keeps a
+    /// differently-shaped status string from being read as a key-down.
+    #[test]
+    fn the_transmit_flag_is_taken_from_if_by_position() {
+        let rx = if_body(false);
+        assert_eq!(rx.len(), 35, "the reply this parser indexes into is 35 + \"IF\" + \";\"");
+        assert_eq!(if_transmitting(&rx), Some(false));
+        assert_eq!(if_transmitting(&if_body(true)), Some(true));
+
+        // Anything that is not this exact shape reports nothing rather than
+        // guessing — a rig left stuck "transmitting" would blank the S-meter
+        // and refuse every key-down.
+        assert_eq!(if_transmitting(""), None);
+        assert_eq!(if_transmitting(&rx[..34]), None);
+        assert_eq!(if_transmitting(&format!("{rx}0")), None);
+    }
+
+    #[test]
+    fn the_status_reply_is_not_a_second_opinion_about_freq_and_mode() {
+        // `IF` carries the dial and the mode too. Taking them here would race
+        // the `FA;`/`MD;` answers, so only the transmit flag comes out of it.
+        let mut k = kenwood();
+        let out = parse_str(&mut k, &format!("IF{};", if_body(true)));
+        assert_eq!(out, vec![CatUpdate::Ptt(true)]);
     }
 
     #[test]

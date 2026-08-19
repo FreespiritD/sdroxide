@@ -26,6 +26,17 @@ use sdroxide_types::{
 };
 use tracing::{info, warn};
 
+/// How long after sdroxide keys or unkeys the rig's own transmit state is
+/// ignored. Covers a read that was already in flight across the edge, and the
+/// rig's own turnaround, without being long enough to miss a real over.
+const PTT_SETTLE: Duration = Duration::from_millis(600);
+
+/// How long a rig that has stopped answering the transmit read is still
+/// believed to be transmitting. A rig cannot be left keyed on this side of the
+/// link by a control port that has gone quiet: the S-meter would stay blanked
+/// and every key-down would be refused, with nothing on screen to say why.
+const RIG_TX_MAX_AGE: Duration = Duration::from_millis(2000);
+
 /// A change the rig reported (external dial/mode movement) or that we read back.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum CatUpdate {
@@ -40,6 +51,13 @@ pub enum CatUpdate {
     /// maximum. Read once when the port opens, so the panel's Drive slider ends
     /// up where the radio's own power control already is.
     Power(f32),
+    /// The rig is transmitting under its *own* control — a hand on the mic
+    /// button, a foot switch, its VOX, its keyer. `true` is keyed.
+    ///
+    /// Only ever an over sdroxide did not ask for: an over we keyed is one the
+    /// engine already knows about, and reporting it back would be an echo. See
+    /// the suppression around `ptt_ours` in the serial thread.
+    Ptt(bool),
 }
 
 /// Enumerate serial ports for the settings UI. USB-style ports (ttyACM/ttyUSB,
@@ -86,6 +104,18 @@ trait Protocol: Send {
     fn rx_telemetry_requests(&self) -> Vec<Vec<u8>> {
         Vec::new()
     }
+    /// Frames asking whether the rig is transmitting, polled while sdroxide is
+    /// *not* the one keying it.
+    ///
+    /// This is how an over the operator started at the radio — mic button, foot
+    /// switch, VOX, the rig's own keyer — becomes something sdroxide knows
+    /// about, so the meter can show the SWR of it and nothing here tries to key
+    /// on top of it. Empty for families with no such read, which simply never
+    /// learn about an over they were not asked for.
+    fn tx_state_requests(&self) -> Vec<Vec<u8>> {
+        Vec::new()
+    }
+
     /// Frames that switch the rig's *own* RIT, XIT and split off, sent once
     /// when the port opens. sdroxide carries all three on the dial (the rig's
     /// dial is the only frequency control a CAT rig gives us), so anything the
@@ -217,6 +247,9 @@ impl Protocol for Civ {
     fn tx_telemetry_requests(&self) -> Vec<Vec<u8>> {
         vec![civ::read_swr_frame(self.radio)]
     }
+    fn tx_state_requests(&self) -> Vec<Vec<u8>> {
+        vec![civ::read_ptt_frame(self.radio)]
+    }
     fn rx_telemetry_requests(&self) -> Vec<Vec<u8>> {
         vec![civ::read_smeter_frame(self.radio)]
     }
@@ -295,6 +328,14 @@ impl Protocol for Civ {
                 // are expected — every sub-command a given model doesn't
                 // implement answers this way — so it is only noted here, for a
                 // caller that knows it just sent something that mattered.
+                // Transceiver status (0x1C): sub-command 0x00 is the PTT
+                // line. Asked for only while sdroxide is not keying, so an
+                // answer of "transmitting" means the operator is on the mic.
+                0x1C => {
+                    if let Some(on) = civ::parse_ptt_reply(&reply.data) {
+                        out.push(CatUpdate::Ptt(on));
+                    }
+                }
                 civ::NG => self.nak = true,
                 _ => {}
             }
@@ -526,9 +567,12 @@ pub fn query_once(cfg: &CatConfig) -> Option<(Option<f64>, Option<Mode>)> {
                     match u {
                         CatUpdate::Freq(hz) => freq = Some(hz),
                         CatUpdate::Mode(m) => mode = Some(m),
-                        // Neither meter nor the power is requested during the
-                        // startup query.
-                        CatUpdate::Swr(_) | CatUpdate::Signal(_) | CatUpdate::Power(_) => {}
+                        // Neither meter, the power, nor the transmit state is
+                        // requested during the startup query.
+                        CatUpdate::Swr(_)
+                        | CatUpdate::Signal(_)
+                        | CatUpdate::Power(_)
+                        | CatUpdate::Ptt(_) => {}
                     }
                 }
             }
@@ -912,6 +956,16 @@ fn serial_thread(
         // Only forward genuine changes so the engine isn't re-notified every poll.
         let mut emit_freq: Option<f64> = None;
         let mut emit_mode: Option<Mode> = None;
+        // The rig's own transmit state as last reported upwards, and when its
+        // last answer arrived. `None` = never answered, which is where a family
+        // with no such read stays for good.
+        let mut emit_rig_tx: Option<bool> = None;
+        let mut last_tx_reply = Instant::now();
+        // When sdroxide last keyed or unkeyed. A read already on the wire when
+        // that happened comes back describing the other side of the edge, so
+        // answers are ignored for a moment either side of one — otherwise every
+        // unkey ends with one frame's worth of "the operator is on the mic".
+        let mut ptt_edge = Instant::now() - PTT_SETTLE;
 
         let broke = 'io: loop {
             // Drain commands.
@@ -998,6 +1052,7 @@ fn serial_thread(
                             break 'io true;
                         }
                         ptt = on;
+                        ptt_edge = Instant::now();
                         // Ask the meter that belongs to the new state straight
                         // away, rather than showing the other one's last reading
                         // for the rest of the current period.
@@ -1131,18 +1186,39 @@ fn serial_thread(
             // keyed, the rig's S-meter while receiving. Both ride the same
             // command on CI-V and only one of them is meaningful at a time, so
             // they take turns rather than sharing the bus.
+            //
+            // Which one applies is not only our own PTT: an over the operator
+            // started at the radio is just as much a transmission, and the
+            // meter that matters during it is the same one.
             if Instant::now() >= next_meter {
                 next_meter = Instant::now() + Duration::from_millis(200);
-                let reqs = if ptt {
+                let on_air = ptt || emit_rig_tx == Some(true);
+                let mut reqs = if on_air {
                     protocol.tx_telemetry_requests()
                 } else {
                     protocol.rx_telemetry_requests()
                 };
+                // ...and ask whether the rig has keyed itself. Not while we are
+                // the ones keying it: the answer would be our own key-down
+                // coming back, and the engine already knows about that.
+                if !ptt {
+                    reqs.extend(protocol.tx_state_requests());
+                }
                 for req in reqs {
                     if write_frame(&mut *port, &req, &mut last_write) {
                         break 'io true;
                     }
                 }
+            }
+
+            // A rig that has stopped answering is not a rig that is still
+            // transmitting. Without this, one lost reply at the wrong moment
+            // would leave the app believing an over is in progress for as long
+            // as the session lasts — S-meter blanked, transmit refused.
+            if emit_rig_tx == Some(true) && last_tx_reply.elapsed() > RIG_TX_MAX_AGE {
+                warn!("the radio stopped answering the transmit read; assuming it is receiving");
+                emit_rig_tx = Some(false);
+                let _ = event_tx.send(CatUpdate::Ptt(false));
             }
 
             // Read whatever arrived; parse and emit updates.
@@ -1195,6 +1271,26 @@ fn serial_thread(
                             let _ = signal_tx.send(dbm);
                             continue;
                         }
+                        // The rig's own transmit state. Deduped like the dial
+                        // (a level re-reported five times a second is not five
+                        // key-downs), and dropped entirely across one of our
+                        // own PTT edges, where the answer in hand describes
+                        // whichever side of the edge the read was issued on.
+                        if let CatUpdate::Ptt(on) = u {
+                            last_tx_reply = Instant::now();
+                            if ptt || ptt_edge.elapsed() < PTT_SETTLE {
+                                // Still worth recording: this is what the poll
+                                // above switches meters on, and after our own
+                                // over it must not be left saying "keyed".
+                                emit_rig_tx = Some(false);
+                                continue;
+                            }
+                            if emit_rig_tx != Some(on) {
+                                emit_rig_tx = Some(on);
+                                let _ = event_tx.send(u);
+                            }
+                            continue;
+                        }
                         // The power the rig reports goes straight out: it is
                         // asked for once per connection, and the engine adopts
                         // it without answering, so there is nothing here to
@@ -1228,8 +1324,12 @@ fn serial_thread(
                                 }
                                 c
                             }
-                            // Both meters and the power are handled above.
-                            CatUpdate::Swr(_) | CatUpdate::Signal(_) | CatUpdate::Power(_) => false,
+                            // Both meters, the power and the transmit state are
+                            // handled above.
+                            CatUpdate::Swr(_)
+                            | CatUpdate::Signal(_)
+                            | CatUpdate::Power(_)
+                            | CatUpdate::Ptt(_) => false,
                         };
                         if changed {
                             let _ = event_tx.send(u);

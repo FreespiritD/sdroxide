@@ -1244,6 +1244,11 @@ struct Engine {
     /// Whether the radio's own PTT line is what is holding this over — set by
     /// [`Self::apply_hw_ptt`], and the reason its key-up is honoured.
     hw_ptt: bool,
+    /// The transceiver in front of us is transmitting on its own — someone has
+    /// their hand on its microphone. See [`ControlUpdate::RigTx`]: this engine
+    /// is not driving that over and must not try to, so nothing here keys, and
+    /// nothing here modulates. It only watches.
+    rig_tx: bool,
     /// The transmit frequency the source has already been told, so
     /// [`Self::push_tx_freq`] only speaks when it moves.
     tx_freq_told: Option<f64>,
@@ -1851,6 +1856,7 @@ fn engine_thread(
         tx: None,
         tx_active: false,
         hw_ptt: false,
+        rig_tx: false,
         tx_freq_told: None,
         tx_center_hz: 0.0,
         tx_ham_only: engine_cfg.tx_ham_only,
@@ -2207,7 +2213,12 @@ fn engine_thread(
         }
         if now >= next_meters {
             next_meters = now + METER_INTERVAL;
-            let meters = if engine.tx_active {
+            // The transmitter is on the air whether this engine keyed it or the
+            // operator did it at the radio (`rig_tx`). Both put the meter into
+            // transmit, and the SWR of an over is worth reading either way —
+            // but only an over *we* key is one the guard may unkey, which is
+            // why the rails below stay on `tx_active` alone.
+            let meters = if engine.tx_active || engine.rig_tx {
                 let alc = engine.tx.as_ref().map(|t| t.alc_peak).unwrap_or(0.0);
                 // CAT/TCI rigs report real forward power / SWR; HackRF and other
                 // IQ sources have no such sensor and leave both `None` (the meter
@@ -2236,7 +2247,15 @@ fn engine_thread(
                 }
                 engine.swr_settle = engine.swr_settle.saturating_add(1);
                 let (swr_limit, swr_settle) = swr_rails(tuning, engine.swr_limit);
-                if engine.swr_guard
+                // ⛔ `tx_active`, not "on the air". The guard's whole action is
+                // to unkey, and the only over it can unkey is one this engine
+                // is driving: an operator holding the radio's microphone would
+                // simply keep transmitting while sdroxide sent an unkey the rig
+                // ignores — or, worse on a rig whose key-down doubles as an
+                // audio-source switch, would be cut off mid-word by sdroxide
+                // "helping". The radio has its own protection for its own over.
+                if engine.tx_active
+                    && engine.swr_guard
                     && engine.swr_tripped.is_none()
                     && engine.swr_settle > swr_settle
                 {
@@ -2957,6 +2976,21 @@ impl Engine {
                 }
             }
             ControlUpdate::Ptt(closed) => self.apply_hw_ptt(closed),
+            // An over the operator started at the radio. Recorded, never
+            // answered: see [`ControlUpdate::RigTx`] for why keying along with
+            // it would talk over the person holding the microphone.
+            ControlUpdate::RigTx(on) => {
+                if on != self.rig_tx {
+                    self.rig_tx = on;
+                    info!(
+                        "the radio is {} under its own control",
+                        match on {
+                            true => "transmitting",
+                            false => "receiving",
+                        }
+                    );
+                }
+            }
             ControlUpdate::Mode(m) => {
                 let cur = self.state.rx[0].mode;
                 // Against the mode we *command*, not the one on screen: SSTV is
@@ -7638,6 +7672,15 @@ impl Engine {
                 return self.deny_tx(&format!(
                     "SWR guard tripped at {swr:.1}:1. Acknowledge it to transmit again"
                 ));
+            }
+            // The radio is already transmitting under its own control —
+            // somebody has their hand on its microphone. Keying here would put
+            // sdroxide's audio into an over that is not its to drive, and on a
+            // rig whose key-down doubles as an audio-source switch it would cut
+            // the operator off mid-word. Placed with the other pure state
+            // checks, before anything acquires or tears down.
+            if self.rig_tx {
+                return self.deny_tx("the radio is transmitting on its own PTT");
             }
             // The station's transmit interlock: one radio on the air at a
             // time. First among the rails, before anything with side effects,

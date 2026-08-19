@@ -70,6 +70,23 @@ pub enum ControlUpdate {
     /// capability rails as the on-screen button, and ignores a key-down that
     /// arrives while something else already owns the transmitter.
     Ptt(bool),
+    /// The radio in front of us is transmitting **on its own** — its mic
+    /// button, foot switch, VOX or keyer — and sdroxide is not driving the
+    /// over. `true` is on the air.
+    ///
+    /// Emphatically not [`ControlUpdate::Ptt`], and the difference is the whole
+    /// point. `Ptt` is a line on hardware sdroxide transmits *through*: closing
+    /// it starts an sdroxide over, modulator and all. This is a transceiver
+    /// that has keyed itself and is putting its own microphone on the air, so
+    /// there is nothing here to drive and nothing to send it — running the
+    /// transmit chain would push the computer's audio into a radio that is
+    /// already modulating somebody's voice, and on a rig whose key-down doubles
+    /// as an audio-source switch (a Kenwood's `TX1;` is DATA SEND) it would cut
+    /// them off mid-word.
+    ///
+    /// So the engine *observes* it: the meter follows the over and shows its
+    /// SWR, and sdroxide will not key on top of it. It does not transmit.
+    RigTx(bool),
 }
 
 /// Anything that produces a stream of complex baseband samples: a live

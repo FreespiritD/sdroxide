@@ -136,6 +136,28 @@ pub fn set_mode_frames(radio: u8, m: Mode, data_sub: Option<u8>) -> Vec<Vec<u8>>
 pub fn ptt_frame(radio: u8, on: bool) -> Vec<u8> {
     frame(radio, 0x1C, &[0x00, on as u8])
 }
+/// Read the PTT line (Icom cmd `0x1C` sub `0x00`, no payload) — the read form
+/// of the same command [`ptt_frame`] keys with.
+///
+/// The rig answers `1C 00 <00|01>`, which is the only way to learn about an
+/// over the operator started at the radio: CI-V pushes nothing unasked unless
+/// the transceive setting is on, and sdroxide deliberately does not rely on
+/// that being on.
+pub fn read_ptt_frame(radio: u8) -> Vec<u8> {
+    frame(radio, 0x1C, &[0x00])
+}
+
+/// Parse a transceiver-status reply payload (cmd `0x1C`): the sub-command byte
+/// followed by its value. `None` for any sub-command other than `0x00` (PTT) —
+/// `0x01` is the ATU/tuner on the same command, and reading its state as a
+/// key-down would put the meter into transmit every time the tuner ran.
+pub fn parse_ptt_reply(data: &[u8]) -> Option<bool> {
+    match data {
+        [0x00, v] => Some(*v != 0),
+        _ => None,
+    }
+}
+
 /// Read the SWR meter (Icom cmd `0x15` sub `0x12`). Only meaningful while
 /// transmitting; the rig answers with a 0..255 reading (see [`swr_from_reading`]).
 pub fn read_swr_frame(radio: u8) -> Vec<u8> {
@@ -829,6 +851,16 @@ mod tests {
     fn the_two_meter_reads_are_distinct_frames() {
         assert_eq!(read_smeter_frame(0x94), vec![0xFE, 0xFE, 0x94, 0xE0, 0x15, 0x02, 0xFD]);
         assert_eq!(read_swr_frame(0x94), vec![0xFE, 0xFE, 0x94, 0xE0, 0x15, 0x12, 0xFD]);
+
+        // The PTT read is the key-down command with its value left off, and the
+        // reply carries the sub-command that says which status it answers.
+        assert_eq!(read_ptt_frame(0x94), vec![0xFE, 0xFE, 0x94, 0xE0, 0x1C, 0x00, 0xFD]);
+        assert_eq!(parse_ptt_reply(&[0x00, 0x01]), Some(true));
+        assert_eq!(parse_ptt_reply(&[0x00, 0x00]), Some(false));
+        // The tuner rides the same command one sub-command along, and must not
+        // be read as a transmitter.
+        assert_eq!(parse_ptt_reply(&[0x01, 0x01]), None);
+        assert_eq!(parse_ptt_reply(&[0x00]), None);
     }
 
     #[test]

@@ -293,6 +293,11 @@ impl Protocol for Elecraft {
         if on { b"TX;".to_vec() } else { b"RX;".to_vec() }
     }
 
+    /// `TQ;` — transmit query, which this family has as a command of its own.
+    fn tx_state_requests(&self) -> Vec<Vec<u8>> {
+        vec![b"TQ;".to_vec()]
+    }
+
     fn poll_requests(&self) -> Vec<Vec<u8>> {
         let mut reqs = vec![b"FA;".to_vec(), b"MD;".to_vec()];
         // Only in DATA, where the sub-mode is both valid and load-bearing.
@@ -473,6 +478,13 @@ impl Protocol for Elecraft {
                     self.data_sub = Some(d);
                     mode_touched = true;
                 }
+            } else if let Some(rest) = msg.strip_prefix("TQ") {
+                // `TQ0;` receive, `TQ1;` transmit — this family's one-command
+                // answer to "are you on the air", and the reason it needs no
+                // `IF;` parsing the way Kenwood does.
+                if let Some(d) = rest.chars().next().filter(char::is_ascii_digit) {
+                    out.push(CatUpdate::Ptt(d != '0'));
+                }
             } else if let Some(rest) = msg.strip_prefix("OM") {
                 // The leading blank belongs to the response format, not to the
                 // option string.
@@ -527,6 +539,17 @@ mod tests {
 
     fn frames(v: Vec<Vec<u8>>) -> Vec<String> {
         v.iter().map(|f| String::from_utf8_lossy(f).into_owned()).collect()
+    }
+
+    /// `TQ;` — this family answers "are you on the air" with a command of its
+    /// own, so nothing here has to index into a status string.
+    #[test]
+    fn the_transmit_query_is_a_command_of_its_own() {
+        let mut e = Elecraft::new();
+        assert_eq!(parse_str(&mut e, "TQ0;"), vec![CatUpdate::Ptt(false)]);
+        assert_eq!(parse_str(&mut e, "TQ1;"), vec![CatUpdate::Ptt(true)]);
+        assert!(parse_str(&mut e, "TQ;").is_empty());
+        assert_eq!(frames(Elecraft::new().tx_state_requests()), vec!["TQ;"]);
     }
 
     #[test]

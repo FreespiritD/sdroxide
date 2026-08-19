@@ -119,6 +119,7 @@ enum Block {
     Strength,
     Swr,
     Power,
+    Ptt,
     Other,
 }
 
@@ -148,6 +149,7 @@ impl Rigctld {
             ("get_level", "STRENGTH") => Block::Strength,
             ("get_level", "SWR") => Block::Swr,
             ("get_level", "RFPOWER") => Block::Power,
+            ("get_ptt", _) => Block::Ptt,
             _ => Block::Other,
         };
     }
@@ -193,6 +195,15 @@ impl Rigctld {
                     out.push(CatUpdate::Power(frac.clamp(0.0, 1.0)));
                 }
             }
+            // Hamlib's PTT is an enum, not a flag: 0 is receive and the values
+            // above it name *which* input keyed the rig. Only the zero matters
+            // here — this is asked for solely while sdroxide is not keying, so
+            // anything else is the operator's own hand.
+            Block::Ptt => {
+                if let Ok(n) = v.parse::<i32>() {
+                    out.push(CatUpdate::Ptt(n != 0));
+                }
+            }
             Block::Other => {}
         }
     }
@@ -232,6 +243,13 @@ impl Protocol for Rigctld {
 
     fn tx_telemetry_requests(&self) -> Vec<Vec<u8>> {
         vec![cmd("l SWR")]
+    }
+
+    /// `t` — Hamlib's own PTT read, which every backend it supports implements
+    /// one way or another. Nothing here has to know how the rig behind the
+    /// daemon spells it.
+    fn tx_state_requests(&self) -> Vec<Vec<u8>> {
+        vec![cmd("t")]
     }
 
     fn rx_telemetry_requests(&self) -> Vec<Vec<u8>> {
@@ -309,6 +327,7 @@ fn label(b: Block) -> &'static str {
         Block::Strength => "S-meter read",
         Block::Swr => "SWR read",
         Block::Power => "power read",
+        Block::Ptt => "PTT read",
         Block::Other => "command",
     }
 }
