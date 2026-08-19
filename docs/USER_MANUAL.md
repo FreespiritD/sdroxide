@@ -4339,6 +4339,21 @@ appears with it. If neither ever shows up, the radio is not sending its scope:
 **Copy diagnostic report** and look at the `scope sweeps` counter — zero against
 a healthy `CI-V frames in` count means the `27 10`/`27 11` writes did not take.
 
+A scope that stops in the middle of a session **restarts itself**. Nothing on
+this link reports that the sweeps have stopped, and several ordinary things stop
+them — an enable lost on the way (these are single UDP datagrams that nothing
+re-sends), the radio's own scope screen being closed and reopened, or the CI-V
+stream reconnecting under a session that otherwise carries on. sdroxide notices
+the silence after about three seconds and sends the enables again, backing off
+while the scope stays quiet, so the strip comes back without a reconnect. The
+watchdog holds off while you transmit, since a radio that stops sweeping for the
+length of an over is behaving normally. The log and the wire trace record each
+stall and recovery.
+
+The flip side is that switching the scope off *on the radio* will not stick while
+the strip is on — the watchdog reads it as a fault and turns it back on. Clear
+**Show the radio's spectrum scope** in the connection settings instead.
+
 If the strip is there but barely wider than the panadapter, the span is the reason:
 the radio sweeps whatever span was last chosen on its own screen, and that is
 often a few kHz. **Scope span** sets it from here.

@@ -93,6 +93,19 @@ const METER_MAX_AGE: Duration = Duration::from_millis(1500);
 /// How often to ask the radio where it is tuned and what its meter reads.
 const POLL_PERIOD: Duration = Duration::from_millis(200);
 
+/// A scope that has sent nothing for this long has stopped. Sweeps arrive
+/// about ten times a second, so this is a silence, not a slow sweep — and it is
+/// long enough to sit through a band change or a menu the operator opened on
+/// the radio without reading it as a fault.
+const SCOPE_STALL: Duration = Duration::from_secs(3);
+
+/// How soon after a stall to ask the radio again, and the ceiling the interval
+/// backs off to while it stays quiet. The enables are idempotent, but a radio
+/// with no scope at all — or one whose operator has switched it off — must not
+/// be asked twice a second forever.
+const SCOPE_RETRY: Duration = Duration::from_secs(2);
+const SCOPE_RETRY_MAX: Duration = Duration::from_secs(30);
+
 /// The scope's amplitude scale is 0..=160 with no documented dB per step. The
 /// engine's `auto_levels` normalises whatever it is given, so this only has to
 /// put the trace in a plausible range and keep it linear; the constant is a
@@ -125,6 +138,19 @@ pub struct IcomNetSource {
     // The radio's own scope.
     scope: civ::ScopeAssembler,
     scope_frame: Option<(f64, f64, Vec<u8>)>,
+    /// Whether this session uses the radio's scope at all, and the half-span it
+    /// was asked for — both kept so the watchdog can ask again.
+    scope_wanted: bool,
+    scope_half_span: Option<f64>,
+    /// When the last complete sweep landed — the watchdog's clock.
+    last_sweep: Instant,
+    /// When the watchdog last re-asserted the enables, and how long it waits
+    /// before doing so again.
+    last_scope_nudge: Instant,
+    scope_retry: Duration,
+    /// Whether the scope is currently considered stopped, so the log says so
+    /// once per episode rather than once per attempt.
+    scope_stalled: bool,
 
     last_poll: Instant,
     last_signal: Option<(Instant, f32)>,
@@ -200,6 +226,12 @@ impl IcomNetSource {
             if_out: VecDeque::new(),
             scope: civ::ScopeAssembler::default(),
             scope_frame: None,
+            scope_wanted: false,
+            scope_half_span: None,
+            last_sweep: Instant::now(),
+            last_scope_nudge: Instant::now(),
+            scope_retry: SCOPE_RETRY,
+            scope_stalled: false,
             last_poll: Instant::now(),
             last_signal: None,
             last_telem: None,
@@ -258,17 +290,9 @@ impl IcomNetSource {
         }
 
         if cfg.scope {
-            self.send(civ::scope_on_frame(self.civ_addr, true));
-            self.send(civ::scope_output_frame(self.civ_addr, true));
-            // The radio keeps whatever span was last chosen on its own screen,
-            // and that is routinely ±5 kHz — a full-band strip no wider than
-            // the panadapter above it. Centre mode as well as the span: a
-            // scope left in one of the fixed modes ignores `27 15` and sits on
-            // a slice of band the dial is not even in.
-            if let Some(half) = cfg.scope_span.half_span_hz() {
-                self.send(civ::scope_mode_frame(self.civ_addr, civ::ScopeMode::Center));
-                self.send(civ::scope_span_frame(self.civ_addr, half));
-            }
+            self.scope_wanted = true;
+            self.scope_half_span = cfg.scope_span.half_span_hz();
+            self.enable_scope();
         }
         notes
     }
@@ -286,6 +310,73 @@ impl IcomNetSource {
 
     fn send(&self, frame: Vec<u8>) {
         self.dev.send_civ(frame);
+    }
+
+    /// Ask the radio to run its scope and stream it here.
+    ///
+    /// Every frame is idempotent, which is what lets [`Self::watch_scope`] send
+    /// the lot again without having to know what went missing.
+    fn enable_scope(&mut self) {
+        if !self.scope_wanted {
+            return;
+        }
+        self.send(civ::scope_on_frame(self.civ_addr, true));
+        self.send(civ::scope_output_frame(self.civ_addr, true));
+        // The radio keeps whatever span was last chosen on its own screen, and
+        // that is routinely ±5 kHz — a full-band strip no wider than the
+        // panadapter above it. Centre mode as well as the span: a scope left in
+        // one of the fixed modes ignores `27 15` and sits on a slice of band the
+        // dial is not even in.
+        if let Some(half) = self.scope_half_span {
+            self.send(civ::scope_mode_frame(self.civ_addr, civ::ScopeMode::Center));
+            self.send(civ::scope_span_frame(self.civ_addr, half));
+        }
+    }
+
+    /// Start the scope again when it stops on its own.
+    ///
+    /// Nothing on this link reports that the sweeps have stopped, and several
+    /// ordinary things stop them: `27 11` is fire-and-forget over UDP, so an
+    /// enable lost on the way is never missed; the radio drops its output when
+    /// its own scope screen closes; and a session that comes up slowly can have
+    /// the whole opening burst land before the radio will accept any of it. The
+    /// waterfall then sat dead until the operator reconnected — and a reconnect
+    /// can lose the enable exactly the same way, which is why it sometimes took
+    /// several. Asking again costs two frames, so the watchdog does what the
+    /// operator was doing by hand.
+    fn watch_scope(&mut self) {
+        if !self.scope_wanted {
+            return;
+        }
+        // A radio does not sweep while it transmits, and an over is not a fault:
+        // hold the clock rather than nudging through every transmission.
+        if self.transmitting {
+            self.last_sweep = Instant::now();
+            return;
+        }
+        if self.last_sweep.elapsed() < SCOPE_STALL
+            || self.last_scope_nudge.elapsed() < self.scope_retry
+        {
+            return;
+        }
+        self.last_scope_nudge = Instant::now();
+        if !self.scope_stalled {
+            self.scope_stalled = true;
+            tracing::warn!(
+                "Icom LAN: the radio's scope has stopped sending; asking it to stream again"
+            );
+            // Also into the wire trace, where it sits beside the frames that
+            // stopped — which is where anyone diagnosing a recurrence looks.
+            self.dev.trace().note("scope stalled; re-sending the enables");
+        }
+        // A sweep left half-assembled when the stream stopped would otherwise be
+        // joined to the first one that comes back.
+        self.scope = civ::ScopeAssembler::default();
+        self.enable_scope();
+        // Back off while it stays quiet: a radio that has no scope, or whose
+        // operator has switched it off for good, is not worth two frames every
+        // two seconds for the rest of the session.
+        self.scope_retry = (self.scope_retry * 2).min(SCOPE_RETRY_MAX);
     }
 
     /// Drain whatever the radio has said, and ask it the periodic questions.
@@ -309,6 +400,7 @@ impl IcomNetSource {
                 self.send(civ::read_smeter_frame(self.civ_addr));
             }
         }
+        self.watch_scope();
     }
 
     fn on_reply(&mut self, reply: civ::CivReply) {
@@ -351,6 +443,16 @@ impl IcomNetSource {
                     civ::parse_scope_frame(&reply.data).and_then(|s| self.scope.push(s))
                 {
                     self.scope_frame = Some((info.center_hz, info.span_hz, bins));
+                    // A whole sweep is the only thing that proves the lane is
+                    // alive — frames still arriving while none of them ever
+                    // completes leaves the waterfall just as frozen.
+                    self.last_sweep = Instant::now();
+                    self.scope_retry = SCOPE_RETRY;
+                    if self.scope_stalled {
+                        self.scope_stalled = false;
+                        tracing::info!("Icom LAN: the radio's scope is sweeping again");
+                        self.dev.trace().note("scope sweeping again");
+                    }
                 }
             }
             _ => {}
@@ -738,6 +840,59 @@ mod tests {
         // Mapped to a dB axis with the peak near the top of the scale.
         assert!(bins.iter().all(|&d| d <= 0.0));
         assert!(bins.iter().any(|&d| d > -10.0), "the planted peak survived the mapping");
+    }
+
+    /// What the operator was doing by hand: the sweeps stop — an enable lost on
+    /// the way, the radio's scope screen closed — and the waterfall is dead
+    /// until the session is rebuilt. The watchdog asks again instead, so the
+    /// strip comes back on its own.
+    #[test]
+    fn a_scope_that_stops_sending_is_started_again() {
+        let sim = Sim::start(SimOptions { freq_hz: 14_100_000.0, ..Default::default() }).unwrap();
+        let mut src = IcomNetSource::open(&cfg(&sim)).expect("open");
+
+        let mut bins = Vec::new();
+        let mut buf = vec![Complex32::default(); 1024];
+        let mut sweeps = |src: &mut IcomNetSource, bins: &mut Vec<f32>| {
+            let _ = src.read(&mut buf);
+            src.wide_spectrum_db(bins).is_some()
+        };
+        wait_for("the first scope sweep", || sweeps(&mut src, &mut bins));
+
+        // The radio stops streaming and says nothing about it.
+        sim.stall_scope();
+        assert!(!sim.scope_streaming());
+
+        // ...and the lane comes back without anybody reconnecting. The stall has
+        // to be noticed first, so this waits longer than `SCOPE_STALL`.
+        let deadline = Instant::now() + SCOPE_STALL + Duration::from_secs(4);
+        let mut back = false;
+        while Instant::now() < deadline && !back {
+            back = sweeps(&mut src, &mut bins);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(back, "the scope never restarted");
+        assert!(sim.scope_streaming(), "the radio was never asked to stream again");
+        assert_eq!(bins.len(), 475);
+    }
+
+    /// The watchdog must not fire while the radio is transmitting: a scope that
+    /// stops for the length of an over is a radio behaving normally, and asking
+    /// it to stream mid-over would be two frames per retry for nothing.
+    #[test]
+    fn an_over_is_not_a_stalled_scope() {
+        let sim = Sim::start(SimOptions { scope: false, ..Default::default() }).unwrap();
+        let mut src = IcomNetSource::open(&cfg(&sim)).expect("open");
+        src.scope_wanted = true;
+        src.transmitting = true;
+        src.last_sweep = Instant::now() - SCOPE_STALL * 4;
+        src.last_scope_nudge = Instant::now() - SCOPE_RETRY_MAX;
+
+        src.watch_scope();
+        assert!(!src.scope_stalled, "an over was read as a fault");
+        // And the clock was held, so the first quiet moment after the over is
+        // not instantly a stall either.
+        assert!(src.last_sweep.elapsed() < SCOPE_STALL);
     }
 
     #[test]

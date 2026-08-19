@@ -95,6 +95,9 @@ pub struct Sim {
     port: u16,
     alive: Arc<AtomicBool>,
     recorded: Arc<Mutex<Recorded>>,
+    /// Whether the scope is streaming — `27 11` sets it, and a test can clear
+    /// it. See [`Sim::stall_scope`].
+    scope_out: Arc<AtomicBool>,
     join: Option<JoinHandle<()>>,
 }
 
@@ -110,6 +113,9 @@ impl Sim {
         let audio = bind_on(opts.bind, 0)?;
         let alive = Arc::new(AtomicBool::new(true));
         let recorded = Arc::new(Mutex::new(Recorded::default()));
+        // Off until the client asks for it, as on a real radio: a scope running
+        // on the radio's own display streams nothing until `27 11`.
+        let scope_out = Arc::new(AtomicBool::new(false));
 
         let radio = SimRadio {
             opts,
@@ -118,6 +124,7 @@ impl Sim {
             audio: SimStream::new(audio, "audio"),
             alive: alive.clone(),
             recorded: recorded.clone(),
+            scope_out: scope_out.clone(),
             token: 0x1234_5678,
             token_request: 0,
             civ_open: false,
@@ -129,7 +136,7 @@ impl Sim {
         };
         let join =
             std::thread::Builder::new().name("icomnet-sim".into()).spawn(move || radio.run())?;
-        Ok(Sim { port, alive, recorded: recorded.clone(), join: Some(join) })
+        Ok(Sim { port, alive, recorded: recorded.clone(), scope_out, join: Some(join) })
     }
 
     /// The control port to point a client at.
@@ -155,6 +162,19 @@ impl Sim {
     /// Whether the client noticed a dropped packet and asked for it back.
     pub fn served_retransmit(&self) -> bool {
         self.recorded.lock().unwrap_or_else(|e| e.into_inner()).served_retransmit
+    }
+
+    /// Stop the sweeps without saying so, the way a radio does when its scope
+    /// screen closes — and the way a session looks when the `27 11` that should
+    /// have started them was lost. Only a fresh enable starts them again, which
+    /// is what makes a client's recovery testable.
+    pub fn stall_scope(&self) {
+        self.scope_out.store(false, Ordering::Relaxed);
+    }
+
+    /// Whether the radio is streaming sweeps right now.
+    pub fn scope_streaming(&self) -> bool {
+        self.scope_out.load(Ordering::Relaxed)
     }
 
     pub fn stop(mut self) {
@@ -323,6 +343,7 @@ struct SimRadio {
     token: u32,
     token_request: u16,
     civ_open: bool,
+    scope_out: Arc<AtomicBool>,
     audio_started: Option<Instant>,
     audio_sent: u64,
     next_scope: Instant,
@@ -504,8 +525,9 @@ impl SimRadio {
         if let Some(f) = out {
             self.send_civ(f);
         }
-        // A scope-data-output enable starts the sweeps.
+        // `27 11` starts the sweeps, and stops them again on `00`.
         if cmd == 0x27 && frame.get(5) == Some(&0x11) {
+            self.scope_out.store(frame.get(6) == Some(&0x01), Ordering::Relaxed);
             self.next_scope = Instant::now();
         }
     }
@@ -518,7 +540,11 @@ impl SimRadio {
 
     /// One `27 00` sweep, in the single-frame form a LAN Icom sends.
     fn pump_scope(&mut self) {
-        if !self.opts.scope || !self.civ_open || Instant::now() < self.next_scope {
+        if !self.opts.scope
+            || !self.civ_open
+            || !self.scope_out.load(Ordering::Relaxed)
+            || Instant::now() < self.next_scope
+        {
             return;
         }
         self.next_scope = Instant::now() + Duration::from_millis(100);
