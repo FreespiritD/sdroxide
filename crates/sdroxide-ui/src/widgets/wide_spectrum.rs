@@ -6,7 +6,9 @@
 //! fling, zoom, viewport negotiation with the engine — all of it pinned to the
 //! device passband through `ViewState::clamp_to`. None of that applies here: the
 //! span is fixed at whatever the front end can see, there is nothing to zoom
-//! into, and the one interaction that matters is "take me there".
+//! into, and the two interactions that matter are "take me there" and "how wide
+//! is that" — a click tunes, and shift+drag measures a span with the
+//! panadapter's own ruler.
 //!
 //! Overloading `state.sample_rate` to describe this wider window instead would
 //! have avoided a new widget and broken two things that read it as the real IQ
@@ -24,11 +26,12 @@
 use std::collections::VecDeque;
 
 use eframe::egui::{
-    self, Color32, ColorImage, Pos2, Rect, Sense, Stroke, StrokeKind, TextureHandle, Vec2,
+    self, Color32, ColorImage, CursorIcon, Pos2, Rect, Sense, Stroke, StrokeKind, TextureHandle,
+    Vec2,
 };
 use sdroxide_types::{Command, RadioState, SpectrumFrame};
 
-use crate::colormap;
+use crate::{colormap, widgets::spectrum_view};
 
 /// Height of the strip, in points.
 pub const STRIP_HEIGHT: f32 = 96.0;
@@ -37,6 +40,10 @@ pub const STRIP_HEIGHT: f32 = 96.0;
 /// long enough to see a band opening without the strip turning into a second
 /// waterfall competing with the main one.
 const ROWS: usize = 120;
+
+/// A click tunes to a multiple of this. 100 Hz is finer than a pixel of a
+/// 32 MHz strip, so it never fights the hover readout showing where it lands.
+const CLICK_STEP: f64 = 100.0;
 
 /// Width the rows are stored at. Independent of the widget's pixel width, so a
 /// window resize does not throw the history away.
@@ -139,7 +146,9 @@ impl WideWaterfall {
     }
 }
 
-/// Draw the full-band strip and handle clicks on it.
+/// Draw the full-band strip and handle its input: a click tunes, hovering reads
+/// out the frequency under the cursor, and shift+drag measures a bandwidth —
+/// the last two exactly as on the main waterfall.
 pub fn show(
     ui: &mut egui::Ui,
     wf: &mut WideWaterfall,
@@ -150,8 +159,13 @@ pub fn show(
 ) {
     wf.push(frame, palette);
 
-    let (rect, resp) =
-        ui.allocate_exact_size(Vec2::new(ui.available_width(), STRIP_HEIGHT), Sense::click());
+    // Drags are sensed for one gesture only — the shift+drag bandwidth ruler.
+    // Nothing else here drags: the span is fixed, so there is no pan or zoom to
+    // arbitrate against.
+    let (rect, resp) = ui.allocate_exact_size(
+        Vec2::new(ui.available_width(), STRIP_HEIGHT),
+        Sense::click_and_drag(),
+    );
     if !ui.is_rect_visible(rect) {
         return;
     }
@@ -162,6 +176,49 @@ pub fn show(
     let x_of = |hz: f64| -> f32 {
         rect.left() + ((hz - lo) / (hi - lo)).clamp(0.0, 1.0) as f32 * rect.width()
     };
+
+    // Shift+drag measures a span here too. The strip is where a signal wider
+    // than the panadapter's view is seen whole, so it is where its width gets
+    // asked about — and the ruler drawn is the panadapter's own, so the two read
+    // identically. The bookkeeping is local and short: unlike over there, no
+    // filter grip, pan or fling is competing for the same drag.
+    let shift = ui.input(|i| i.modifiers.shift);
+    let measure_id = ui.id().with("wide-bw-measure");
+    // Frequency the drag started at; `None` when not measuring.
+    let mut measuring: Option<f64> = ui.data(|d| d.get_temp(measure_id)).unwrap_or(None);
+    let fade_id = ui.id().with("wide-bw-fade");
+    // After releasing, the frozen span fades out: (start_hz, end_hz, release_time).
+    let mut fade: Option<(f64, f64, f64)> = ui.data(|d| d.get_temp(fade_id)).unwrap_or(None);
+
+    if resp.drag_started_by(egui::PointerButton::Primary) {
+        // From the PRESS position: by the time the drag threshold trips the
+        // pointer has already left where the measurement should start.
+        if shift {
+            measuring = ui.input(|i| i.pointer.press_origin()).map(|p| hz_at(&rect, lo, hi, p.x));
+            fade = None; // a new measurement cancels the previous one's fade
+        } else {
+            measuring = None;
+        }
+        ui.data_mut(|d| {
+            d.insert_temp(measure_id, measuring);
+            d.insert_temp(fade_id, fade);
+        });
+    }
+    if resp.drag_stopped() {
+        if let Some(start_hz) = measuring {
+            let end_hz =
+                resp.interact_pointer_pos().map(|p| hz_at(&rect, lo, hi, p.x)).unwrap_or(start_hz);
+            fade = Some((start_hz, end_hz, ui.input(|i| i.time)));
+        }
+        measuring = None;
+        ui.data_mut(|d| {
+            d.insert_temp(measure_id, measuring);
+            d.insert_temp(fade_id, fade);
+        });
+    }
+    if measuring.is_some() || (resp.hovered() && shift) {
+        ui.ctx().set_cursor_icon(CursorIcon::Crosshair);
+    }
 
     painter.rect_filled(rect, 2.0, Color32::BLACK);
     let ctx = ui.ctx().clone();
@@ -230,22 +287,58 @@ pub fn show(
     // frequency is outside the received slice and retunes the front end. On this
     // hardware that costs nothing — retuning is a change of FFT bin, not an LO
     // move — so a click anywhere in 32 MHz lands immediately.
-    if let Some(pos) = resp.interact_pointer_pos().filter(|_| resp.clicked()) {
-        let frac = ((pos.x - rect.left()) / rect.width()).clamp(0.0, 1.0) as f64;
-        let hz = lo + frac * (hi - lo);
-        cmds.push(Command::SetVfo { vfo: state.active_vfo, hz: (hz / 100.0).round() * 100.0 });
+    //
+    // A shift-click is a bandwidth measurement whose drag never left the press
+    // point, not a request to tune somewhere.
+    if let Some(pos) = resp.interact_pointer_pos().filter(|_| resp.clicked() && !shift) {
+        let hz = hz_at(&rect, lo, hi, pos.x);
+        cmds.push(Command::SetVfo { vfo: state.active_vfo, hz: tuned(hz) });
     }
 
-    resp.on_hover_text_at_pointer(hover_label(rect, ui, lo, hi));
+    // --- cursor readout (hover) -------------------------------------------
+    // The same faint crosshair and frequency box the main waterfall draws, so
+    // the cursor reads a band the same way whichever strip it is over. Dropped
+    // while the ruler is out: that carries its own labels, and a third box at
+    // the pointer would sit on top of them.
+    if let Some(p) = resp.hover_pos().filter(|_| measuring.is_none() && !resp.dragged()) {
+        let line = Color32::from_rgba_unmultiplied(185, 205, 225, 70);
+        painter.vline(p.x, rect.y_range(), Stroke::new(1.0, line));
+        spectrum_view::label_box(
+            &painter,
+            Pos2::new(p.x + 8.0, p.y - 9.0),
+            &format!("{:.5} MHz", tuned(hz_at(&rect, lo, hi, p.x)) / 1e6),
+            Color32::WHITE,
+            rect,
+        );
+    }
+
+    // --- bandwidth measurement (shift+drag) + fade-out --------------------
+    if let (Some(start_hz), Some(p)) = (measuring, resp.interact_pointer_pos()) {
+        let end_hz = hz_at(&rect, lo, hi, p.x);
+        spectrum_view::draw_bw_measure(&painter, x_of, &rect, start_hz, end_hz, 1.0);
+    } else if let Some((start_hz, end_hz, t0)) = fade {
+        let elapsed = ui.input(|i| i.time) - t0;
+        if elapsed < spectrum_view::BW_FADE_SECS {
+            let alpha = (1.0 - elapsed / spectrum_view::BW_FADE_SECS) as f32;
+            spectrum_view::draw_bw_measure(&painter, x_of, &rect, start_hz, end_hz, alpha);
+            ui.ctx().request_repaint(); // keep animating the fade to completion
+        } else {
+            ui.data_mut(|d| d.insert_temp(fade_id, None::<(f64, f64, f64)>));
+        }
+    }
 }
 
-/// The frequency under the cursor, for the hover tooltip.
-fn hover_label(rect: Rect, ui: &egui::Ui, lo: f64, hi: f64) -> String {
-    let Some(pos) = ui.ctx().pointer_latest_pos() else {
-        return String::new();
-    };
-    let frac = ((pos.x - rect.left()) / rect.width()).clamp(0.0, 1.0) as f64;
-    format!("{:.3} MHz — click to tune", (lo + frac * (hi - lo)) / 1e6)
+/// The frequency at screen `x`, clamped to the band the strip is showing —
+/// a measuring drag is free to leave the strip, the front end is not.
+fn hz_at(rect: &Rect, lo: f64, hi: f64, x: f32) -> f64 {
+    let frac = ((x - rect.left()) / rect.width()).clamp(0.0, 1.0) as f64;
+    lo + frac * (hi - lo)
+}
+
+/// Where a click lands: the dial rounds to [`CLICK_STEP`], and the hover readout
+/// goes through the same rounding so it promises exactly what the click will do.
+fn tuned(hz: f64) -> f64 {
+    (hz / CLICK_STEP).round() * CLICK_STEP
 }
 
 #[cfg(test)]
@@ -274,13 +367,31 @@ mod tests {
         assert!((hi - 32.4e6).abs() < 1.0, "right edge should be Nyquist, got {hi}");
     }
 
+    /// A strip 100 pt wide starting 10 pt in, so a mapping that forgets
+    /// `rect.left()` fails instead of passing by symmetry.
+    fn strip() -> Rect {
+        Rect::from_min_size(Pos2::new(10.0, 0.0), Vec2::new(100.0, STRIP_HEIGHT))
+    }
+
     #[test]
     fn a_click_maps_back_to_the_frequency_under_it() {
-        let (lo, hi) = (0.0f64, 32.4e6f64);
-        // A click a quarter of the way across a 32.4 MHz strip is 8.1 MHz.
-        assert!(((lo + 0.25 * (hi - lo)) - 8.1e6).abs() < 1.0);
-        let hz = lo + 0.5 * (hi - lo);
-        assert!((((hz / 100.0f64).round() * 100.0) - hz).abs() <= 50.0);
+        // A click a quarter of the way across a 32.4 MHz strip is 8.1 MHz...
+        let hz = hz_at(&strip(), 0.0, 32.4e6, 35.0);
+        assert!((hz - 8.1e6).abs() < 1.0, "got {hz}");
+        // ...and the dial it sets is within half a step of it, which is what
+        // lets the hover readout show the click's own frequency.
+        assert!((tuned(hz) - hz).abs() <= CLICK_STEP / 2.0);
+        assert_eq!(tuned(14_074_063.0), 14_074_100.0);
+    }
+
+    /// A measuring drag is free to leave the strip; the band it measures is not.
+    /// Without the clamp the ruler would report a span the front end cannot see
+    /// — and, on the click path, tune outside it.
+    #[test]
+    fn a_position_outside_the_strip_clamps_to_the_band() {
+        let r = strip();
+        assert_eq!(hz_at(&r, 0.0, 32.4e6, r.left() - 40.0), 0.0);
+        assert_eq!(hz_at(&r, 0.0, 32.4e6, r.right() + 40.0), 32.4e6);
     }
 
     #[test]

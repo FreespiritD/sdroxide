@@ -1956,14 +1956,21 @@ pub fn show_ext(
     if let (Some(start_hz), Some(p)) = (measuring, resp.interact_pointer_pos()) {
         // Active drag: full opacity, tracking the pointer.
         let end_hz = view.x_to_freq(p.x, &rect);
-        draw_bw_measure(&painter, view, &rect, start_hz, end_hz, 1.0);
+        draw_bw_measure(&painter, |hz| view.freq_to_x(hz, &rect), &rect, start_hz, end_hz, 1.0);
     } else if let Some((start_hz, end_hz, t0)) = bw_fade {
         // After release: fade the frozen span out over BW_FADE_SECS, anchored to
         // its frequencies (so it tracks the view if you pan meanwhile).
         let elapsed = ui.input(|i| i.time) - t0;
         if elapsed < BW_FADE_SECS {
             let alpha = (1.0 - elapsed / BW_FADE_SECS) as f32;
-            draw_bw_measure(&painter, view, &rect, start_hz, end_hz, alpha);
+            draw_bw_measure(
+                &painter,
+                |hz| view.freq_to_x(hz, &rect),
+                &rect,
+                start_hz,
+                end_hz,
+                alpha,
+            );
             ui.ctx().request_repaint(); // keep animating the fade to completion
         } else {
             ui.data_mut(|d| d.insert_temp(fade_id, None::<(f64, f64, f64)>));
@@ -1981,14 +1988,19 @@ pub fn show_ext(
 }
 
 /// How long the released bandwidth measurement lingers while fading out.
-const BW_FADE_SECS: f64 = 5.0;
+pub(crate) const BW_FADE_SECS: f64 = 5.0;
 
 /// Draw the shift+drag bandwidth-measurement overlay: dotted vertical markers at
 /// the start and end frequencies, a horizontal span line with end ticks, and the
 /// measured bandwidth as a centred label. `alpha` fades the whole thing out.
-fn draw_bw_measure(
+///
+/// Takes the frequency→screen mapping as a closure rather than a [`ViewState`]:
+/// the full-band strip ([`crate::widgets::wide_spectrum`]) offers the same
+/// gesture over an axis that is not a panadapter viewport, and the ruler should
+/// look and read identically on both.
+pub(crate) fn draw_bw_measure(
     p: &egui::Painter,
-    view: &ViewState,
+    x_of: impl Fn(f64) -> f32,
     rect: &Rect,
     start_hz: f64,
     end_hz: f64,
@@ -1999,8 +2011,8 @@ fn draw_bw_measure(
     let color = Color32::from_rgba_unmultiplied(base.r(), base.g(), base.b(), (255.0 * a) as u8);
     let stroke = Stroke::new(1.5, color);
 
-    let x0 = view.freq_to_x(start_hz, rect).clamp(rect.left(), rect.right());
-    let x1 = view.freq_to_x(end_hz, rect).clamp(rect.left(), rect.right());
+    let x0 = x_of(start_hz).clamp(rect.left(), rect.right());
+    let x1 = x_of(end_hz).clamp(rect.left(), rect.right());
     let bw = (end_hz - start_hz).abs();
 
     // Dotted vertical markers spanning the whole panadapter (spectrum + scale +
@@ -2112,7 +2124,12 @@ fn faded_label(
 
 /// Format a bandwidth (Hz) as a compact human string.
 fn format_bandwidth(hz: f64) -> String {
-    if hz >= 10_000.0 {
+    if hz >= 1_000_000.0 {
+        // The ruler also runs over the full-band strip, where a span of several
+        // megahertz is the ordinary case and four digits of kilohertz is not a
+        // number anyone reads.
+        format!("{:.3} MHz", hz / 1e6)
+    } else if hz >= 10_000.0 {
         format!("{:.1} kHz", hz / 1000.0)
     } else if hz >= 1_000.0 {
         format!("{:.2} kHz", hz / 1000.0)
@@ -2169,7 +2186,7 @@ fn offset_bracket(
 }
 
 /// Draw `text` in a small semi-transparent black box, clamped inside `bounds`.
-fn label_box(p: &egui::Painter, top_left: Pos2, text: &str, fg: Color32, bounds: Rect) {
+pub(crate) fn label_box(p: &egui::Painter, top_left: Pos2, text: &str, fg: Color32, bounds: Rect) {
     let galley = p.layout_no_wrap(
         text.to_string(),
         FontId::monospace(11.0 * crate::theme::panadapter_font_scale()),
@@ -2343,6 +2360,16 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A span reads in the unit its size calls for: a signal's width in Hz or
+    /// kHz on the panadapter, a band's in MHz on the full-band strip.
+    #[test]
+    fn a_span_reads_in_the_unit_its_size_calls_for() {
+        assert_eq!(format_bandwidth(300.0), "300 Hz");
+        assert_eq!(format_bandwidth(2_400.0), "2.40 kHz");
+        assert_eq!(format_bandwidth(48_000.0), "48.0 kHz");
+        assert_eq!(format_bandwidth(5_731_100.0), "5.731 MHz");
     }
 
     /// And the steps stay times a person reads as round.

@@ -198,7 +198,9 @@ The smaller grey number below the readout is the *inactive* VFO's frequency.
   **start and end frequencies** at the markers and the **frequency span** (e.g. a
   signal's width) below. It works on both the spectrum and the waterfall. When you
   release the button the measurement lingers and fades out over about five
-  seconds, so you can read it after letting go.
+  seconds, so you can read it after letting go. The same ruler works on the
+  full-band strip (see **WIDE** in
+  [§2.8](#28-the-display-and-fft-controls)), where it measures in megahertz.
 
 ![Bandwidth measurement tool](images/bw_measurement.jpg)
 
@@ -538,7 +540,9 @@ sdroxide brings the receiver back up where you left it rather than on defaults.
 - **WIDE** — show or hide the **full-band strip**: a shallow second waterfall
   above the panadapter covering everything the receiver can see at once, with a
   blue outline around the slice the panadapter is receiving and an amber line on
-  the tuned frequency. Click anywhere on it to tune there. The button appears
+  the tuned frequency. Click anywhere on it to tune there. Hovering it shows a
+  crosshair and the frequency under the cursor, and **shift+drag** measures a
+  span across it, both exactly as on the main waterfall. The button appears
   only on receivers that produce a full-band view — a direct-sampling front end
   such as the RX-888; on an RTL-SDR, HPSDR or TCI radio the panadapter span is
   all the hardware delivers — and the setting is remembered between sessions.
