@@ -576,6 +576,22 @@ impl SdroxideApp {
         }
     }
 
+    /// Empty the received-text window.
+    ///
+    /// Shared by every panel that copies text, because it is the same wish
+    /// everywhere: the page is full of the last hour and the QSO starting now
+    /// wants a clean one. Deliberately not the same button as the transmit
+    /// box's CLEAR — one throws away what was received, the other stops what is
+    /// being sent, and confusing the two mid-over is expensive.
+    pub(in crate::app) fn clear_rx_chip(&self, ui: &mut egui::Ui, cmds: &mut Vec<Command>) {
+        if crate::chrome::chip(ui, false, RichText::new(" CLEAR RX ").size(10.5))
+            .on_hover_text("Empty the receive window. Nothing that is on the air stops.")
+            .clicked()
+        {
+            cmds.push(Command::DigiClearRx);
+        }
+    }
+
     /// Commit the transmit box: hand the whole buffer over and start the over.
     ///
     /// What Return does under [`Self::send_on_return_chip`], in every panel

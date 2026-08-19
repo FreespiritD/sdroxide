@@ -231,6 +231,11 @@ pub enum Command {
     DigiTxText(String),
     /// Continuous keyboard modes: enter (true) or leave (false) transmit.
     DigiTxActive(bool),
+    /// Empty the received-text window: the decoded stream of a keyboard mode,
+    /// the packet monitor, the JS8 conversation. Only what has been copied goes
+    /// — nothing about the receiver or an over in progress changes, so this is
+    /// safe to press mid-QSO to start a fresh page.
+    DigiClearRx,
     /// SSTV: select the mode (also sizes the TX image). `None` = Auto — the RX
     /// auto-detects the mode and TX defaults to Martin 1.
     SstvSetMode(Option<SstvMode>),

@@ -853,6 +853,16 @@ impl DigiEngine for PacketController {
         self.take_air_frames()
     }
 
+    /// Empty the monitor. The bad-frame counter goes with it — it is the
+    /// monitor's own tally of what it could not read, and a count left over
+    /// from a cleared page describes traffic that is no longer on it. The link
+    /// is untouched: a connected station stays connected.
+    fn clear_rx(&mut self) {
+        self.heard.clear();
+        self.bad_frames = 0;
+        self.status_dirty = true;
+    }
+
     fn status(&self) -> DigiStatus {
         self.digi_status()
     }

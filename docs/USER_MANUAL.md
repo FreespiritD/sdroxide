@@ -892,6 +892,8 @@ so the panel says how sure it is:
 - A **±Hz** figure appears when the signal is more than a few hertz off your
   cursor. The decoder tracks it (and keeps copying), but the passband does not
   follow, so nudge the cursor if it grows.
+- **CLEAR RX** empties the copy window without disturbing anything else — the
+  decoder carries on, and an over already going out is untouched.
 
 **Sending.** Type in the lower box. Characters go out **as you type** rather
 than a line at a time, and the ones already on the air turn **green** — so when
@@ -1614,6 +1616,12 @@ panel is a live **messaging area** instead of a QSO sequencer.
   window stops filling with garbage when no signal is present, lower it (to the
   left) to copy weaker signals. It applies to every keyboard mode
   (PSK/RTTY/Olivia/THOR/FSQ).
+- **CLEAR RX** in the panel header empties the receive window. Nothing that is
+  on the air stops and the decoder keeps copying — it only tears off the page,
+  which is what you want before answering a CQ on a frequency you have been
+  monitoring for an hour. Every mode that copies text has this button, and it is
+  never the same one as the **CLEAR** below the transmit box (that one stops
+  what you are *sending*).
 
 **Transmitting (type-ahead):**
 
@@ -1677,6 +1685,9 @@ It is a 33-tone incremental-FSK mode; choose the **speed** (FSQ-2/3/4.5/6) and a
 - **Contacts** — the **CONTACTS** button opens an address book (persisted in
   `contacts.json`). Add callsigns, give them names, click **TO** to target one, or
   **DEL** to remove.
+- **CLEAR RX** in the panel header empties the decoded stream and the directed
+  messages drawn over it. The heard list stays — it is a separate pane, and it is
+  what an incoming `?` query is answered from.
 - **Images** — **Send image…** picks a picture, which is scaled to grayscale and
   transmitted as an analog tone scan; received pictures appear in the image
   gallery below. Nothing here is written to disk, so clearing it is local and
@@ -2094,6 +2105,9 @@ heartbeat or a CQ, which are invitations, get the red CQ background.
 The conversation is on the right, newest at the bottom, with anything addressed
 to you marked ★. A message still arriving is shown greyed with a frame count,
 because a half-received sentence should not read like a complete one.
+**CLEAR RX**, beside the query buttons, empties the conversation. The heard list
+is left alone — it is a separate pane, and it is what `HEARING?` is answered
+from.
 
 **Replying.** Clicking a message — or a station's **REPLY** button — aims the
 composer at that station and drafts the reply the exchange expects. A heartbeat
@@ -7634,6 +7648,9 @@ different colour. `BUSY` means another station is transmitting and the modem
 will not key over them. A rising **bad** count against a steady frame count is
 what a marginal path looks like: frames are arriving and failing their check
 sequence.
+**CLEAR RX** empties the monitor and resets the bad-frame count with it — the
+count is that page's own tally, and one left over from a cleared page describes
+traffic that is no longer on it. A connected station stays connected.
 
 **LINK** shows the connected session, when there is one. There is no text entry:
 packet here is not a keyboard mode. The traffic is somebody else's, a beacon on

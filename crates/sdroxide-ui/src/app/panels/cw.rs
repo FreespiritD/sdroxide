@@ -105,6 +105,7 @@ impl SdroxideApp {
                     ui.add_space(6.0);
                 }
                 self.cw_speed_controls(ui, cmds);
+                self.clear_rx_chip(ui, cmds);
             });
         });
         ui.add_space(4.0);

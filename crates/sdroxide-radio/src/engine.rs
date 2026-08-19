@@ -4387,6 +4387,16 @@ impl Engine {
                     d.set_tx_text(text);
                 }
             }
+            DigiClearRx => {
+                if let Some(d) = self.digi.as_mut() {
+                    d.clear_rx();
+                    // Said now rather than left to the next poll: on a quiet
+                    // channel the controller has nothing to report for seconds
+                    // at a time, and a window that does not empty until the
+                    // next character arrives reads as a button that missed.
+                    self.emit_digi_status();
+                }
+            }
             DigiTxActive(on) => {
                 if let Some(d) = self.digi.as_mut() {
                     d.set_tx_active(on);

@@ -424,4 +424,9 @@ impl DigiEngine for TextModemController {
         self.over_had_text = false;
         self.status_dirty = true;
     }
+
+    fn clear_rx(&mut self) {
+        self.rx_text.clear();
+        self.status_dirty = true;
+    }
 }

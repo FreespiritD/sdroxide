@@ -55,6 +55,9 @@ impl SdroxideApp {
                              collision, a fade, or a signal too weak to read.",
                         );
                     }
+                    crate::chrome::row_tail(ui, |ui| {
+                        self.clear_rx_chip(ui, cmds);
+                    });
                 });
 
                 egui::ScrollArea::vertical()

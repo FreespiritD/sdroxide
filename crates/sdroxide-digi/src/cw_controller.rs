@@ -724,6 +724,14 @@ impl DigiEngine for CwController {
         }
         self.status_dirty = true;
     }
+
+    /// The unsettled tail goes with the settled text: it is on the same page,
+    /// and leaving it behind would clear the window to a stray half-word.
+    fn clear_rx(&mut self) {
+        self.rx_text.clear();
+        self.rx_pending.clear();
+        self.status_dirty = true;
+    }
 }
 
 #[cfg(test)]

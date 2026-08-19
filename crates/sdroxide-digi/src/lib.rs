@@ -105,6 +105,12 @@ pub trait DigiEngine: Send {
     fn set_tx_text(&mut self, _text: String) {}
     /// Continuous keyboard modes: enter/leave transmit.
     fn set_tx_active(&mut self, _on: bool) {}
+    /// Throw away what has been copied so far, so the operator can start a
+    /// fresh page. Only the received text goes: the decoder keeps running, an
+    /// over in progress is untouched, and nothing already logged is lost. Inert
+    /// for the modes that receive no text at all (the image modes, digital
+    /// voice), which is why it defaults to nothing.
+    fn clear_rx(&mut self) {}
     /// SSTV: select the mode (`None` = auto-detect on RX, Martin 1 on TX).
     fn set_sstv_mode(&mut self, _mode: Option<SstvMode>) {}
     /// SSTV: queue a composed image (interleaved RGB) and start transmitting.

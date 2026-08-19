@@ -970,6 +970,13 @@ impl DigiEngine for Js8Controller {
         self.abort_tx();
     }
 
+    /// Empty the conversation. The heard list stays — it is a separate pane,
+    /// and it is what `HEARING?` is answered from.
+    fn clear_rx(&mut self) {
+        self.messages.clear();
+        self.status_dirty = true;
+    }
+
     fn status(&self) -> DigiStatus {
         DigiStatus {
             mode: Mode::Js8,

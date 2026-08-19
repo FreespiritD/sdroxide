@@ -403,6 +403,16 @@ impl DigiEngine for FsqController {
         self.status_dirty = true;
     }
 
+    /// The stream and the directed messages drawn over it are one window, so
+    /// both go. The heard list stays: it is a separate pane answering a
+    /// separate question, and the `?` auto-reply is built from it.
+    fn clear_rx(&mut self) {
+        self.rx_text.clear();
+        self.rx_parsed = 0;
+        self.messages.clear();
+        self.status_dirty = true;
+    }
+
     fn set_image(&mut self, gray: Vec<u8>, w: u16, h: u16) {
         self.img_tx =
             Some(FsqImageTx::new(MODEM_RATE, self.audio_hz as f64, &gray, w as usize, h as usize));

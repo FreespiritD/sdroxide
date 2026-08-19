@@ -953,6 +953,9 @@ impl SdroxideApp {
             if has_target && crate::chrome::chip(ui, false, " CLEAR TO ").clicked() {
                 self.js8_target.clear();
             }
+            // Empties the conversation above, not the selection — which is what
+            // the chip beside it does, hence the different words for it.
+            self.clear_rx_chip(ui, cmds);
         });
 
         // The gap between the two rows. In a bottom-up layout this space sits

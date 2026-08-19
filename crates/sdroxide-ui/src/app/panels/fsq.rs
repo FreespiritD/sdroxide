@@ -198,6 +198,7 @@ impl SdroxideApp {
                     self.fsq_show_contacts = !self.fsq_show_contacts;
                 }
                 self.digi_squelch_slider(ui, cmds);
+                self.clear_rx_chip(ui, cmds);
             });
         });
         ui.add_space(4.0);
