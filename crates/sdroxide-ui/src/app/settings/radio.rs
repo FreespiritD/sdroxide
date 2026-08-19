@@ -270,13 +270,24 @@ pub(in crate::app) fn settings_cat_tab(
         ui.end_row();
 
         ui.label("Poll rate").on_hover_text(
-            "How often the radio is asked what it is doing. This is the half of \
-             the control link that runs from the radio back to sdroxide: turn \
-             the rig's own VFO knob or change its mode on the front panel and \
-             the readout, the band and the panadapter follow within one poll. \
-             The default of 5 Hz is a fifth of a second behind the knob. Raise \
-             it for a snappier follow, lower it on a slow or shared control \
-             port.",
+            "How often the radio is asked what it is doing — its dial, its mode \
+             and its meters. This is the half of the control link that runs from \
+             the radio back to sdroxide: turn the rig's own VFO knob or change \
+             its mode on the front panel and the readout, the band and the \
+             panadapter follow within one poll.\n\n\
+             It is also the whole of the control traffic this end generates, \
+             and on a modern Icom that traffic is not free: the CI-V port and \
+             the sound card sit behind one USB hub inside the radio, so frames \
+             asked for here are bus time the audio does not get — heard as \
+             dropouts that look like a DSP fault and are not one. The default \
+             of 2 Hz is half a second behind the knob and quiet enough to stay \
+             out of the audio's way. Raise it where the control port is its own \
+             device (a separate USB-serial adapter, a network rigctld); lower \
+             it if the radio's audio breaks up.\n\n\
+             An Icom with CI-V Transceive switched on in its own menu needs \
+             none of this for the dial: it reports the knob the instant it \
+             moves, and sdroxide stands the dial poll down as soon as it sees \
+             it do so.",
         );
         ui.add(DragValue::new(&mut cfg.cat.poll_hz).speed(0.5).range(0.5..=20.0).suffix(" Hz"));
         ui.end_row();
@@ -3164,7 +3175,8 @@ pub(in crate::app) fn settings_elad_tab(
         ui.label("Poll rate").on_hover_text(
             "How often the radio is asked what it is doing — its dial, its mode \
              and its meters. Turn the rig's own VFO knob and the readout follows \
-             within one poll.",
+             within one poll. It is also the whole of the control traffic this \
+             end generates, so lower it if the radio's audio breaks up.",
         );
         ui.add(DragValue::new(&mut cfg.cat.poll_hz).speed(0.5).range(0.5..=20.0).suffix(" Hz"));
         ui.end_row();

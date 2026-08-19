@@ -748,7 +748,21 @@ pub struct CatConfig {
     pub family: CatFamily,
     pub serial: SerialConfig,
     pub ptt: PttMethod,
-    /// How often to poll the rig for its dial/mode (Hz).
+    /// How often to poll the rig for its dial, mode and meters (Hz).
+    ///
+    /// The whole of the control traffic this end generates, and on a fair
+    /// number of radios that is not free. A modern Icom is a USB hub with the
+    /// CI-V port and the sound card behind it — an IC-7300 enumerates a TI
+    /// 4-port hub carrying a CP2102 and a PCM2901, both at full speed — so
+    /// every frame asked for on the control port is bus time the audio does not
+    /// get, inside the radio, whatever the cable outside it is like. The
+    /// symptom is dropouts in the received audio that look like a DSP fault and
+    /// are not one.
+    ///
+    /// Two hertz by default, which is half a second behind the rig's own VFO
+    /// knob and quiet enough not to be the thing breaking the audio. Raise it
+    /// on a radio whose control port is its own device — a separate USB-serial
+    /// adapter, a network `rigctld` — where the traffic competes with nothing.
     pub poll_hz: f32,
     /// Who controls the rig's mode for ordinary modes.
     pub mode_control: ModeControl,
@@ -890,7 +904,7 @@ impl Default for CatConfig {
             family: CatFamily::default(),
             serial: SerialConfig::default(),
             ptt: PttMethod::default(),
-            poll_hz: 5.0,
+            poll_hz: 2.0,
             mode_control: ModeControl::default(),
             digi_mode: DigiMode::default(),
             cw_keying: CwKeying::default(),

@@ -46,8 +46,8 @@ const SILENCE_BEFORE_REOPEN: Duration = Duration::from_secs(3);
 /// How long a reading from the rig's S-meter stands in for the next one — the
 /// same window `AudioCatSource` uses, and for the same reason: a gap between
 /// answers is not a signal that went away, but a link that has gone quiet must
-/// not leave a needle standing.
-const SIGNAL_MAX_AGE: Duration = Duration::from_millis(1500);
+/// not leave a needle standing. Follows the configured poll rate, which is what
+/// decides how far apart two honest answers are.
 
 /// How the transceiver is reached.
 ///
@@ -105,6 +105,10 @@ pub struct EladSource {
     /// holds them: the engine's meter tick is far faster than the rig answers.
     last_telem: Option<TxTelemetry>,
     last_signal: Option<(std::time::Instant, f32)>,
+    /// How long that S-meter reading stands in for the next one — derived from
+    /// the configured poll rate, which is what decides how far apart two of the
+    /// rig's answers are.
+    signal_max_age: Duration,
     /// Warnings from the open, plus the one the stream thread can only raise
     /// once samples have been flowing.
     status: Vec<String>,
@@ -146,6 +150,7 @@ impl EladSource {
             cat.family = CatFamily::Elad;
             Control::Serial(Box::new(sdroxide_cat::spawn(cat)))
         };
+        let signal_max_age = sdroxide_cat::signal_max_age(cat);
 
         // TX audio is best-effort and only on the transceiver: a missing device
         // means no transmit audio, not a failed open.
@@ -190,6 +195,7 @@ impl EladSource {
             expect_freq: None,
             last_telem: None,
             last_signal: None,
+            signal_max_age,
             status,
         })
     }
@@ -484,7 +490,7 @@ impl IqSource for EladSource {
         {
             self.last_signal = Some((std::time::Instant::now(), dbm));
         }
-        self.last_signal.filter(|(at, _)| at.elapsed() < SIGNAL_MAX_AGE).map(|(_, dbm)| dbm)
+        self.last_signal.filter(|(at, _)| at.elapsed() < self.signal_max_age).map(|(_, dbm)| dbm)
     }
 
     // ── Lifecycle ────────────────────────────────────────────────────────────

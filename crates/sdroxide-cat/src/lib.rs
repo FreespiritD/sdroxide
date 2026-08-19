@@ -37,6 +37,56 @@ const PTT_SETTLE: Duration = Duration::from_millis(600);
 /// and every key-down would be refused, with nothing on screen to say why.
 const RIG_TX_MAX_AGE: Duration = Duration::from_millis(2000);
 
+/// The fastest the meters are ever asked for, whatever the poll rate is set to.
+///
+/// Five times a second is already faster than anyone reads a needle, and every
+/// reading is a frame on the control port. On the radios where that port shares
+/// an internal USB bus with the sound card — an IC-7300 is a four-port hub with
+/// a CP2102 and a PCM2901 behind it, both at full speed — frames the operator
+/// cannot see the benefit of are paid for in audio the operator can hear the
+/// loss of.
+const METER_FLOOR: Duration = Duration::from_millis(200);
+
+/// How often the dial and mode are still read on a rig that reports its own
+/// changes unasked (CI-V transceive).
+///
+/// This is a safety net, not the thing that follows the knob: a broadcast that
+/// went missing — a collision on a shared bus, a buffer that overflowed — would
+/// otherwise leave the readout on a frequency the radio left seconds ago, and
+/// nothing else would ever notice. Three seconds is short enough that a missed
+/// broadcast is a glitch rather than a wrong dial, and long enough that the
+/// poll it replaces is gone as a source of traffic.
+const PUSHED_POLL_PERIOD: Duration = Duration::from_secs(3);
+
+/// How often the rig's meters are asked for while receiving, at a given poll
+/// rate — the cadence the serial thread runs. Only the receive side: the
+/// transmit meter is the SWR, which stays at [`METER_FLOOR`] whatever the
+/// setting says.
+fn meter_period(cfg: &CatConfig) -> Duration {
+    poll_period(cfg).max(METER_FLOOR)
+}
+
+/// How long one of the rig's S-meter readings stands in for the next.
+///
+/// Three of the rig's own answers, and never less than a second and a half: an
+/// ordinary gap between them is covered, and a link that has gone quiet is not
+/// — a needle left standing at the last thing a dead port said is worse than no
+/// needle. It has to follow the poll rate, because at a low one the gap between
+/// two honest answers is longer than any fixed window would allow for and the
+/// meter would blank between every pair of them; the floor is there so that
+/// raising the poll rate cannot make the needle *more* twitchy than it was.
+pub fn signal_max_age(cfg: &CatConfig) -> Duration {
+    (meter_period(cfg) * 3).max(Duration::from_millis(1500))
+}
+
+/// How often the rig is asked what its dial and mode are, at a given poll rate.
+///
+/// Clamped at both ends: below 0.2 Hz the readout stops being a readout, and
+/// above ~33 Hz there is no room left between frames anyway (see `FRAME_GAP`).
+fn poll_period(cfg: &CatConfig) -> Duration {
+    Duration::from_secs_f32((1.0 / cfg.poll_hz.max(0.2)).min(5.0))
+}
+
 /// A change the rig reported (external dial/mode movement) or that we read back.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum CatUpdate {
@@ -217,6 +267,23 @@ trait Protocol: Send {
         false
     }
 
+    /// True once this rig has been *seen* to report a dial or mode change
+    /// nobody asked it for — Icom's "CI-V transceive", which every other family
+    /// here lacks.
+    ///
+    /// Deliberately proven rather than assumed. It is a setting in the radio's
+    /// own menu, and whether a given model broadcasts a change the controller
+    /// itself commanded is not something the documentation is reliable about;
+    /// so nothing is claimed until a broadcast has actually arrived and parsed,
+    /// and until then the poll runs exactly as it always did. Once one has, it
+    /// stays true for the life of the connection: the alternative is a timeout,
+    /// and at idle — which is precisely when the traffic is worth saving — no
+    /// broadcasts arrive to keep it alive, so a timeout would put the poll back
+    /// on every rig that had nothing to report.
+    fn pushes_updates(&self) -> bool {
+        false
+    }
+
     fn parse(&mut self, buf: &mut Vec<u8>) -> Vec<CatUpdate>;
 }
 
@@ -229,6 +296,9 @@ struct Civ {
     /// The rig answered "NG" since this was last read (see
     /// [`Protocol::refused`]).
     nak: bool,
+    /// The rig has broadcast a change nobody asked for — its transceive setting
+    /// is on (see [`Protocol::pushes_updates`]).
+    pushed: bool,
 }
 
 impl Protocol for Civ {
@@ -286,6 +356,9 @@ impl Protocol for Civ {
     fn refused(&mut self) -> bool {
         std::mem::take(&mut self.nak)
     }
+    fn pushes_updates(&self) -> bool {
+        self.pushed
+    }
     fn parse(&mut self, buf: &mut Vec<u8>) -> Vec<CatUpdate> {
         let mut out = Vec::new();
         for reply in civ::parse_frames(buf) {
@@ -294,14 +367,28 @@ impl Protocol for Civ {
                 continue;
             }
             match reply.cmd {
-                0x03 => {
+                // The transceive broadcasts (`0x00` frequency, `0x01` mode):
+                // what a rig with that setting on sends, unasked, the moment
+                // its dial or its mode moves. Same payloads as the answers to
+                // the reads below, addressed to nobody in particular.
+                //
+                // These are only ever *from* the radio. `0x00` and `0x01` are
+                // the controller's "set frequency" and "set mode" — but this
+                // end sets with `0x05`/`0x06`, and anything from the controller
+                // address was already skipped above as our own echo. The LAN
+                // backend has folded the same pair together since it was
+                // written (`IcomNetSource::on_reply`); this is the serial side
+                // of the link catching up with it.
+                0x00 | 0x03 => {
                     if let Some(hz) = civ::decode_freq(&reply.data) {
+                        self.pushed |= reply.cmd == 0x00;
                         out.push(CatUpdate::Freq(hz));
                     }
                 }
-                0x04 => {
+                0x01 | 0x04 => {
                     if let Some(&b) = reply.data.first() {
                         if let Some(m) = civ::civ_to_mode(b) {
+                            self.pushed |= reply.cmd == 0x01;
                             out.push(CatUpdate::Mode(m));
                         }
                     }
@@ -423,11 +510,14 @@ fn make_protocol(cfg: &CatConfig) -> Box<dyn Protocol> {
     match cfg.family {
         // A Xiegu speaks the dialect but is not an Icom: none of the model
         // table applies to it, so it gets the plain mode command.
-        CatFamily::Xiegu => Box::new(Civ { radio: cfg.icom_radio_id, data_sub: None, nak: false }),
+        CatFamily::Xiegu => {
+            Box::new(Civ { radio: cfg.icom_radio_id, data_sub: None, nak: false, pushed: false })
+        }
         CatFamily::Icom => Box::new(Civ {
             radio: cfg.icom_radio_id,
             data_sub: cfg.icom_model.data_mode_sub(),
             nak: false,
+            pushed: false,
         }),
         CatFamily::Yaesu => Box::new(yaesu::Yaesu::new()),
         CatFamily::Kenwood => Box::new(kenwood::Kenwood::new(cfg.kenwood_send)),
@@ -838,7 +928,16 @@ fn serial_thread(
     signal_tx: Sender<f32>,
 ) {
     let mut protocol = make_protocol(&cfg);
-    let poll_period = Duration::from_secs_f32((1.0 / cfg.poll_hz.max(0.2)).min(5.0));
+    let poll_period = poll_period(&cfg);
+    // The meters follow the poll rate too. They used to run at a fixed 5 Hz,
+    // which made the setting a half-measure: an operator turning the control
+    // traffic down to quieten a shared USB bus took away the dial poll and left
+    // the meter poll — the same number of frames — running underneath it.
+    //
+    // Only while receiving. The transmit side stays at `METER_FLOOR` whatever
+    // the setting says: that reading is the SWR, the protection trip counts on
+    // it arriving, and it only runs for the length of an over.
+    let rx_meter_period = meter_period(&cfg);
     // What mode to command the rig into for a given app mode. FT8/FT4 use the
     // separate `digi_mode` setting; every other mode obeys `mode_control`
     // (CAT = mirror the selected mode to the rig; Radio = don't touch it).
@@ -925,10 +1024,21 @@ fn serial_thread(
         let mut rx = Vec::with_capacity(256);
         let mut read_buf = [0u8; 256];
         let mut next_poll = Instant::now();
-        // The meters are polled faster than freq/mode, and which meter is asked
-        // for depends on what the rig is doing: SWR while keyed, S-meter while
-        // receiving.
-        let mut next_meter = Instant::now();
+        // Which meter is asked for depends on what the rig is doing: SWR while
+        // keyed, S-meter while receiving.
+        //
+        // Started half a period behind the dial poll. Started together the two
+        // fire together, and four frames go out back to back with nothing but
+        // `FRAME_GAP` between them — the worst shape this traffic can have on a
+        // radio whose control port shares a USB bus with its sound card, where
+        // what the audio needs is the gaps rather than a lower average. Same
+        // number of frames, spread out.
+        //
+        // Only the starting phase: both timers re-arm from the moment they
+        // fire, so the two wander relative to each other over a long session.
+        // Worth having anyway — the cost is one addition, and the worst it can
+        // decay to is the lockstep it starts out avoiding.
+        let mut next_meter = Instant::now() + rx_meter_period / 2;
         let mut ptt = false;
         // When a CAT key-down was last written, so the rig's refusal of one can
         // be told from the refusals its unimplemented sub-commands answer with.
@@ -1172,9 +1282,15 @@ fn serial_thread(
                 }
             }
 
-            // Poll the rig for external changes.
+            // Poll the rig for external changes — unless it is already telling
+            // us about them. A rig with CI-V transceive switched on broadcasts
+            // its dial and its mode the moment either moves, which is both
+            // faster than any poll and free, so the poll drops back to the
+            // safety net that catches a broadcast gone missing.
             if Instant::now() >= next_poll {
-                next_poll = Instant::now() + poll_period;
+                let period =
+                    if protocol.pushes_updates() { PUSHED_POLL_PERIOD } else { poll_period };
+                next_poll = Instant::now() + period.max(poll_period);
                 for req in protocol.poll_requests() {
                     if write_frame(&mut *port, &req, &mut last_write) {
                         break 'io true;
@@ -1182,17 +1298,22 @@ fn serial_thread(
                 }
             }
 
-            // Poll the meter that applies right now, at ~5 Hz: the SWR while
-            // keyed, the rig's S-meter while receiving. Both ride the same
-            // command on CI-V and only one of them is meaningful at a time, so
-            // they take turns rather than sharing the bus.
+            // Poll the meter that applies right now: the SWR while keyed, the
+            // rig's S-meter while receiving. Both ride the same command on CI-V
+            // and only one of them is meaningful at a time, so they take turns
+            // rather than sharing the bus.
             //
             // Which one applies is not only our own PTT: an over the operator
             // started at the radio is just as much a transmission, and the
             // meter that matters during it is the same one.
+            //
+            // The rate is the operator's while receiving and `METER_FLOOR`
+            // while transmitting — the SWR feeds the protection trip, and an
+            // over is short enough that its traffic is not what an afternoon of
+            // receiving costs.
             if Instant::now() >= next_meter {
-                next_meter = Instant::now() + Duration::from_millis(200);
                 let on_air = ptt || emit_rig_tx == Some(true);
+                next_meter = Instant::now() + if on_air { METER_FLOOR } else { rx_meter_period };
                 let mut reqs = if on_air {
                     protocol.tx_telemetry_requests()
                 } else {
@@ -1452,6 +1573,94 @@ mod tests {
         assert_eq!(sent(0.0), "PC005;");
         // A slider cannot ask for more than the assumed full scale.
         assert_eq!(sent(2.0), "PC100;");
+    }
+
+    /// The control traffic is what the setting is for, so all of it has to be
+    /// under the setting. The meters used to run at a fixed 5 Hz underneath the
+    /// dial poll, which meant an operator turning the rate down to quieten a
+    /// shared USB bus removed half the frames and left the other half running.
+    #[test]
+    fn the_meters_follow_the_poll_rate_the_operator_set() {
+        let at =
+            |hz: f32| meter_period(&CatConfig { poll_hz: hz, ..CatConfig::default() }).as_millis();
+        // Turning the rate down turns the meter poll down with it.
+        assert_eq!(at(1.0), 1000);
+        assert_eq!(at(0.5), 2000);
+        // ...but never faster than a needle can be read, however high the
+        // setting goes: past this the frames buy nothing and cost bus time.
+        assert_eq!(at(5.0), METER_FLOOR.as_millis());
+        assert_eq!(at(20.0), METER_FLOOR.as_millis());
+    }
+
+    /// A reading has to stand in until the next one can arrive, and at a low
+    /// poll rate that is a long way off — a fixed window would blank the needle
+    /// between every pair of honest answers.
+    #[test]
+    fn a_meter_reading_outlives_the_gap_to_the_next_one() {
+        let at = |hz: f32| signal_max_age(&CatConfig { poll_hz: hz, ..CatConfig::default() });
+        for hz in [0.5, 1.0, 2.0, 5.0, 20.0] {
+            let cfg = CatConfig { poll_hz: hz, ..CatConfig::default() };
+            assert!(at(hz) > meter_period(&cfg), "{hz} Hz");
+        }
+        // And raising the rate cannot make the needle twitchier than it was.
+        assert_eq!(at(20.0), Duration::from_millis(1500));
+    }
+
+    /// CI-V transceive: a rig with that setting on broadcasts its dial and its
+    /// mode the moment either moves, which is both faster than any poll and
+    /// free. Reading those broadcasts is what lets the poll stand down.
+    #[test]
+    fn an_icom_that_reports_its_own_dial_is_noticed() {
+        let mut p = icom();
+        // Nothing is claimed until a broadcast has actually arrived: the
+        // setting lives in the radio's menu and is off as often as it is on.
+        assert!(!p.pushes_updates());
+        // An answer to a poll is not a broadcast, however much it looks like
+        // one — cmd 0x03 is the reply to the read this end just sent, and it
+        // comes back addressed to the controller rather than to the bus.
+        let mut buf = vec![0xFE, 0xFE, civ::CONTROLLER_ADDR, 0x94, 0x03];
+        buf.extend_from_slice(&civ::encode_freq(14_074_000.0));
+        buf.push(0xFD);
+        assert_eq!(p.parse(&mut buf), vec![CatUpdate::Freq(14_074_000.0)]);
+        assert!(!p.pushes_updates());
+        // The broadcast is cmd 0x00, addressed to nobody in particular, and
+        // carries the same five BCD bytes.
+        let mut buf = vec![0xFE, 0xFE, 0x00, 0x94, 0x00];
+        buf.extend_from_slice(&civ::encode_freq(7_055_000.0));
+        buf.push(0xFD);
+        assert_eq!(p.parse(&mut buf), vec![CatUpdate::Freq(7_055_000.0)]);
+        assert!(p.pushes_updates());
+    }
+
+    /// The mode has its own broadcast (cmd 0x01), and it counts for the same
+    /// reason — a rig that reports one reports the other.
+    #[test]
+    fn a_broadcast_mode_change_counts_as_the_rig_reporting_itself() {
+        let mut p = icom();
+        let mut buf = vec![0xFE, 0xFE, 0x00, 0x94, 0x01, civ::mode_to_civ(Mode::Cw), 0xFD];
+        assert_eq!(p.parse(&mut buf), vec![CatUpdate::Mode(Mode::Cw)]);
+        assert!(p.pushes_updates());
+    }
+
+    /// Our own frames come back on the bus. A rig address of `E0` is this end
+    /// talking, and treating that echo as the radio reporting itself would have
+    /// every family stand its poll down on the strength of its own commands.
+    #[test]
+    fn our_own_echo_is_not_the_rig_reporting_itself() {
+        let mut p = icom();
+        // `FE FE <radio> E0 05 …` — the set this end just wrote, seen again.
+        let mut buf = civ::set_freq_frame(0x94, 14_074_000.0);
+        assert!(p.parse(&mut buf).is_empty());
+        assert!(!p.pushes_updates());
+    }
+
+    /// No other family has anything like it, and none of them may claim to.
+    #[test]
+    fn only_civ_rigs_report_themselves() {
+        let family = |f| make_protocol(&CatConfig { family: f, ..CatConfig::default() });
+        for f in [CatFamily::Yaesu, CatFamily::Kenwood, CatFamily::Elecraft, CatFamily::Rigctld] {
+            assert!(!family(f).pushes_updates(), "{f:?}");
+        }
     }
 
     #[test]

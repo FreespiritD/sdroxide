@@ -3438,12 +3438,35 @@ is recording at all. Raising the rate raises that ceiling with it.
   `Radio controlled`.
 - **CW keying** — where CW you send comes from, `Rig keyer (CAT)` or
   `Sound card (MCW)`. See below.
-- **Poll rate** — how often (Hz) sdroxide reads the rig's frequency and mode.
-  This is the half of the control link that runs *from* the radio: turn the
-  rig's own VFO knob, or change its mode on the front panel, and the readout,
-  the band and the panadapter follow within one poll. The default of 5 Hz is a
-  fifth of a second behind the knob; raise it for a snappier follow, lower it on
-  a slow or shared control port. It applies to every CAT family.
+- **Poll rate** — how often (Hz) sdroxide reads the rig's frequency, mode and
+  meters. This is the half of the control link that runs *from* the radio: turn
+  the rig's own VFO knob, or change its mode on the front panel, and the
+  readout, the band and the panadapter follow within one poll. It applies to
+  every CAT family.
+
+  It is also the whole of the control traffic sdroxide generates, and on a
+  fair number of radios that traffic is not free. A modern Icom is a USB hub
+  with the CI-V port and the sound card behind it — an IC-7300 enumerates a
+  4-port hub carrying a CP2102 serial bridge and a PCM2901 audio codec, both at
+  full speed — so every frame asked for on the control port is bus time the
+  audio inside the radio does not get, no matter how good the cable outside it
+  is. The symptom is dropouts in the received audio that look exactly like a DSP
+  fault and are not one.
+
+  The default of 2 Hz is half a second behind the knob and quiet enough to stay
+  out of the audio's way. Raise it where the control port is its own device — a
+  separate USB-serial adapter, a network `rigctld` — and it competes with
+  nothing. Lower it if the radio's audio breaks up: the setting covers the
+  meters as well as the dial, so turning it down really does turn all of the
+  traffic down.
+
+  **Icom only:** if **CI-V Transceive** is switched on in the radio's own menu
+  (SET → Connectors → CI-V), the rig broadcasts its dial and its mode the
+  instant either moves. sdroxide watches for those broadcasts, and the first
+  time it sees one it stands the dial poll down to a three-second safety net —
+  the knob is then followed *faster* than any poll rate could manage, for none
+  of the traffic. Nothing needs setting at this end; with transceive off,
+  polling carries on as before.
 - **Send command** (Kenwood only) — which transceiver *generation* keys the rig
   when **PTT method** is `CAT`. The two disagree about what the `TX` parameter
   means, nothing on the wire tells them apart, and there is no value that is

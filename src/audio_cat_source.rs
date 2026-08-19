@@ -60,12 +60,12 @@ pub struct AudioCatSource {
     /// called current: a rig that has stopped answering must not leave a needle
     /// standing at the last thing it said.
     last_signal: Option<(std::time::Instant, f32)>,
+    /// How long the reading above stands in for the next one. Derived from the
+    /// configured poll rate rather than fixed, because that rate is what sets
+    /// the gap between two honest answers: a window shorter than it would blank
+    /// the needle between every pair of them. See `sdroxide_cat::signal_max_age`.
+    signal_max_age: std::time::Duration,
 }
-
-/// How long a reading from the rig's S-meter stands in for the next one. Comes
-/// to a handful of the rig's own ~5 Hz answers, so an ordinary gap is covered
-/// and a link that has gone quiet is not.
-const SIGNAL_MAX_AGE: std::time::Duration = std::time::Duration::from_millis(1500);
 
 impl AudioCatSource {
     /// Open the radio's sound-card streams and the CAT serial thread. `audio_in`
@@ -194,6 +194,10 @@ impl AudioCatSource {
                 in_rate / 2000.0,
             );
         }
+        // Read before the config goes to the CAT thread: how long an S-meter
+        // reading stands in for the next one follows the rate that thread polls
+        // at (see `sdroxide_cat::signal_max_age`).
+        let signal_max_age = sdroxide_cat::signal_max_age(&cfg);
         let cat = sdroxide_cat::spawn(cfg);
 
         Ok(AudioCatSource {
@@ -214,6 +218,7 @@ impl AudioCatSource {
             status,
             last_telem: None,
             last_signal: None,
+            signal_max_age,
         })
     }
 
@@ -646,7 +651,7 @@ impl IqSource for AudioCatSource {
         if let Some(dbm) = self.cat.poll_signal() {
             self.last_signal = Some((std::time::Instant::now(), dbm));
         }
-        self.last_signal.filter(|(at, _)| at.elapsed() < SIGNAL_MAX_AGE).map(|(_, dbm)| dbm)
+        self.last_signal.filter(|(at, _)| at.elapsed() < self.signal_max_age).map(|(_, dbm)| dbm)
     }
 
     fn tx_write_audio(&mut self, audio: &[f32]) -> Result<()> {
