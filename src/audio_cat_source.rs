@@ -387,6 +387,33 @@ impl IqSource for AudioCatSource {
         true
     }
 
+    /// The transceiver in front of us owns its mode, in either sound format.
+    ///
+    /// Demod audio reaches this through `DeviceCaps::audio_mode` — there is no
+    /// demodulator on this side at all — but a rig sending quadrature does not:
+    /// its stream is ordinary complex baseband and sdroxide demodulates it, so
+    /// the engine's "command the rig's mode" gate never fired and the mode
+    /// control moved nothing on the radio. Mode travelled rig→app on the CAT
+    /// poll and never the other way, and the two readouts sat there disagreeing
+    /// until the next key-down, where `tx_begin` asserts the mode anyway — which
+    /// is the wrong moment to discover that the radio was still on the other
+    /// sideband.
+    ///
+    /// [`IqSource::commands_rx_mode`] rather than
+    /// [`IqSource::tracks_rx_mode`]: nothing is imposed when the port opens.
+    /// This source adopts the mode the rig is already sitting on (see
+    /// `sdroxide_cat::query_once`), and rearranging somebody's radio out of a
+    /// restored session is not what connecting to it should do.
+    ///
+    /// The *filter* is not pushed with it, and must not be: the engine guards
+    /// that separately on whether the rig is the one doing the receiving, and
+    /// here it is not — the width the operator sets belongs to sdroxide's own
+    /// demodulator, and sending it would narrow the radio's IF against a
+    /// passband it is not carrying.
+    fn commands_rx_mode(&self) -> bool {
+        true
+    }
+
     fn read(&mut self, buf: &mut [Complex32]) -> Result<usize> {
         self.check_dropped();
         match self.format {
@@ -860,5 +887,34 @@ mod tests {
         p.push(4.0).unwrap();
         assert_eq!(fill_iq(&mut c, &mut buf, -1.0, None), 1);
         assert_eq!(buf[0], Complex32::new(3.0, -4.0));
+    }
+
+    /// Field report: a Kenwood on its I/Q output followed mode changes made at
+    /// the radio but not ones made in sdroxide. Quadrature is not `audio_mode`,
+    /// so the engine's "command the rig's mode" gate never fired — the same
+    /// hole the Icom LAN backend had, and the same flag closes it.
+    ///
+    /// Both formats, because the answer must not depend on which one the
+    /// operator picked: the radio owns its mode either way.
+    #[test]
+    fn a_cat_rig_owns_its_mode_in_either_sound_format() {
+        for format in [SoundFormat::Iq, SoundFormat::DemodAudio] {
+            // A port that cannot be opened: `open` is deliberately degradable
+            // (the CAT thread retries in the background and the audio streams
+            // are best-effort), so this needs neither a rig nor a sound card.
+            let cfg = CatConfig {
+                serial: sdroxide_types::SerialConfig {
+                    path: "/nonexistent/sdroxide-test-tty".into(),
+                    ..Default::default()
+                },
+                format,
+                ..Default::default()
+            };
+            let src = AudioCatSource::open(cfg, None, None).expect("open is best-effort");
+            assert!(
+                src.commands_rx_mode(),
+                "{format:?}: the transceiver in front of us owns its mode"
+            );
+        }
     }
 }

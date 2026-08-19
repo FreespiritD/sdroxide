@@ -3244,6 +3244,21 @@ separately from your computer's own speakers and microphone.
   own, so every kind of tuning moves sdroxide's receiver inside it and the
   hardware is only retuned when the frequency would leave the span.
 
+The **mode** travels in both directions on either sound format, subject to the
+**Mode control** setting below: change it on the radio and sdroxide follows on
+the next poll, change it in sdroxide and the radio follows. On a quadrature rig
+sdroxide is the one demodulating, so the mode is not what shapes what you hear —
+but it is what the radio's own display shows, and it is the sideband the radio
+will transmit on, so the two readouts are not allowed to disagree. What sdroxide
+does *not* send a quadrature rig is the filter width: on that path the passband
+is sdroxide's own, and narrowing the radio's I.F. against it would cut into the
+span it is sending. A **demod audio** rig gets both, because there the radio's
+filter is the only one in the path.
+
+Neither the dial nor the mode is imposed when the port opens — sdroxide adopts
+whatever the radio is already sitting on rather than retuning it out of a saved
+session.
+
 **I/Q sample rate** (IQ format only) — how fast the radio's I/Q sound card is
 run, and so how wide the panadapter is. A quadrature stream spans its whole
 sample rate, centred on the dial, so 48 kHz shows ±24 kHz either side of the
