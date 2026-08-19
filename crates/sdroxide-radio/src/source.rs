@@ -601,6 +601,38 @@ pub fn shift_caps(
     caps
 }
 
+/// Which hardware frequency to open a converted front end on, for the dial the
+/// engine is holding — the current one on a runtime interface change, the
+/// restored session's at startup.
+///
+/// Normally that is the one rule the whole feature is built on: the hardware is
+/// tuned to `dial + offset`. The exception is the dial that predates the
+/// converter, and every operator who sets one up makes it — they are listening
+/// to the converter's output on 739.494 MHz, and *then* tell sdroxide there is
+/// a 9750 MHz LNB in front of the radio. That dial is in the hardware's domain,
+/// so putting the offset on it asks the front end for −9010.505 MHz.
+///
+/// Below DC is not a frequency, and it is taken as the proof of what the number
+/// is: the dial is read as the hardware frequency it plainly is, the front end
+/// opens exactly where it already was, and [`ConvertedSource`] hands the dial
+/// back re-labelled — 739.494 MHz becomes 10489.494 MHz, the same signal under
+/// the number the operator wanted to see when they said there was an LNB.
+///
+/// What this replaces is not a smaller inconvenience: several back ends clamp a
+/// tune they cannot make (a Pluto asked for a negative frequency lands at
+/// 46.875 MHz) and report the number they were *given* rather than the one they
+/// took, which left the engine holding a dial outside the converted receive
+/// range, a receiver pointed somewhere else entirely, and every subsequent tune
+/// refused as "outside this radio's receive range".
+pub fn converter_open_hz(dial_hz: f64, offset_hz: f64) -> f64 {
+    let hw = dial_hz + offset_hz;
+    // `> 0.0` and not `>= 0.0`: DC itself is no more openable than below it.
+    // The second clause is the same test on the dial — a dial at or below zero
+    // is not a frequency to read as a hardware one either, so that sum goes on
+    // down and the back end refuses it rather than this inventing something.
+    if hw > 0.0 || dial_hz <= 0.0 { hw } else { dial_hz }
+}
+
 /// Replace what a device says about its own tuning ranges with what the
 /// operator says, for whichever direction they gave an answer for.
 ///

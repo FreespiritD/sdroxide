@@ -14,7 +14,8 @@ use std::time::{Duration, Instant};
 
 use crossbeam_channel::Receiver;
 use sdroxide_radio::{
-    Complex32, ConvertedSource, EngineConfig, IqSource, Result, shift_caps, start_engine,
+    Complex32, ConvertedSource, EngineConfig, EngineSwap, IqSource, ReopenFn, Result,
+    converter_open_hz, shift_caps, start_engine,
 };
 use sdroxide_types::{Command, DeviceCaps, Mode, RadioEvent, Vfo};
 
@@ -678,4 +679,136 @@ fn a_frequency_below_dc_after_the_offset_is_refused() {
     assert!(s.set_center_hz(144_000_000.0).is_ok(), "in range");
     let err = s.set_center_hz(10_000_000.0).expect_err("below DC once translated");
     assert!(format!("{err}").contains("below DC"), "the reason should say so, got {err}");
+}
+
+/// Where the operator's dial sits before they tell sdroxide about the LNB:
+/// on the converter's output, which is what the receiver is actually hearing.
+const IF_HZ: f64 = DOWNLINK - 55_420.0 + LNB;
+
+/// The arithmetic on its own. A dial that is already in the operator's domain
+/// takes the offset; one that predates the converter cannot, and is opened on
+/// as the hardware frequency it is.
+#[test]
+fn the_open_frequency_is_the_dial_plus_the_offset_until_that_is_below_dc() {
+    // An upconverter: the dial is the operator's and the hardware goes up.
+    assert_eq!(converter_open_hz(DIAL, OFFSET), DIAL + OFFSET);
+    // An LNB, with the dial already on the downlink: likewise.
+    assert_eq!(converter_open_hz(DOWNLINK, LNB), DOWNLINK + LNB);
+    // …and with the dial still on the LNB's output, which is where every
+    // operator is at the moment they set the converter up. Below DC is not a
+    // frequency, so the number is read as the hardware's own and opened on.
+    assert_eq!(converter_open_hz(IF_HZ, LNB), IF_HZ);
+}
+
+/// The bug, as the operator meets it: listening to the LNB's output on
+/// 739.494 MHz, they open Settings → Radio, pick "LNB, Ku low" and press Apply.
+///
+/// What must not happen is the radio going deaf — the front end asked for
+/// −9010 MHz, clamping to the bottom of its range, and the dial left outside
+/// the converted receive range where every tune the operator makes is refused
+/// as "outside this radio's receive range" and put back where it already was.
+/// What must happen instead is a re-labelling: the receiver does not move, and
+/// the signal it is on gets the number the operator meant when they said there
+/// was a 9750 MHz LNB in front of it.
+#[test]
+fn a_converter_switched_on_under_a_running_radio_relabels_the_dial() {
+    let landed = Arc::new(Mutex::new(0.0));
+    let hw = Arc::clone(&landed);
+    // Settings → Radio → Apply, the way `open_converted_source` does it.
+    let reopen: ReopenFn = Box::new(move |dial: f64| {
+        let open_at = converter_open_hz(dial, LNB);
+        *hw.lock().unwrap() = open_at;
+        let inner = Hardware { landed: Arc::clone(&hw), ..Hardware::new(open_at) };
+        Ok((
+            Box::new(ConvertedSource::new(Box::new(inner), LNB, Some(0.0))) as Box<dyn IqSource>,
+            shift_caps(qo100_caps(), LNB, Some(0.0)),
+        ))
+    });
+
+    // Before Apply: no converter, the dial on the 739 MHz the LNB is delivering.
+    let cfg = EngineConfig { reopen: Some(reopen), ..Default::default() };
+    let mut h = start_engine(Box::new(Hardware::new(IF_HZ)), qo100_caps(), cfg);
+    let thread = h.thread.take();
+    h.swap_tx.send(EngineSwap::ReopenSource).expect("the engine is running");
+    let (notices, dial, _) = drain(&h.event_rx, 1.5);
+
+    let want = IF_HZ - LNB;
+    assert!(
+        !notices.iter().any(|n| n.contains("outside")),
+        "nothing here is out of range, got {notices:?}"
+    );
+    assert!((dial - want).abs() < 1.0, "the dial should read {want}, not {dial}");
+    assert!(
+        (*landed.lock().unwrap() - IF_HZ).abs() < 1.0,
+        "the receiver was already on the signal and must not have moved, it is on {}",
+        *landed.lock().unwrap()
+    );
+
+    // And the radio still tunes: the whole complaint was that it stopped. The
+    // downlink is a few tens of kHz away, so this one is the DDC's to make…
+    h.cmd_tx.send(Command::SetVfo { vfo: Vfo::A, hz: DOWNLINK }).unwrap();
+    let (notices, dial, _) = drain(&h.event_rx, 1.0);
+    assert!(notices.is_empty(), "the downlink is reachable through the LNB, got {notices:?}");
+    assert!((dial - DOWNLINK).abs() < 1.0, "the dial should read {DOWNLINK}, not {dial}");
+
+    // …and one right out of the span is the receiver's, which has to land on the
+    // I.F. the LNB delivers rather than on the 10 GHz number the dial shows.
+    let far = DOWNLINK + 3_000_000.0;
+    h.cmd_tx.send(Command::SetVfo { vfo: Vfo::A, hz: far }).unwrap();
+    let (notices, dial, _) = drain(&h.event_rx, 1.0);
+    assert!(notices.is_empty(), "still inside the LNB's reach, got {notices:?}");
+    assert!((dial - far).abs() < 1.0, "the dial should read {far}, not {dial}");
+    assert!(
+        (*landed.lock().unwrap() - (far + LNB)).abs() < 1.0,
+        "the hardware should be on the I.F., it is on {}",
+        *landed.lock().unwrap()
+    );
+
+    drop(h.cmd_tx);
+    if let Some(t) = thread {
+        let _ = t.join();
+    }
+}
+
+/// The same trap the other way round: the converter is switched *off* while the
+/// dial is on 10489 MHz, and the radio behind it hears to 6 GHz. A front end
+/// that cannot reach the dial takes it along to where it can — a radio one tune
+/// away from useful, rather than one that refuses every tune it is given and
+/// has to be typed a frequency out of thin air.
+#[test]
+fn a_swap_to_a_front_end_that_cannot_reach_the_dial_moves_it() {
+    // No converter this time, and a front end that answers with the frequency
+    // it was handed rather than the one it clamped to — which is what a Pluto,
+    // an RTL-SDR and an HPSDR all do.
+    let reopen: ReopenFn = Box::new(|dial: f64| {
+        Ok((Box::new(Hardware::new(dial)) as Box<dyn IqSource>, qo100_caps()))
+    });
+
+    let inner = Hardware::new(DOWNLINK + LNB);
+    let source = ConvertedSource::new(Box::new(inner), LNB, Some(0.0));
+    let cfg = EngineConfig { reopen: Some(reopen), ..Default::default() };
+    let mut h = start_engine(Box::new(source), shift_caps(qo100_caps(), LNB, Some(0.0)), cfg);
+    let thread = h.thread.take();
+    h.swap_tx.send(EngineSwap::ReopenSource).expect("the engine is running");
+    let (notices, dial, center) = drain(&h.event_rx, 1.5);
+
+    let top = qo100_caps().freq_ranges_rx[0].1;
+    assert!(
+        notices.iter().any(|n| n.contains("the dial moved to")),
+        "the operator has to be told their dial moved, got {notices:?}"
+    );
+    assert!((dial - top).abs() < 1.0, "the dial should be at the top of the range, got {dial}");
+    assert!((center - top).abs() < 1.0, "and the hardware with it, got {center}");
+
+    // The point of moving it: the radio tunes again.
+    h.cmd_tx.send(Command::SetVfo { vfo: Vfo::A, hz: 1_000_000_000.0 }).unwrap();
+    let (notices, dial, center) = drain(&h.event_rx, 1.0);
+    assert!(notices.is_empty(), "1 GHz is inside the range, got {notices:?}");
+    assert!((dial - 1_000_000_000.0).abs() < 1.0, "the dial should read 1 GHz, got {dial}");
+    assert!((center - 1_000_000_000.0).abs() < 1.0, "and the receiver with it, got {center}");
+
+    drop(h.cmd_tx);
+    if let Some(t) = thread {
+        let _ = t.join();
+    }
 }

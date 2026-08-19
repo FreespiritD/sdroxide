@@ -7381,8 +7381,34 @@ impl Engine {
             state.vfo_a_hz = state.center_hz;
             state.vfo_b_hz = state.center_hz;
         }
+        // …and a front end that cannot hear where the dial is takes it with it.
+        // Not politeness: the dial is what every tune is judged against, so one
+        // left outside the new receive range refuses every move the operator
+        // makes *and* falls back to itself, which is a radio that has to be
+        // typed a frequency out of thin air before it works again. Several back
+        // ends put us here by answering with the frequency they were handed
+        // rather than the one they clamped to, and a converter switched on
+        // under a running radio moves the whole range at once.
+        let mut moved = None;
+        if let Some(hz) = nearest_rx_hz(&self.caps, state.active_freq_hz()) {
+            let why = format!(
+                "{:.6} MHz is outside this radio's receive range ({}) — the dial moved to \
+                 {:.6} MHz",
+                state.active_freq_hz() / 1e6,
+                describe_ranges(&self.caps.freq_ranges_rx),
+                hz / 1e6,
+            );
+            warn!("{why}");
+            moved = Some(why);
+            state.vfo_a_hz = hz;
+            state.vfo_b_hz = hz;
+        }
         state.band = Band::containing(state.active_freq_hz());
         self.state = state;
+        // The frequency a refused tune goes back to belongs to the front end
+        // that is on the air now: the old one's dial may be nowhere this one can
+        // go, and `keep_vfo_in_span` below is about to judge exactly that.
+        self.good_vfo_hz = self.state.active_freq_hz();
         // The tuning is fresh, but the antenna is a property of the station's
         // coax rather than of the front end: a radio that dropped out and came
         // back has to return to the port it was receiving on. The gain stages
@@ -7463,6 +7489,7 @@ impl Engine {
         // Surface any open warning (radio audio unavailable, …) and any config
         // file reset to defaults by the reload, or clear a stale notice.
         let mut notes: Vec<String> = self.source.open_status().into_iter().collect();
+        notes.extend(moved);
         notes.extend(sdroxide_config::take_load_alerts());
         let _ =
             self.event_tx.send(RadioEvent::Notice((!notes.is_empty()).then(|| notes.join("\n"))));
@@ -7483,6 +7510,10 @@ impl Engine {
         self.push_rx_mode();
         self.keep_vfo_in_span();
         self.update_tuning();
+        // Again, because both of those can move the centre — a dial that had to
+        // be brought into the new front end's range always does — and the state
+        // sent above was the one from before they ran.
+        self.emit_state();
     }
 
     /// Keep a band-dependent sideband following the dial.
@@ -8650,6 +8681,25 @@ impl Engine {
             .send(RadioEvent::Notice(Some(format!("{why} — back to {:.6} MHz", good / 1e6))));
         let _ = self.event_tx.send(RadioEvent::State(self.state.clone()));
     }
+}
+
+/// The frequency inside a device's published receive ranges nearest `hz`, or
+/// `None` when there is nothing to do: `hz` is already reachable, or the device
+/// publishes no ranges at all and is taken at its word (see
+/// [`sdroxide_types::DeviceCaps::may_rx_hz`]).
+///
+/// The nearest edge rather than a band centre or a default: it is the closest
+/// this radio can come to where the operator was, and on the common cause — a
+/// converter switched on or off under a running radio — it is a short step from
+/// where they wanted to be.
+fn nearest_rx_hz(caps: &DeviceCaps, hz: f64) -> Option<f64> {
+    if caps.may_rx_hz(hz) {
+        return None;
+    }
+    caps.freq_ranges_rx
+        .iter()
+        .map(|&(lo, hi)| hz.clamp(lo, hi))
+        .min_by(|a, b| (a - hz).abs().total_cmp(&(b - hz).abs()))
 }
 
 /// Tunable ranges as an operator would read them.

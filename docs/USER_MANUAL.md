@@ -3040,7 +3040,10 @@ link drops mid-session: it reconnects when the radio comes back.
 frequency converter in the antenna line — an HF upconverter such as the Ham It
 Up or SpyVerter, a transverter, or a satellite LNB. Pick a converter from the
 list and the offset fills itself in; pick nothing and type one, which the list
-then shows as **Manual**.
+then shows as **Manual**. That entry is a label rather than a choice — it says
+what the box reads when the offset is not one of the presets, and cannot be
+picked; the **Offset** field below is always editable, which is where any other
+converter goes in.
 
 The offset is **in hertz**, and it is the same number, with the same sign, that
 the converter's own documentation and every other SDR program (SDR++, SDR#,
@@ -3052,6 +3055,16 @@ downlink is received at 739 MHz while the dial reads 10.489 GHz. Dragging the
 box trims a hertz at a time, which is what a converter whose oscillator is a
 little off wants. The offset takes effect when you press **Apply / reconnect**,
 not as you type it.
+
+Applying it does not move the receiver. At the moment you set it up you are
+listening to the converter's *output* — 739.494 MHz through a 9750 MHz LNB — and
+saying what is in front of the radio re-labels that signal as what it really is:
+the dial jumps to 10489.494 MHz, the front end stays exactly where it was, and
+you carry on hearing what you were hearing. (What it must not do, and used to:
+ask the radio for 739.494 minus 9750 MHz, which is not a frequency. The radio
+clamped to the bottom of its range, the dial was left outside the converted
+receive range, and every tune after that was refused as "outside this radio's
+receive range".)
 
 Everything downstream follows the dial, not the hardware: band buttons, the band
 plan, memories, the logbook, cluster and PSK Reporter spots, what gets uploaded
@@ -3093,8 +3106,13 @@ downlink while transmitting — unless the radio is a Pluto or LibreSDR on real
 Ethernet, where **Full duplex**
 ([6.2.7](#627-plutosdr-adalm-pluto)) keeps the receiver running through it.
 
-Three things to know:
+A few things to know:
 
+- **Taking the converter back off is not symmetrical.** The dial is on the sky
+  frequency by then, and the bare radio usually cannot reach it — a Pluto tops
+  out at 6 GHz. sdroxide moves the dial to the nearest frequency the radio does
+  cover and says so in a notice, rather than leaving you with a dial that
+  refuses every tune; type where you actually want to be.
 - **Frequencies you saved before setting the offset are now wrong.** If you have
   been doing this arithmetic by hand, your memories, band stacks and last-used
   frequency all hold the receiver's numbers (135.1008 MHz). Once the offset is

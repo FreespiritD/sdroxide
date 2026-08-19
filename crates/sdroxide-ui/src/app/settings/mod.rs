@@ -1484,12 +1484,23 @@ impl SdroxideApp {
                                     *converter = hz;
                                 }
                             }
-                            // Whatever the operator typed. Selecting it keeps
-                            // that number — the box beside it is always
-                            // editable, so there is no mode to unlock, and this
-                            // entry is here to say so rather than to do
-                            // anything.
-                            let _ = ui.selectable_label(named == "Manual", "Manual");
+                            // Whatever the operator typed. There is no mode to
+                            // unlock — the box beside this one is always
+                            // editable — so the entry says what it is and
+                            // cannot be picked: clicking it and watching
+                            // nothing happen is what it used to do.
+                            ui.add_enabled(
+                                false,
+                                egui::Button::selectable(
+                                    named == "Manual",
+                                    "Manual — type an offset below",
+                                ),
+                            )
+                            .on_disabled_hover_text(
+                                "What this box reads when the offset is not one of the presets. \
+                                 Set it by typing in the Offset field below; there is nothing to \
+                                 select here.",
+                            );
                         })
                         .response
                         .on_hover_text(

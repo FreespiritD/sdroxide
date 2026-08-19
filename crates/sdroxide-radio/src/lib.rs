@@ -22,8 +22,8 @@ pub use engine::{
 };
 pub use error::RadioError;
 pub use source::{
-    ControlUpdate, ConvertedSource, DC_BLOCK_HZ, FileSource, IqSource, SigGenSource, lo_offset_for,
-    override_caps_ranges, shift_caps,
+    ControlUpdate, ConvertedSource, DC_BLOCK_HZ, FileSource, IqSource, SigGenSource,
+    converter_open_hz, lo_offset_for, override_caps_ranges, shift_caps,
 };
 pub use tx_gate::{StoreSync, TxGate};
 

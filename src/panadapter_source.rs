@@ -165,7 +165,19 @@ impl PanadapterSource {
             // as a TCI rig does with wideband I/Q receive. An SDR used as the
             // control radio keeps modulated-I/Q transmit instead.
             tx_audio: ctrl.tx_audio || ctrl.audio_mode,
-            freq_ranges_rx: rx.freq_ranges_rx.clone(),
+            // Translated into the station's dial, which is the domain the
+            // engine judges every tune against — and on an I.F. tap the
+            // receiver's own numbers are `offset_hz` away from it. Same rule
+            // and same clamp as a converter's `shift_caps`: an edge below DC
+            // is not a frequency, and a range that collapses is dropped. The
+            // plain offset rather than a mode's, because those differ by a few
+            // kHz and a tuning range is not measured that finely.
+            freq_ranges_rx: rx
+                .freq_ranges_rx
+                .iter()
+                .map(|&(lo, hi)| ((lo - cfg.offset_hz).max(0.0), hi - cfg.offset_hz))
+                .filter(|&(lo, hi)| hi > lo)
+                .collect(),
             freq_ranges_tx: ctrl.freq_ranges_tx.clone(),
             sample_rates: rx.sample_rates.clone(),
             rate_ranges: rx.rate_ranges.clone(),
@@ -816,6 +828,30 @@ mod tests {
         assert!(src.mutes_rx_audio_on_tx());
         let (src, _, _) = pair(cfg());
         assert!(!src.mutes_rx_audio_on_tx(), "a blanked receiver has nothing to mute");
+    }
+
+    /// An I.F. tap's receiver is tuned `offset_hz` away from the dial, so the
+    /// range it publishes is about frequencies the operator never types. The
+    /// engine checks the dial against it before every tune — so what it is told
+    /// has to be the dial's range, not the receiver's.
+    #[test]
+    fn the_receivers_range_arrives_in_the_stations_own_frequencies() {
+        // A dongle watching a 70.455 MHz first I.F.
+        let rx = DeviceCaps {
+            rx_channels: 1,
+            freq_ranges_rx: vec![(24_000_000.0, 1_766_000_000.0)],
+            ..Default::default()
+        };
+        let ctrl = DeviceCaps { tx_channels: 1, ..Default::default() };
+        let c = PanadapterConfig { offset_hz: 70_455_000.0, tap: PanadapterTap::IfOutput, ..cfg() };
+        let both = PanadapterSource::merge_caps(&rx, &ctrl, &c);
+        assert!(both.may_rx_hz(14_200_000.0), "20 m is what the operator dials");
+        assert!(!both.may_rx_hz(1_700_000_000.0), "and the dongle's own top no longer is");
+
+        // A second receiver on its own antenna is not offset from anything, and
+        // its range reaches the engine exactly as it published it.
+        let plain = PanadapterSource::merge_caps(&rx, &ctrl, &cfg());
+        assert_eq!(plain.freq_ranges_rx, rx.freq_ranges_rx);
     }
 
     /// Listening to the transceiver: its audio is handed over as audio, and the

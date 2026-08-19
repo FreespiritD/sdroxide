@@ -1067,7 +1067,19 @@ fn open_converted_source(
         return Ok((source, stated_ranges(caps, radio)));
     }
     let mut c = cli.clone();
-    c.freq = Some(cli.center_hz() + offset);
+    // Not simply `dial + offset`: a dial from before the converter was set up is
+    // still in the hardware's own domain, and that sum is below DC — see
+    // `converter_open_hz`.
+    let hw = sdroxide_radio::converter_open_hz(cli.center_hz(), offset);
+    if hw != cli.center_hz() + offset {
+        tracing::info!(
+            "the dial was on {:.6} MHz, which is where the hardware is rather than where this \
+             converter puts it: opening there, so the same signal comes back on {:.6} MHz",
+            cli.center_hz() / 1e6,
+            (hw - offset) / 1e6,
+        );
+    }
+    c.freq = Some(hw);
     let (source, caps) = open_configured_source(radio, &c, settings)?;
     let caps = stated_ranges(caps, radio);
     // The transmit line is a separate fact about the station, and the operator
