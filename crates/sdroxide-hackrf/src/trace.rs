@@ -144,6 +144,11 @@ impl Trace {
         let g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let mut out = String::with_capacity(64 * 1024);
         out.push_str("=== sdroxide HackRF session trace ===\n");
+        // The host, because the USB layer under this driver is a different
+        // program on each one — usbfs on Linux, WinUSB on Windows, IOKit on
+        // macOS — and they fail differently. A report that does not say which
+        // one it came from has been read against the wrong one at least once.
+        out.push_str(&format!("host: {} ({})\n", std::env::consts::OS, std::env::consts::ARCH));
         out.push_str(&format!("elapsed: {:.1} s\n", self.started.elapsed().as_secs_f64()));
         if g.dropped > 0 {
             out.push_str(&format!(

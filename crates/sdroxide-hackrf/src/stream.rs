@@ -509,17 +509,20 @@ fn transition(
 ///
 /// **This is not about a halt.** `SetTransceiverMode` makes the firmware
 /// re-initialise both bulk endpoints, and that resets the data toggle on the
-/// *radio's* side. Nothing resets it on the host's — claiming an interface that
-/// is already claimed leaves whatever the previous program left behind, so
+/// *radio's* side. Nothing resets it on the host's — a claim on an interface
+/// that is already claimed leaves whatever the previous program left behind, so
 /// after a direction change the two can disagree about which of DATA0/DATA1
-/// comes next. A radio that disagrees does not stall and does not error: it
-/// ignores every packet, the host retries forever, and the transfers are simply
-/// never completed. That is indistinguishable from a wedged transmitter and it
-/// is what a stuck key-down looks like in a trace.
+/// comes next. A host that disagrees does not stall and does not error: the
+/// radio ignores every packet, the host retries forever, and the transfers are
+/// simply never completed. That is indistinguishable from a wedged transmitter,
+/// and it is what a stuck key-down looks like in a trace.
 ///
-/// `CLEAR_FEATURE(ENDPOINT_HALT)` is the standard way to force the host's
-/// toggle back to DATA0, and it is a no-op on an endpoint that was not halted —
-/// so this is cheap insurance on both lanes rather than a fix for one.
+/// Resetting the pipe is the fix on every host this runs on, which is why it is
+/// worth doing blind: on Linux this is `CLEAR_FEATURE(ENDPOINT_HALT)` through
+/// usbfs, and on Windows `nusb` maps it to `WinUsb_ResetPipe`, whose documented
+/// job is exactly "resets the data toggle and clears the stall condition".
+/// Both are no-ops on a pipe that was not halted, so this is cheap insurance on
+/// both lanes rather than a fix aimed at one.
 fn resync_endpoint(
     what: &str,
     r: impl MaybeFuture<Output = std::result::Result<(), nusb::Error>>,
