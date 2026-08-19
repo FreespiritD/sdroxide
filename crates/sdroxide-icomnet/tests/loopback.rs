@@ -288,9 +288,11 @@ fn test_connection_reports_the_radio_in_one_line() {
 
 #[test]
 fn an_unknown_model_says_the_operator_must_set_the_menu_item() {
+    // A radio whose `1A 05` numbering is not in the table — the IC-705's is,
+    // so it would no longer produce the note this test is about.
     let sim = Sim::start(SimOptions {
-        civ_address: 0xA4,
-        radio_name: "IC-705".into(),
+        civ_address: 0xA2,
+        radio_name: "IC-9700".into(),
         ..Default::default()
     })
     .unwrap();

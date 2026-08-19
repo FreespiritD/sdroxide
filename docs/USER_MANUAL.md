@@ -4296,13 +4296,42 @@ Three settings, all under **MENU » SET**:
 1. **Network > Network Control** — ON. Without it the radio never answers.
 2. **Network > Network User1 (or User2)** — set a **network user name** and
    **password**, and enter the same pair in sdroxide.
-3. **Connectors > MOD Input > DATA OFF MOD** and **DATA MOD** — **LAN**, or
-   transmit audio is not heard. sdroxide writes this for you on a model whose
-   menu numbering it knows (currently the IC-7300MK2); on any other it says so
-   in the status line and leaves the menu alone.
+3. **Connectors > MOD Input > DATA OFF MOD** and **DATA MOD** — **LAN** (on an
+   IC-705, **WLAN**), or transmit audio is not heard. sdroxide writes this for
+   you on a model whose menu numbering it knows — currently the **IC-7300MK2**
+   and the **IC-705** — and on any other it says so in the status line and
+   leaves the menu alone.
 
 Note the radio's IP address from its **Network** screen — an Icom does not
 announce itself on the network, so there is no Discover button.
+
+##### How wide the waterfall gets
+
+**No Icom outputs I/Q, over any interface** — not over USB, not over the network.
+That sets a hard ceiling on what any program, sdroxide or RS-BA1 alike, can show:
+
+- The **panadapter** is as wide as the audio stream. On the 12 kHz IF at 48000 Hz
+  that is about **±12 kHz** around the dial, and on AF it is the audio bandwidth.
+  This is real spectrum: it can be demodulated, notched, decoded and skimmed.
+- The **full-band waterfall** — the strip above the panadapter, switched on with
+  the **WIDE** chip in the Display module — is the radio's own scope, up to
+  **1 MHz** across. It is a picture the radio draws and sends as 475 finished
+  magnitude bins, so nothing can be tuned *inside* it without moving the dial,
+  but it is where you watch a band.
+
+If that strip comes up barely wider than the panadapter, the span is the reason:
+the radio sweeps whatever span was last chosen on its own screen, and that is
+often a few kHz. **Scope span** sets it from here.
+
+- **As set on the radio** leaves it alone — for an operator who is also watching
+  the radio's own display.
+- Any other value is commanded when the session opens, and also puts the scope
+  into **centre mode** so it follows the dial. It changes the radio's own screen
+  too, which is the price of the wider view.
+
+The default is **200 kHz (±100k)**, about 400 Hz per bin — a whole HF sub-band at
+once. ±500k gives a megahertz at 2 kHz a bin. A radio that does not offer a
+particular span refuses it and keeps the one it had.
 
 ##### Receive from: AF or the 12 kHz IF
 
@@ -4342,6 +4371,7 @@ Transmit is unaffected by the choice: it is always audio the radio modulates.
   survives a worse network, at the cost of transmit latency.
 - **Show the radio's spectrum scope** — stream the sweep into the full-band
   waterfall.
+- **Scope span** — how wide to sweep it; see above.
 - **Switch modulation input to LAN** — do step 3 above automatically, where the
   model is known.
 - **Test connection** — connect, report what the radio said it is, and

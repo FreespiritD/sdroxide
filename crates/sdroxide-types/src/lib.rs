@@ -136,7 +136,7 @@ pub use radio::{
     CwKeying, DigiMode, ELAD_ATTENUATOR_DB, ELAD_DEFAULT_RATE_HZ, ELAD_SAMPLE_RATES, EladConfig,
     EladDevice, EladTxInput, FREQ_RANGE_MAX_HZ, HackRfConfig, HackRfDevice, HpsdrConfig,
     HpsdrDevice, HpsdrFilterBoard, HpsdrIoRxInput, IcomModel, IcomNetConfig, IcomRxSource,
-    IfModeClass, KenwoodSend, LimeConfig, LimeDevice, LineState, ModeControl,
+    IcomScopeSpan, IfModeClass, KenwoodSend, LimeConfig, LimeDevice, LineState, ModeControl,
     PANADAPTER_OFFSET_MAX_HZ, PanadapterAudio, PanadapterConfig, PanadapterTap, Parity, PlutoAgc,
     PlutoConfig, PlutoDevice, PttMethod, RadioConfig, RtlSdrAgc, RtlSdrConfig, RtlSdrDevice,
     RtlSdrHfMode, RtlTcpConfig, Rx888Config, Rx888Device, SdrPlayAgc, SdrPlayConfig, SdrPlayDevice,

@@ -424,6 +424,44 @@ pub fn scope_output_frame(radio: u8, on: bool) -> Vec<u8> {
     frame(radio, 0x27, &[0x11, u8::from(on)])
 }
 
+/// The centre-mode spans an Icom scope offers, as the *half* widths its own
+/// menu labels — "±2.5k" through "±500k" — in Hz.
+///
+/// One list for the whole family: the eight are identical in the IC-705's CI-V
+/// reference guide and in the IC-7760's, two generations and two bin counts
+/// apart, and a radio that does not offer a particular one answers `FA` and
+/// keeps the span it had.
+pub const SCOPE_SPANS_HZ: [f64; 8] =
+    [2_500.0, 5_000.0, 10_000.0, 25_000.0, 50_000.0, 100_000.0, 250_000.0, 500_000.0];
+
+/// Put the scope into one of its four layouts (`27 14`).
+///
+/// Centre mode is the one worth commanding: it follows the VFO, so the wide
+/// waterfall stays under the dial instead of sitting on a fixed slice of band
+/// the operator last chose on the radio.
+pub fn scope_mode_frame(radio: u8, mode: ScopeMode) -> Vec<u8> {
+    // The four-digit settings in this block are two bytes, not one. The first
+    // is `00=MAIN, 01=SUB` on a radio that has two scopes and a fixed `00` on
+    // one that does not, so the main scope is what `00` means either way.
+    frame(radio, 0x27, &[0x14, 0x00, mode.to_byte()])
+}
+
+/// Set the centre-mode span (`27 15`), as the ± half width Icom's menu labels.
+///
+/// Only the eight values in [`SCOPE_SPANS_HZ`] exist; anything else is refused
+/// by the radio, so the nearest one is sent instead of a value that would be
+/// silently dropped.
+pub fn scope_span_frame(radio: u8, half_span_hz: f64) -> Vec<u8> {
+    let span = SCOPE_SPANS_HZ
+        .iter()
+        .copied()
+        .min_by(|a, b| (a - half_span_hz).abs().total_cmp(&(b - half_span_hz).abs()))
+        .unwrap_or(SCOPE_SPANS_HZ[0]);
+    let mut data = vec![0x15, 0x00];
+    data.extend_from_slice(&encode_freq(span));
+    frame(radio, 0x27, &data)
+}
+
 /// How the radio is laying its scope out. Only the frequency reporting differs:
 /// centred modes report a centre and a span, fixed modes report both edges.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -443,6 +481,14 @@ impl ScopeMode {
             0x03 => ScopeMode::ScrollFixed,
             _ => return None,
         })
+    }
+    fn to_byte(self) -> u8 {
+        match self {
+            ScopeMode::Center => 0x00,
+            ScopeMode::Fixed => 0x01,
+            ScopeMode::ScrollCenter => 0x02,
+            ScopeMode::ScrollFixed => 0x03,
+        }
     }
     /// Whether this mode reports a centre and span rather than two edges.
     fn is_centred(self) -> bool {
@@ -1019,6 +1065,30 @@ mod tests {
             scope_output_frame(0xB6, false),
             vec![0xFE, 0xFE, 0xB6, 0xE0, 0x27, 0x11, 0x00, 0xFD]
         );
+        // `27 14` and `27 15` are the two-byte form: a leading 00 for the main
+        // scope, then the setting.
+        assert_eq!(
+            scope_mode_frame(0xA4, ScopeMode::Center),
+            vec![0xFE, 0xFE, 0xA4, 0xE0, 0x27, 0x14, 0x00, 0x00, 0xFD]
+        );
+        // ±100 kHz, as five little-endian BCD bytes: 100000 Hz.
+        assert_eq!(
+            scope_span_frame(0xA4, 100_000.0),
+            vec![0xFE, 0xFE, 0xA4, 0xE0, 0x27, 0x15, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0xFD]
+        );
+        // The widest the family offers, and the one the operator reaches for.
+        assert_eq!(
+            scope_span_frame(0xA4, 500_000.0),
+            vec![0xFE, 0xFE, 0xA4, 0xE0, 0x27, 0x15, 0x00, 0x00, 0x00, 0x50, 0x00, 0x00, 0xFD]
+        );
+    }
+
+    #[test]
+    fn a_span_the_radio_does_not_have_becomes_the_nearest_one_it_does() {
+        // Rather than a value the radio answers `FA` to and quietly ignores.
+        assert_eq!(scope_span_frame(0xA4, 120_000.0), scope_span_frame(0xA4, 100_000.0));
+        assert_eq!(scope_span_frame(0xA4, 1_000_000.0), scope_span_frame(0xA4, 500_000.0));
+        assert_eq!(scope_span_frame(0xA4, 0.0), scope_span_frame(0xA4, 2_500.0));
     }
 
     #[test]

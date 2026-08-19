@@ -1615,7 +1615,7 @@ pub(in crate::app) fn settings_icomnet_tab(
     test_result: &Option<crate::app::settings::TestOutcome>,
     can_probe: bool,
 ) {
-    use sdroxide_types::{CwKeying, IcomNetConfig, IcomRxSource};
+    use sdroxide_types::{CwKeying, IcomNetConfig, IcomRxSource, IcomScopeSpan};
     let Some(cfg) = radio_edit.as_mut() else {
         ui.label("Waiting for the configuration of the machine the radio is attached to.");
         return;
@@ -1731,6 +1731,27 @@ pub(in crate::app) fn settings_icomnet_tab(
         );
         ui.end_row();
 
+        if net.scope {
+            ui.label("Scope span").on_hover_text(
+                "How wide to sweep it. This is the only wide view an Icom has, and the \
+                 radio keeps whatever span was last chosen on its own screen — often a \
+                 few kHz, which is why the strip can come up no wider than the \
+                 panadapter under it. Setting a span here also puts the scope into \
+                 centre mode, so it follows the dial. It changes the radio's own \
+                 display too; \"As set on the radio\" leaves it alone.",
+            );
+            ComboBox::from_id_salt("icomnet_scope_span")
+                .selected_text(net.scope_span.label())
+                .show_ui(ui, |ui| {
+                    for sp in IcomScopeSpan::ALL {
+                        if ui.selectable_label(net.scope_span == sp, sp.label()).clicked() {
+                            net.scope_span = sp;
+                        }
+                    }
+                });
+            ui.end_row();
+        }
+
         ui.label("");
         ui.checkbox(&mut net.set_mod_input_on_open, "Switch modulation input to LAN")
             .on_hover_text(
@@ -1785,7 +1806,8 @@ pub(in crate::app) fn settings_icomnet_tab(
 /// Kept as a function so the UI crate needs no dependency on the backend crate
 /// just to repeat one sentence.
 fn sdroxide_icomnet_hint() -> &'static str {
-    "Not verified against hardware yet: if it misbehaves, please attach the diagnostic \
+    "Receiving is confirmed on an IC-705 over WiFi; every other model, and transmit, \
+     still rest on the documentation. If it misbehaves, please attach the diagnostic \
      report to a bug report."
 }
 

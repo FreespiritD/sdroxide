@@ -20,13 +20,19 @@
 //!
 //! Either way the *wide* panadapter is fed from the radio's own `27 00` scope
 //! sweep through [`IqSource::wide_spectrum_db`] — 475 finished bins covering up
-//! to ±500 kHz. That is not I/Q and cannot be demodulated; it is a picture.
+//! to ±500 kHz. That is not I/Q and cannot be demodulated; it is a picture, and
+//! it is the only wide view an Icom has. The span it sweeps is commanded from
+//! here (`IcomNetConfig::scope_span`) rather than left at whatever the operator
+//! last set on the radio's own screen, which is what made the strip come up
+//! barely wider than the ±12 kHz IF beneath it.
 //!
 //! # Status
 //!
-//! Not verified on hardware. Everything here is exercised against
-//! `sdroxide_icomnet::sim`, and the session trace is copyable from the settings
-//! tab so a first user with a radio can report what actually happened.
+//! An IC-705 has received through this over WiFi, on the 12 kHz IF. Everything
+//! else — transmit, the other models' menu numbering, the meters — is still
+//! only exercised against `sdroxide_icomnet::sim`, and the session trace is
+//! copyable from the settings tab so a user with a radio can report what
+//! actually happened.
 
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
@@ -254,6 +260,15 @@ impl IcomNetSource {
         if cfg.scope {
             self.send(civ::scope_on_frame(self.civ_addr, true));
             self.send(civ::scope_output_frame(self.civ_addr, true));
+            // The radio keeps whatever span was last chosen on its own screen,
+            // and that is routinely ±5 kHz — a full-band strip no wider than
+            // the panadapter above it. Centre mode as well as the span: a
+            // scope left in one of the fixed modes ignores `27 15` and sits on
+            // a slice of band the dial is not even in.
+            if let Some(half) = cfg.scope_span.half_span_hz() {
+                self.send(civ::scope_mode_frame(self.civ_addr, civ::ScopeMode::Center));
+                self.send(civ::scope_span_frame(self.civ_addr, half));
+            }
         }
         notes
     }
@@ -765,6 +780,88 @@ mod tests {
             };
             seen(0x84) && seen(0x85)
         });
+    }
+
+    #[test]
+    fn an_ic705_gets_its_own_menu_numbers_and_its_own_lan_value() {
+        // Field report, 2026-08-19: an IC-705 on WiFi came up with both "menu
+        // numbering unknown" notes. Its Connectors block is a hundred items
+        // further on than the MK2's, and its modulation source is `03` (WLAN),
+        // not `05` (LAN) — writing the MK2's numbers here would have hit
+        // something else entirely.
+        let sim = Sim::start(SimOptions {
+            civ_address: 0xA4,
+            radio_name: "IC-705".into(),
+            scope: false,
+            ..Default::default()
+        })
+        .unwrap();
+        let mut c = cfg(&sim);
+        c.rx_source = IcomRxSource::If12k;
+        let src = IcomNetSource::open(&c).expect("open");
+        assert_eq!(src.open_status(), None, "nothing left for the operator to do by hand");
+
+        let menu = |hi: u8, lo: u8, value: u8| {
+            sim.civ_frames().iter().any(|f| {
+                f.len() >= 10
+                    && f[4] == 0x1A
+                    && f[5] == 0x05
+                    && f[6] == hi
+                    && f[7] == lo
+                    && f[8] == value
+            })
+        };
+        wait_for("the IC-705 menu writes", || {
+            // WLAN AF/IF Output > Output Select = IF, and both MOD inputs to WLAN.
+            menu(0x01, 0x14, 0x01) && menu(0x01, 0x18, 0x03) && menu(0x01, 0x19, 0x03)
+        });
+        // And never the USB port's copy of the same setting, one item block
+        // earlier — that would leave the network stream on AF.
+        assert!(!menu(0x01, 0x09, 0x01), "the USB output select is not ours to write");
+    }
+
+    #[test]
+    fn the_scope_span_is_commanded_rather_than_left_wherever_the_radio_had_it() {
+        let sim = Sim::start(SimOptions { civ_address: 0xA4, ..Default::default() }).unwrap();
+        let mut c = cfg(&sim);
+        c.scope_span = sdroxide_types::IcomScopeSpan::Khz500;
+        let _src = IcomNetSource::open(&c).expect("open");
+        wait_for("centre mode and a ±500 kHz span", || {
+            let frames = sim.civ_frames();
+            let centre = frames
+                .iter()
+                .any(|f| f.len() >= 8 && f[4] == 0x27 && f[5] == 0x14 && f[6..8] == [0x00, 0x00]);
+            let span = frames.iter().any(|f| {
+                f.len() >= 12
+                    && f[4] == 0x27
+                    && f[5] == 0x15
+                    && f[6] == 0x00
+                    && civ::decode_freq(&f[7..12]) == Some(500_000.0)
+            });
+            centre && span
+        });
+    }
+
+    #[test]
+    fn leaving_the_span_to_the_radio_touches_neither_setting() {
+        let sim = Sim::start(SimOptions { civ_address: 0xA4, ..Default::default() }).unwrap();
+        let mut c = cfg(&sim);
+        c.scope_span = sdroxide_types::IcomScopeSpan::Radio;
+        let mut src = IcomNetSource::open(&c).expect("open");
+        // Wait for something the session does send, so "nothing was sent" is a
+        // real observation rather than a race with the opening burst.
+        let mut buf = vec![Complex32::default(); 1024];
+        let mut bins = Vec::new();
+        wait_for("a scope sweep", || {
+            let _ = src.read(&mut buf);
+            src.wide_spectrum_db(&mut bins).is_some()
+        });
+        assert!(
+            !sim.civ_frames()
+                .iter()
+                .any(|f| f.len() >= 6 && f[4] == 0x27 && (f[5] == 0x14 || f[5] == 0x15)),
+            "the operator asked for the radio's own span"
+        );
     }
 
     #[test]

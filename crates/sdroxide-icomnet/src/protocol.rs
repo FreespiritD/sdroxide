@@ -827,16 +827,33 @@ pub const UNKNOWN_MODEL: Model = Model {
 
 /// Models whose `1A 05` numbering has been read out of the manufacturer's CI-V
 /// reference. Extending this is a documentation exercise, not a protocol one.
-pub const MODELS: &[Model] = &[Model {
-    civ_address: 0xB6,
-    name: "IC-7300MK2",
-    scope_bins: 475,
-    // IC-7300MK2 CI-V reference: 1A 05 00 84 = DATA OFF MOD, 00 85 = DATA MOD,
-    // both `00=MIC … 05=LAN`.
-    lan_mod_input: Some((0x0084, 0x0085, 0x05)),
-    // 1A 05 00 79 = LAN AF/IF Output → Output Select, `00=AF, 01=IF`.
-    lan_afif_select: Some(0x0079),
-}];
+pub const MODELS: &[Model] = &[
+    Model {
+        civ_address: 0xB6,
+        name: "IC-7300MK2",
+        scope_bins: 475,
+        // IC-7300MK2 CI-V reference: 1A 05 00 84 = DATA OFF MOD, 00 85 = DATA MOD,
+        // both `00=MIC … 05=LAN`.
+        lan_mod_input: Some((0x0084, 0x0085, 0x05)),
+        // 1A 05 00 79 = LAN AF/IF Output → Output Select, `00=AF, 01=IF`.
+        lan_afif_select: Some(0x0079),
+    },
+    Model {
+        civ_address: 0xA4,
+        name: "IC-705",
+        scope_bins: 475,
+        // IC-705 CI-V reference guide, SET > Connectors: 1A 05 01 18 = MOD
+        // Input > DATA OFF MOD, 01 19 = DATA MOD, both
+        // `00=MIC, 01=USB, 02=MIC,USB, 03=WLAN`. Note the value: the radio has
+        // no LAN socket, so the modulation source is `03`, not the `05` an
+        // IC-7300MK2 takes.
+        lan_mod_input: Some((0x0118, 0x0119, 0x03)),
+        // 1A 05 01 14 = WLAN AF/IF Output > Output Select, `00=AF, 01=IF`.
+        // 01 09 is the *USB* one — the same setting on the other port, and the
+        // wrong one to write for a network session.
+        lan_afif_select: Some(0x0114),
+    },
+];
 
 /// Look a radio up by the CI-V address it reported.
 pub fn model_for(civ_address: u8) -> Model {
@@ -1150,12 +1167,21 @@ mod tests {
     }
 
     #[test]
-    fn the_mk2_is_known_and_anything_else_degrades_safely() {
+    fn the_known_models_are_known_and_anything_else_degrades_safely() {
         let mk2 = model_for(0xB6);
         assert_eq!(mk2.name, "IC-7300MK2");
         assert_eq!(mk2.scope_bins, 475);
         assert!(mk2.lan_mod_input.is_some());
         assert!(mk2.lan_afif_select.is_some());
+
+        // The IC-705 numbers its Connectors block a hundred items further on
+        // than the MK2 does, and takes a different value for the LAN source —
+        // the two facts that make this a per-model table rather than a
+        // constant.
+        let ic705 = model_for(0xA4);
+        assert_eq!(ic705.name, "IC-705");
+        assert_eq!(ic705.lan_mod_input, Some((0x0118, 0x0119, 0x03)));
+        assert_eq!(ic705.lan_afif_select, Some(0x0114));
 
         // An unknown rig still works — it just does not get menu writes, which
         // is the whole point of the table.

@@ -1126,6 +1126,17 @@ mod tests {
                 agc: RtlSdrAgc::Both,
                 ..RtlTcpConfig::default()
             },
+            // Two neighbouring enums that are *not* at their defaults: the
+            // scope span decides how wide the radio sweeps, and the receive
+            // source decides whether sdroxide demodulates at all.
+            icomnet: sdroxide_types::IcomNetConfig {
+                address: "ic705.local".into(),
+                username: "sdroxide".into(),
+                password: "hunter2".into(),
+                rx_source: sdroxide_types::IcomRxSource::If12k,
+                scope_span: sdroxide_types::IcomScopeSpan::Khz500,
+                ..sdroxide_types::IcomNetConfig::default()
+            },
             // The last block in the struct, and the one most worth filling in:
             // every field here differs from its neighbours' defaults, because a
             // field-order slip only shows where two adjacent fields disagree.

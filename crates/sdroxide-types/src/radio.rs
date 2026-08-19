@@ -1253,6 +1253,79 @@ impl IcomRxSource {
     }
 }
 
+/// How wide the radio's own scope should be swept for the full-band waterfall.
+///
+/// The scope is the only wide view an Icom has — there is no I/Q on any of
+/// them — and the radio keeps whatever span the operator last chose on its own
+/// screen, which is routinely ±5 kHz. Left at that, the full-band strip is
+/// barely wider than the panadapter it sits above, which is exactly the
+/// complaint RS-BA1 does not get. So sdroxide asks for a span of its own.
+///
+/// The values are Icom's, as its menu labels them: half widths. A radio that
+/// does not have one answers `FA` and keeps the span it had.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum IcomScopeSpan {
+    /// Leave the radio's own setting alone — for an operator who is watching
+    /// the radio's screen as well and does not want it moved.
+    Radio,
+    Khz2_5,
+    Khz5,
+    Khz10,
+    Khz25,
+    Khz50,
+    /// 200 kHz across. Wide enough to hold a whole HF sub-band at about 400 Hz
+    /// a bin, which is why it is the default.
+    #[default]
+    Khz100,
+    Khz250,
+    Khz500,
+}
+
+impl IcomScopeSpan {
+    pub const ALL: [IcomScopeSpan; 9] = [
+        IcomScopeSpan::Radio,
+        IcomScopeSpan::Khz2_5,
+        IcomScopeSpan::Khz5,
+        IcomScopeSpan::Khz10,
+        IcomScopeSpan::Khz25,
+        IcomScopeSpan::Khz50,
+        IcomScopeSpan::Khz100,
+        IcomScopeSpan::Khz250,
+        IcomScopeSpan::Khz500,
+    ];
+
+    /// The half width to command, or `None` to leave the radio as it is.
+    pub fn half_span_hz(self) -> Option<f64> {
+        Some(match self {
+            IcomScopeSpan::Radio => return None,
+            IcomScopeSpan::Khz2_5 => 2_500.0,
+            IcomScopeSpan::Khz5 => 5_000.0,
+            IcomScopeSpan::Khz10 => 10_000.0,
+            IcomScopeSpan::Khz25 => 25_000.0,
+            IcomScopeSpan::Khz50 => 50_000.0,
+            IcomScopeSpan::Khz100 => 100_000.0,
+            IcomScopeSpan::Khz250 => 250_000.0,
+            IcomScopeSpan::Khz500 => 500_000.0,
+        })
+    }
+
+    /// Labelled by the width the operator actually sees, with Icom's own ±
+    /// figure after it — the menu on the radio uses the second form.
+    pub fn label(self) -> &'static str {
+        match self {
+            IcomScopeSpan::Radio => "As set on the radio",
+            IcomScopeSpan::Khz2_5 => "5 kHz (±2.5k)",
+            IcomScopeSpan::Khz5 => "10 kHz (±5k)",
+            IcomScopeSpan::Khz10 => "20 kHz (±10k)",
+            IcomScopeSpan::Khz25 => "50 kHz (±25k)",
+            IcomScopeSpan::Khz50 => "100 kHz (±50k)",
+            IcomScopeSpan::Khz100 => "200 kHz (±100k)",
+            IcomScopeSpan::Khz250 => "500 kHz (±250k)",
+            IcomScopeSpan::Khz500 => "1 MHz (±500k)",
+        }
+    }
+}
+
 /// Icom LAN backend configuration.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -1290,6 +1363,9 @@ pub struct IcomNetConfig {
     /// Ask the radio to stream its spectrum scope, and show it in the full-band
     /// panadapter lane.
     pub scope: bool,
+    /// How wide to sweep that scope. The radio's own setting is usually far
+    /// narrower than the band view this lane exists to give.
+    pub scope_span: IcomScopeSpan,
 }
 
 impl Default for IcomNetConfig {
@@ -1307,6 +1383,7 @@ impl Default for IcomNetConfig {
             civ_address_override: None,
             set_mod_input_on_open: true,
             scope: true,
+            scope_span: IcomScopeSpan::default(),
         }
     }
 }

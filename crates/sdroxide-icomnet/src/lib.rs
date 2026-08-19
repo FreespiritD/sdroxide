@@ -60,7 +60,7 @@ pub use trace::{Counters, Trace};
 ///
 /// Kept here rather than in the UI so the CLI, the settings dialog and the logs
 /// all say the same thing.
-pub const FIELD_REPORT_HINT: &str = "This backend has not been verified against \
-    real hardware. If it misbehaves, please attach the session trace \
-    (Settings → Radio → Copy diagnostic report) to a bug report — it contains \
-    the whole handshake and every CI-V frame exchanged with the radio.";
+pub const FIELD_REPORT_HINT: &str = "Only the IC-705 has been on the other end of \
+    this so far, and only receiving. If it misbehaves, please attach the session \
+    trace (Settings → Radio → Copy diagnostic report) to a bug report — it \
+    contains the whole handshake and every CI-V frame exchanged with the radio.";
