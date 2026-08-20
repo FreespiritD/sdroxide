@@ -9,11 +9,16 @@ use sdroxide_radio::{Complex32, IqSource, Result};
 pub struct NullSource {
     center: f64,
     status: String,
+    /// Whether the engine should keep trying the configured interface behind
+    /// this stand-in. True for every stand-in that is standing in for
+    /// something we still want — false only for [`NullSource::off`], where
+    /// there is nothing to reconnect to until the operator says so.
+    retry: bool,
 }
 
 impl NullSource {
     pub fn new(center_hz: f64, status: String) -> Self {
-        NullSource { center: center_hz, status }
+        NullSource { center: center_hz, status, retry: true }
     }
 
     /// The stand-in for a radio whose receiver another radio has borrowed as
@@ -32,6 +37,23 @@ impl NullSource {
                  radio's tab. Clear the Panadapter receiver box there to use it on its own again.",
                 owner + 1
             ),
+            retry: true,
+        }
+    }
+
+    /// The stand-in for a radio the operator has switched off. Nothing of its
+    /// interface is open — no device claimed, no CAT port held, no rig dialled
+    /// — and, alone among the stand-ins, this one does not ask to be reopened:
+    /// a radio that is off is not a radio waiting to come back, and a retry
+    /// every few seconds is exactly what switching it off was meant to stop.
+    /// Switching it on asks the engine to rebuild the front end outright.
+    pub fn off(center_hz: f64) -> Self {
+        NullSource {
+            center: center_hz,
+            status: "This radio is switched off — its interface is not open. Switch it back on \
+                     with the ON button on its tab, or in Settings → Radio."
+                .into(),
+            retry: false,
         }
     }
 }
@@ -64,9 +86,11 @@ impl IqSource for NullSource {
         Some(self.status.clone())
     }
 
-    /// Always: this is the "no radio" placeholder, so the engine keeps trying
-    /// the configured interface until it comes up.
+    /// Normally always: this is the "no radio" placeholder, so the engine keeps
+    /// trying the configured interface until it comes up. A radio the operator
+    /// switched off ([`NullSource::off`]) is the exception — there is nothing
+    /// there to wait for.
     fn needs_reopen(&self) -> bool {
-        true
+        self.retry
     }
 }

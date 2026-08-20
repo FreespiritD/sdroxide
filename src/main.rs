@@ -322,6 +322,10 @@ fn main() -> anyhow::Result<()> {
 pub struct RadioBoot {
     pub id: u32,
     pub name: String,
+    /// Whether the operator has this radio switched on — the `enabled` field of
+    /// its entry in the roster ([`sdroxide_config::RadioSlot`]). A radio that is off boots on the quiet stand-in, and the
+    /// tab shell needs to know which state its switch is in.
+    pub enabled: bool,
     pub source: Box<dyn IqSource>,
     pub caps: DeviceCaps,
     pub initial_mode: Option<sdroxide_types::Mode>,
@@ -360,6 +364,7 @@ fn boot_radios(cli: &mut Cli, settings: &Settings) -> anyhow::Result<Vec<RadioBo
             radios.push(RadioBoot {
                 id: slot.id,
                 name: slot.name.clone(),
+                enabled: slot.enabled,
                 source: Box::new(null_source::NullSource::attached(c.center_hz(), owner)),
                 // Says which radio has it, so the shell can keep this one off
                 // the tab strip and name the borrower.
@@ -375,12 +380,47 @@ fn boot_radios(cli: &mut Cli, settings: &Settings) -> anyhow::Result<Vec<RadioBo
             });
             continue;
         }
+        // Switched off: the roster says so, so nothing of this radio's
+        // interface is opened — while its scope, its engine and its tab are all
+        // still here, which is what keeps it configurable and one button away
+        // from coming back. The command line's own front ends (`--siggen`,
+        // `--file`) still win, exactly as they do over a panadapter pairing:
+        // they are this session's explicit instruction, and they only ever
+        // apply to radio 0.
+        let overridden = i == 0 && (cli.siggen || cli.file.is_some());
+        if !slot.enabled && !overridden {
+            // The remembered dial is restored either way: switched off is a
+            // radio put down where it was, not one wound back to nothing.
+            let (c, initial_mode) = if i == 0 {
+                let mode = cli.restore_session();
+                (cli.clone(), mode)
+            } else {
+                let mut c = secondary_cli(cli);
+                let mode = c.apply_session(store.load_session());
+                (c, mode)
+            };
+            tracing::info!("radio {} is switched off", slot.id + 1);
+            radios.push(RadioBoot {
+                id: slot.id,
+                name: slot.name.clone(),
+                enabled: false,
+                source: Box::new(null_source::NullSource::off(c.center_hz())),
+                caps: synthetic_caps("Switched off"),
+                initial_mode,
+                initial_antenna: (None, None),
+                reopen: Some(reopen_factory_for(&c, store.clone(), slot.id)),
+                store,
+                record_iq: None,
+            });
+            continue;
+        }
         let boot = if i == 0 {
             let initial_mode = cli.restore_session();
             let (source, caps) = open_source(cli, settings)?;
             RadioBoot {
                 id: slot.id,
                 name: slot.name.clone(),
+                enabled: slot.enabled,
                 source,
                 caps,
                 initial_mode,
@@ -414,6 +454,7 @@ fn boot_radios(cli: &mut Cli, settings: &Settings) -> anyhow::Result<Vec<RadioBo
             RadioBoot {
                 id: slot.id,
                 name: slot.name.clone(),
+                enabled: slot.enabled,
                 source,
                 caps,
                 initial_mode,
@@ -443,31 +484,64 @@ fn reopen_factory(cli: &Cli) -> sdroxide_radio::ReopenFn {
 /// 0); every caller building a factory for another radio passes a
 /// [`secondary_cli`], which has them stripped.
 ///
-/// `id` is the roster id the scope belongs to, which the factory needs for one
-/// question it cannot ask a `Store`: whether this radio has been lent to
-/// another as its panadapter receiver. While it has, the factory refuses — the
-/// device is open on the borrower's engine, and opening it here would take it
-/// away from them. Refusing rather than handing back a stand-in is what makes
-/// undoing the pairing enough on its own: the engine's own retry keeps asking,
-/// and the first attempt after the borrower lets go succeeds.
+/// `id` is the roster id the scope belongs to, which the factory needs for two
+/// questions it cannot ask a `Store`. The first is whether this radio has been
+/// lent to another as its panadapter receiver. While it has, the factory
+/// refuses — the device is open on the borrower's engine, and opening it here
+/// would take it away from them. Refusing rather than handing back a stand-in
+/// is what makes undoing the pairing enough on its own: the engine's own retry
+/// keeps asking, and the first attempt after the borrower lets go succeeds.
+///
+/// The second is whether the operator has switched this radio off. Then the
+/// factory hands back the quiet stand-in instead — an *answer*, not a refusal,
+/// because a refusal leaves whatever is running running, and the whole point of
+/// switching a radio off is that its device is let go.
 fn reopen_factory_for(
     cli: &Cli,
     store: sdroxide_config::Store,
     id: u32,
 ) -> sdroxide_radio::ReopenFn {
     let cli = cli.clone();
+    // Whether the last thing this factory handed back was the switched-off
+    // stand-in — which, alone among the stand-ins, has stopped asking to be
+    // reopened. So the attempt that switches the radio back *on* is the one
+    // attempt whose failure may not be reported as a plain refusal: that would
+    // leave the engine holding a front end that will never retry, and a radio
+    // switched on that stays dark until somebody presses something again. On
+    // that one path a device that isn't there yet becomes the ordinary
+    // reconnecting stand-in instead, and the engine takes it from there.
+    let mut was_off = !sdroxide_config::load_radios().is_enabled(id);
     Box::new(move |center: f64| {
         let mut c = cli.clone();
         c.freq = Some(center);
         let settings = Settings::load();
         if c.siggen || c.file.is_some() {
+            was_off = false;
             return open_source(&c, &settings).map_err(|e| format!("{e:#}"));
         }
         if let Some(owner) = panadapter_owners().get(&id) {
             return Err(format!("this radio is radio {}'s panadapter receiver", owner + 1));
         }
+        if !sdroxide_config::load_radios().is_enabled(id) {
+            was_off = true;
+            return Ok((
+                Box::new(null_source::NullSource::off(c.center_hz())) as Box<dyn IqSource>,
+                synthetic_caps("Switched off"),
+            ));
+        }
         let radio = store.load_radio_config();
-        open_converted_source(&radio, &c, &settings).map_err(|e| format!("{e:#}"))
+        let opened = open_converted_source(&radio, &c, &settings).map_err(|e| format!("{e:#}"));
+        let coming_back = std::mem::take(&mut was_off);
+        match opened {
+            Err(e) if coming_back => Ok((
+                Box::new(null_source::NullSource::new(
+                    c.center_hz(),
+                    format!("{e} Retrying — or open Settings → Radio to choose another interface."),
+                )) as Box<dyn IqSource>,
+                synthetic_caps("No radio"),
+            )),
+            other => other,
+        }
     })
 }
 
@@ -1170,6 +1244,13 @@ fn panadapter_owners() -> std::collections::HashMap<u32, u32> {
     let roster = sdroxide_config::load_radios();
     let mut owners = std::collections::HashMap::new();
     for slot in &roster.radios {
+        // A radio that is switched off opens nothing, so it borrows nothing:
+        // the receiver it was lent goes back to being a radio of its own for as
+        // long as the borrower is off, rather than being held by a radio that
+        // is not running.
+        if !slot.enabled {
+            continue;
+        }
         let cfg = sdroxide_config::Store::radio(slot.id).load_radio_config();
         let Some(rx) = cfg.panadapter.source_radio else { continue };
         // Neither of the two ways a pairing can eat itself gets to boot.
@@ -2494,6 +2575,53 @@ mod tests {
     /// A run that never restores anything — the headless smoke tests — still
     /// has to open a front end somewhere, on the frequency this program has
     /// always defaulted to.
+    /// The on/off switch, from the side that decides what actually opens: the
+    /// interface factory. Redirects the config directory through the
+    /// environment — process-global state, so it is one test, and no other test
+    /// in this binary reads a config file.
+    #[test]
+    fn the_switch_decides_what_the_interface_factory_opens() {
+        let root = std::env::temp_dir().join(format!("sdroxide-power-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("radio-1")).expect("scratch dir");
+        std::fs::write(
+            root.join("radios.json"),
+            r#"{"radios":[{"id":0,"name":""},{"id":1,"name":"","enabled":false}],"next_id":2}"#,
+        )
+        .unwrap();
+        // No interface at all, so an attempt to open this radio always fails —
+        // which is exactly the case that has to come back retrying.
+        std::fs::write(root.join("radio-1/radio.json"), r#"{"backend":"None"}"#).unwrap();
+        // SAFETY: single-threaded within this test; no other test in this
+        // binary reads the variable.
+        unsafe { std::env::set_var("SDROXIDE_CONFIG_DIR", &root) };
+
+        let cli = secondary_cli(&Cli::parse_from(["sdroxide"]));
+        let mut factory = reopen_factory_for(&cli, sdroxide_config::Store::radio(1), 1);
+
+        // Switched off: an answer, not a refusal — a refusal would leave the
+        // engine holding whatever it already had open — and one that has
+        // stopped asking to be reopened.
+        let (source, caps) = factory(14_200_000.0).expect("a radio that is off still answers");
+        assert_eq!(caps.label, "Switched off");
+        assert!(!source.needs_reopen(), "a radio that is off is not a radio waiting to come back");
+
+        // Switched on with nothing there to open: the ordinary reconnecting
+        // stand-in, never a refusal, or the engine would sit for ever on the
+        // stand-in above — which does not retry.
+        sdroxide_config::set_radio_enabled(1, true).unwrap();
+        let (source, caps) = factory(14_200_000.0).expect("switching on must not leave a corpse");
+        assert_eq!(caps.label, "No radio");
+        assert!(source.needs_reopen(), "the engine has to keep trying from here");
+
+        // And from then on it is an ordinary interface change again: a failure
+        // is reported as one, leaving whatever is running running.
+        assert!(factory(14_200_000.0).is_err(), "no longer coming back from off");
+
+        unsafe { std::env::remove_var("SDROXIDE_CONFIG_DIR") };
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn a_run_that_skips_the_restore_keeps_the_old_default() {
         assert_eq!(Cli::parse_from(["sdroxide"]).center_hz(), 14_200_000.0);

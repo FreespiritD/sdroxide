@@ -556,6 +556,23 @@ pub struct RadioSlot {
     /// before the radio was even picked. The UI resolves the display name;
     /// this file only records what the operator typed.
     pub name: String,
+    /// Whether this radio is switched on: false and nothing opens its
+    /// interface — no device claimed, no CAT port held, no network rig dialled
+    /// — while everything it is configured as stays exactly where it is. The
+    /// rig that is boxed for the summer, or the dongle somebody else has
+    /// borrowed, stops being a tab that reconnects for ever without having to
+    /// be deleted and set up again.
+    ///
+    /// Defaults to true, which is what every roster written before this
+    /// existed means.
+    #[serde(default = "yes")]
+    pub enabled: bool,
+}
+
+/// `serde(default)` for [`RadioSlot::enabled`]: a radio nobody said anything
+/// about is on.
+fn yes() -> bool {
+    true
 }
 
 /// The station's radio roster (`radios.json`). A missing file means what every
@@ -570,7 +587,10 @@ pub struct RadiosFile {
 
 impl Default for RadiosFile {
     fn default() -> Self {
-        RadiosFile { radios: vec![RadioSlot { id: 0, name: String::new() }], next_id: 1 }
+        RadiosFile {
+            radios: vec![RadioSlot { id: 0, name: String::new(), enabled: true }],
+            next_id: 1,
+        }
     }
 }
 
@@ -591,6 +611,16 @@ pub fn save_radios(file: &RadiosFile) -> Result<(), ConfigError> {
     save_json("radios.json", file)
 }
 
+impl RadiosFile {
+    /// Whether radio `id` is switched on. A radio the roster has never heard
+    /// of counts as on: the callers that ask are the ones that open interfaces,
+    /// and refusing to open a radio because it is missing from a file would
+    /// turn a lost roster into a station with no radios.
+    pub fn is_enabled(&self, id: u32) -> bool {
+        self.radios.iter().find(|r| r.id == id).is_none_or(|r| r.enabled)
+    }
+}
+
 /// Create the on-disk scope for a new radio and add it to the roster.
 ///
 /// The scope is seeded with a default `radio.json` and — deliberately — a
@@ -603,7 +633,7 @@ pub fn create_radio(name: &str) -> Result<RadioSlot, ConfigError> {
     // An empty name is the default, not a placeholder to fill: it means the
     // tab names itself after whatever interface the radio ends up configured
     // as (see [`RadioSlot::name`]).
-    let slot = RadioSlot { id, name: name.to_string() };
+    let slot = RadioSlot { id, name: name.to_string(), enabled: true };
     let store = Store::radio(id);
     // Seed with *no* interface: the defaults would open the first device
     // found, which is whatever the station's first radio already holds.
@@ -625,6 +655,19 @@ pub fn create_radio(name: &str) -> Result<RadioSlot, ConfigError> {
 pub fn remove_radio(id: u32) -> Result<(), ConfigError> {
     let mut roster = load_radios();
     roster.radios.retain(|r| r.id != id);
+    save_radios(&roster)
+}
+
+/// Switch a radio on or off (see [`RadioSlot::enabled`]).
+///
+/// The roster is the authority the interface factories read, so this is the
+/// whole of the change: the engine is then asked to rebuild its front end and
+/// finds out from here whether it is opening a radio or standing down.
+pub fn set_radio_enabled(id: u32, enabled: bool) -> Result<(), ConfigError> {
+    let mut roster = load_radios();
+    if let Some(slot) = roster.radios.iter_mut().find(|r| r.id == id) {
+        slot.enabled = enabled;
+    }
     save_radios(&roster)
 }
 
@@ -1891,7 +1934,7 @@ mod tests {
         // there (whose default is enabled — a guaranteed port collision on any
         // radio but the first).
         let roster = load_radios();
-        assert_eq!(roster.radios, vec![RadioSlot { id: 0, name: String::new() }]);
+        assert_eq!(roster.radios, vec![RadioSlot { id: 0, name: String::new(), enabled: true }]);
         assert_eq!(roster.next_id, 1);
         let slot = create_radio("").unwrap();
         assert_eq!(slot.id, 1);
@@ -1911,6 +1954,29 @@ mod tests {
             "a new radio's TCI server must come up disabled"
         );
         assert!(sdroxide_types::TciServerConfig::default().enabled, "or this seeding is moot");
+
+        // The on/off switch. A radio is on until somebody says otherwise, the
+        // answer survives a reload, and switching it off is nothing but that
+        // one field — the scope, and everything configured in it, is untouched.
+        assert!(load_radios().is_enabled(slot.id));
+        set_radio_enabled(slot.id, false).unwrap();
+        assert!(!load_radios().radios[1].enabled);
+        assert!(!load_radios().is_enabled(slot.id));
+        assert!(load_radios().is_enabled(0), "one radio's switch is not another's");
+        assert!(
+            Store::radio(slot.id).dir().unwrap().join("radio.json").exists(),
+            "switching a radio off must not touch what it is configured as"
+        );
+        set_radio_enabled(slot.id, true).unwrap();
+        assert!(load_radios().is_enabled(slot.id));
+
+        // A roster written before the switch existed — every radio in it is on.
+        fs::write(root.join("radios.json"), r#"{"radios":[{"id":0,"name":"Shack"}],"next_id":1}"#)
+            .unwrap();
+        let legacy = load_radios();
+        assert_eq!(legacy.radios, vec![RadioSlot { id: 0, name: "Shack".into(), enabled: true }]);
+        assert!(legacy.is_enabled(7), "a radio the roster never heard of is not switched off");
+        save_radios(&roster).unwrap();
 
         // Closing the tab keeps the scope directory: a closed radio is not a
         // destroyed configuration.

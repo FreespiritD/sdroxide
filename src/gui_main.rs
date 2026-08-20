@@ -91,8 +91,9 @@ pub fn run_multi(
     for (i, boot) in radios.into_iter().enumerate() {
         let id = boot.id;
         let name = boot.name.clone();
+        let enabled = boot.enabled;
         let ctrl = build_controller(boot, settings, tx_ham_only, i == 0, &gate, &sync);
-        tabs.push(sdroxide_ui::RadioTab { id, name, ctrl: Box::new(ctrl) });
+        tabs.push(sdroxide_ui::RadioTab { id, name, enabled, ctrl: Box::new(ctrl) });
     }
 
     // The "+" tab: create the scope on disk, then bring the radio up on the
@@ -118,6 +119,10 @@ pub fn run_multi(
         let boot = RadioBoot {
             id: slot.id,
             name: slot.name.clone(),
+            // Freshly created, so switched on: it has no interface yet, which
+            // is a different thing from having one and being told not to open
+            // it.
+            enabled: true,
             source,
             caps,
             initial_mode,
@@ -130,7 +135,12 @@ pub fn run_multi(
         };
         let ctrl =
             build_controller(boot, &settings, tx_ham_only, false, &factory_gate, &factory_sync);
-        Ok(sdroxide_ui::RadioTab { id: slot.id, name: slot.name, ctrl: Box::new(ctrl) })
+        Ok(sdroxide_ui::RadioTab {
+            id: slot.id,
+            name: slot.name,
+            enabled: true,
+            ctrl: Box::new(ctrl),
+        })
     });
 
     let options = eframe::NativeOptions {
@@ -318,7 +328,9 @@ fn connect_remote(
     // Named after the address, minus the parts every server shares — the shell
     // overrides this with whatever the operator typed when the connection came
     // from the Remote tab.
-    Ok(sdroxide_ui::RadioTab { id, name: tab_name(url), ctrl: Box::new(ctrl) })
+    // Somebody else's radio: this station's switch does not reach it (see
+    // [`sdroxide_ui::RadioTab::enabled`]).
+    Ok(sdroxide_ui::RadioTab { id, name: tab_name(url), enabled: true, ctrl: Box::new(ctrl) })
 }
 
 /// What to call a connection in the tab strip: the address without the scheme

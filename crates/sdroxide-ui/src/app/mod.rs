@@ -670,6 +670,14 @@ pub(crate) struct RadioChip {
     /// stays in this roster, because this is where its interface is configured
     /// and where the pairing is undone.
     pub attached_to: Option<u32>,
+    /// Whether this radio is switched on. Off means its interface is not open
+    /// — no device claimed, no rig dialled — while its tab, its engine and its
+    /// whole configuration stay exactly where they are.
+    pub enabled: bool,
+    /// Whether *this* station is where that switch lives. False for a radio at
+    /// the far end of a connection: it is switched on and off where it is, and
+    /// this machine's roster has no entry for it to record.
+    pub switchable: bool,
 }
 
 impl RadioChip {
@@ -719,6 +727,12 @@ pub(crate) enum RadioTabRequest {
     Rename {
         id: u32,
         name: String,
+    },
+    /// Switch this radio on or off — open its interface, or let it go while
+    /// keeping everything it is configured as.
+    Power {
+        id: u32,
+        on: bool,
     },
     /// Rebuild another radio's front end. Queued when a radio that has been
     /// lent out as a panadapter receiver is reconfigured: the device is open on
@@ -1083,6 +1097,17 @@ impl SdroxideApp {
     /// reconfigured on its own page.
     pub(crate) fn reopen_source(&mut self) {
         self.ctrl.reopen_source();
+    }
+
+    /// The radio *this* one is configured to borrow as its panadapter receiver,
+    /// as its own station numbers it.
+    ///
+    /// From the configuration rather than the capabilities ([`Self::lent_to`]
+    /// and [`Self::lent_to_radio`] read those): the question this answers is
+    /// which radio's device this one will claim when it next opens, which is
+    /// exactly the radio that has to be told to let go of it.
+    pub(crate) fn pan_source_radio(&self) -> Option<u32> {
+        self.ctrl.radio_config()?.panadapter.source_radio
     }
 
     /// The radio that has borrowed *this* one as its panadapter receiver, if

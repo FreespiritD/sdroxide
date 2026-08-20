@@ -117,7 +117,7 @@ mod web {
         // Deliberately unnamed: nobody typed an address here — the page came
         // from this station — so the shell fills the name in from what the
         // station calls the radio, as it does for the rest of the roster.
-        Ok(RadioTab { id, name: String::new(), ctrl: Box::new(ctrl) })
+        Ok(RadioTab { id, name: String::new(), enabled: true, ctrl: Box::new(ctrl) })
     }
 
     /// The dialler the shell uses for the station's further radios.

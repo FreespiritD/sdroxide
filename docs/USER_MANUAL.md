@@ -1144,9 +1144,36 @@ scanning. Besides its name, each tab carries:
   background radio still fills its FT8 list and still spots.
 - **⊞** — open this radio in a split view of its own, or close the one it
   has (see below).
+- **ON / OFF** — switch the radio itself on or off (see below).
 
 Closing a radio is deliberately *not* on the strip — that lives in
 **Settings → Radio**, behind a dialog rather than one stray click away.
+
+**Switching a radio off.** A station does not always have every radio it is set
+up for plugged in. Each tab carries a switch that says which state its radio is
+in — **ON** or **OFF** — and pressing it changes that state. Switched off, the
+radio's interface is closed: no device claimed, no CAT port held, no network rig
+dialled, and no reconnecting in the background. Everything it is configured as
+stays exactly where it is. The tab stays too, with its name greyed, and its
+whole Settings → Radio page is still there to be read and edited. Press the
+switch again and the radio opens where it left off.
+
+The same switch is in the roster at the top of **Settings → Radio**, which is
+where the choice is easiest to see across all the radios at once. It is
+remembered: a radio switched off is still switched off after a restart, and
+sdroxide never touches its device at start-up. That is what makes it the right
+place to leave the rig that is boxed for the summer, or the dongle somebody has
+borrowed — rather than deleting the radio and setting it up again later.
+
+A radio that is switched off has no mute button (there is nothing coming out of
+it) and shows no **⚠**: it is not reaching for a device and failing, it has been
+told not to reach. The first radio is not treated specially here — the station's
+own radio can be switched off like any other, and its shared services keep
+running. Two tabs have no switch: a receiver lent out as another radio's
+panadapter, whose front end is the borrower's to hold, and a radio reached over
+the network, which is switched on and off at the station it lives on. The switch
+appears once a station has more than one radio; with a single radio there is
+nothing to switch between and the strip stays out of the way entirely.
 
 **Split view.** The **⊞** toggle gives a radio a pane of its own: toggle it
 on a second radio and the main area splits into two equal columns, side by
@@ -2981,8 +3008,10 @@ rest of your config directory.
 
 In the native application the very top of the tab carries the **radio
 roster** — one button per radio, with the same TX / warning / mute markers as
-the main window's tab strip, an **×** on every radio but the first, and **+**
-to add one ([§2.17](#217-running-more-than-one-radio)). Everything below the
+the main window's tab strip, the **ON**/**OFF** switch that opens or closes each
+radio's interface without disturbing anything on this page, an **×** on every
+radio but the first, and **+** to add one
+([§2.17](#217-running-more-than-one-radio)). Everything below the
 roster configures the **highlighted** radio; click another button and the whole
 application switches to that radio, this dialog included. The **Name** box
 under the buttons renames the highlighted radio's tab — left empty, the tab
@@ -5092,6 +5121,12 @@ the one radio it is. It stays in the roster at the top of Settings → Radio,
 marked 🔗, which is where its own interface settings are and where you set
 **Receiver** back to **None** to have it as a radio again. It comes back by
 itself within a few seconds of being released; nothing needs restarting.
+
+Switching the *transceiver* off ([2.17](#217-running-more-than-one-radio)) does
+the same thing: a radio that is off opens nothing, so it borrows nothing, and
+the receiver goes back to being a radio of its own for as long as the pairing's
+owner is off. The lent receiver has no switch of its own while it is lent —
+whether its device is open is the borrower's business.
 
 **How the receiver is connected** — the choice under **Connected to** decides
 what the offset below it means:
@@ -7832,7 +7867,7 @@ sdroxide stores its settings under the per-user config directory:
 | `sstv_rx/` | dir | Received SSTV and RIFP pictures, kept for the gallery. |
 | `wefax_rx/` | dir | Weather-fax charts received by an earlier version. Charts now go to `~/Pictures/sdroxide/wefax/`, but this is still read so an existing collection stays in the gallery. |
 | `solar/` | dir | Cached solar imagery, space-weather JSON and subscribed element-set listings for the 3D view, with an index of HTTP validators so refreshes stay cheap. Safe to delete; it is re-fetched on demand. |
-| `radios.json` | JSON | The roster of configured radios ([§2.17](#217-running-more-than-one-radio)): each radio's id and the name you gave it (empty = named after its interface). Absent until you add a second radio. |
+| `radios.json` | JSON | The roster of configured radios ([§2.17](#217-running-more-than-one-radio)): each radio's id, the name you gave it (empty = named after its interface) and whether it is switched on (`enabled`, absent = on). Absent until you add a second radio. |
 | `radio-<N>/` | dir | An additional radio's own copies of the files that describe *a radio*: `radio.json`, `session.json`, `scanner.json`, `tciserver.json`, `rigctld.json` and `wsjtx.json`. The first radio keeps those files at the root, exactly where a single-radio installation has always had them, so adding and removing other radios never touches it. Kept on disk when the radio is closed. |
 
 Every file has sensible defaults, so a missing or partial file always loads. You

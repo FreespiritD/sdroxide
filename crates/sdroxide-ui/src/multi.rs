@@ -36,6 +36,14 @@ use sdroxide_types::RadioController;
 pub struct RadioTab {
     pub id: u32,
     pub name: String,
+    /// Whether this radio is switched on. A radio that is off arrives with no
+    /// interface open behind it (the frontend gave it a stand-in) and its tab
+    /// shows the switch in the off position.
+    ///
+    /// True for everything that is not one of this station's own radios: a
+    /// connection to somebody else's station is switched on and off at that
+    /// station, and there is no roster here that could say otherwise.
+    pub enabled: bool,
     pub ctrl: Box<dyn RadioController>,
 }
 
@@ -74,6 +82,11 @@ struct Tab {
     /// each frame from the configuration its engine reports, so undoing the
     /// pairing brings the tab straight back.
     attached_to: Option<u32>,
+    /// Whether this radio is switched on ([`RadioTab::enabled`]). The roster on
+    /// disk is what the interface factory reads; this is the shell's copy of
+    /// the same answer, kept because the strip draws it every frame and the
+    /// only thing that ever changes it is the switch below.
+    enabled: bool,
     /// Somebody else's station, reached over the network. It has no entry in
     /// this machine's radio roster, so closing or renaming it must not go
     /// looking for one. In the browser there is no roster and every tab is
@@ -97,6 +110,11 @@ enum StripAction {
     Mute {
         id: u32,
         muted: bool,
+    },
+    /// The ON/OFF switch: open this radio's interface, or let it go.
+    Power {
+        id: u32,
+        on: bool,
     },
     Add,
 }
@@ -152,7 +170,15 @@ impl MultiApp {
                 app.set_focused_flag(i == 0);
                 app.set_shared_log(shared_log);
                 app.set_can_add_radio(can_add);
-                Tab { id: r.id, name: r.name, app, muted: false, remote, attached_to: None }
+                Tab {
+                    id: r.id,
+                    name: r.name,
+                    app,
+                    muted: false,
+                    remote,
+                    attached_to: None,
+                    enabled: r.enabled,
+                }
             })
             .collect();
         assert!(!tabs.is_empty(), "MultiApp needs at least one radio");
@@ -231,6 +257,10 @@ impl MultiApp {
                 muted: t.muted,
                 focused: i == self.focused,
                 attached_to: t.attached_to,
+                enabled: t.enabled,
+                // Only a radio of this station's own has a switch here: the
+                // roster the factories read is this machine's file.
+                switchable: !t.remote,
             })
             .collect()
     }
@@ -341,6 +371,7 @@ impl MultiApp {
                     }
                     self.sync_audio();
                 }
+                RadioTabRequest::Power { id, on } => self.set_power(id, on),
                 RadioTabRequest::Reopen(id) => {
                     if let Some(t) = self.tabs.iter_mut().find(|t| t.id == id) {
                         t.app.reopen_source();
@@ -382,8 +413,45 @@ impl MultiApp {
                     // must not put two of them through the one output.
                     self.sync_audio();
                 }
+                StripAction::Power { id, on } => self.set_power(id, on),
                 StripAction::Add => self.add_tab(ctx),
             }
+        }
+    }
+
+    /// Switch a radio on or off: record it in the roster, then have the engine
+    /// rebuild its front end, which is where the answer takes effect — the
+    /// interface factory reads the roster and either opens the radio or hands
+    /// back the stand-in that holds nothing open.
+    ///
+    /// The tab, its engine and its whole configuration stay exactly where they
+    /// are either way. This is not closing a radio; it is putting it down.
+    fn set_power(&mut self, id: u32, on: bool) {
+        let Some(tab) = self.tabs.iter_mut().find(|t| t.id == id) else { return };
+        // Somebody else's radio has no entry in this machine's roster, and the
+        // switch is not offered on those tabs (see [`Tab::enabled`]).
+        if tab.remote || tab.enabled == on {
+            return;
+        }
+        tab.enabled = on;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Err(e) = sdroxide_config::set_radio_enabled(id, on) {
+            eprintln!("sdroxide: switching radio {id} {}: {e}", if on { "on" } else { "off" });
+        }
+        tab.app.reopen_source();
+        // The switch reaches the receiver this radio borrows as its panadapter,
+        // where it borrows one. That receiver goes back to being a radio of its
+        // own while the borrower is off and hands its device over again when the
+        // borrower comes on, and neither move happens by itself: an engine with
+        // a working front end has no reason to rebuild it. So it is asked to,
+        // and finds out from the roster which of the two it is doing.
+        let (station, borrowed) = (tab.app.station_key(), tab.app.pan_source_radio());
+        if let Some(rx) = borrowed
+            && let Some(i) = self.tabs.iter().position(|t| {
+                !t.remote && t.app.station_key() == station && t.app.station_radio_id() == rx
+            })
+        {
+            self.tabs[i].app.reopen_source();
         }
     }
 
@@ -423,20 +491,50 @@ impl MultiApp {
                     } else if elsewhere {
                         label = label.weak();
                     }
+                    // A radio nobody has switched on is a radio the strip is
+                    // only carrying so that it can be switched on: it says its
+                    // name and no more.
+                    if !tab.enabled {
+                        label = label.weak();
+                    }
                     ui.label(label);
                     // On the air: the one thing worth seeing from any tab.
                     if tab.app.tab_tx_on() {
                         ui.label(RichText::new("● TX").size(11.0).color(crate::theme::ALERT()));
-                    } else if tab.app.tab_error() {
+                    } else if tab.app.tab_error() && tab.enabled {
                         ui.label(RichText::new("⚠").size(11.0).color(crate::theme::ALERT()));
                     }
-                    let mute = crate::chrome::chip(
-                        ui,
-                        tab.muted,
-                        RichText::new(if tab.muted { "🔇" } else { "🔊" }).size(11.0),
-                    );
-                    if mute.on_hover_text("Mute this radio's audio").clicked() {
-                        actions.push(StripAction::Mute { id, muted: !tab.muted });
+                    // The switch — this station's own radios only: a radio at
+                    // the far end of a connection is switched on and off there.
+                    if !tab.remote && tab.attached_to.is_none() {
+                        let power = crate::chrome::chip(
+                            ui,
+                            !tab.enabled,
+                            RichText::new(if tab.enabled { "ON" } else { "OFF" }).size(11.0),
+                        );
+                        let tip = if tab.enabled {
+                            "Switch this radio off: its interface is closed, its settings are kept"
+                        } else {
+                            "Switch this radio on"
+                        };
+                        if power.on_hover_text(tip).clicked() {
+                            actions.push(StripAction::Power { id, on: !tab.enabled });
+                        }
+                    }
+                    // No mute on a radio that is off: there is nothing coming
+                    // out of it to silence. Whether it *was* muted is kept, and
+                    // the button comes back with it when the radio does. The
+                    // split toggle stays either way — a pane showing a radio
+                    // that has just been switched off still has to be closable.
+                    if tab.enabled {
+                        let mute = crate::chrome::chip(
+                            ui,
+                            tab.muted,
+                            RichText::new(if tab.muted { "🔇" } else { "🔊" }).size(11.0),
+                        );
+                        if mute.on_hover_text("Mute this radio's audio").clicked() {
+                            actions.push(StripAction::Mute { id, muted: !tab.muted });
+                        }
                     }
                     let split = crate::chrome::chip(ui, split_on, RichText::new("⊞").size(11.0));
                     let tip = if split_on {
@@ -660,6 +758,7 @@ impl MultiApp {
             muted: false,
             remote,
             attached_to: None,
+            enabled: r.enabled,
         });
         for tab in &mut self.tabs {
             tab.app.set_shared_log(true);

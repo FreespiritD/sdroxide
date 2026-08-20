@@ -2819,6 +2819,9 @@ impl SdroxideApp {
         ui.horizontal_wrapped(|ui| {
             for chip in &self.radio_roster {
                 let mut label = RichText::new(chip.display_name()).size(12.5);
+                if !chip.enabled {
+                    label = label.weak();
+                }
                 if chip.focused {
                     // The ink a *selected* chip carries, not the panel's:
                     // this sits on the accent fill, and the strong body
@@ -2849,18 +2852,47 @@ impl SdroxideApp {
                         ));
                 } else if chip.tx_on {
                     ui.label(RichText::new("● TX").size(11.0).color(crate::theme::ALERT()));
-                } else if chip.error {
+                } else if chip.error && chip.enabled {
                     ui.label(RichText::new("⚠").size(11.0).color(crate::theme::ALERT()));
                 }
-                let mute = crate::chrome::chip(
-                    ui,
-                    chip.muted,
-                    RichText::new(if chip.muted { "🔇" } else { "🔊" }).size(11.0),
-                );
-                if mute.on_hover_text("Mute this radio's audio").clicked() {
-                    requests.push(crate::app::RadioTabRequest::Mute {
+                if chip.enabled {
+                    let mute = crate::chrome::chip(
+                        ui,
+                        chip.muted,
+                        RichText::new(if chip.muted { "🔇" } else { "🔊" }).size(11.0),
+                    );
+                    if mute.on_hover_text("Mute this radio's audio").clicked() {
+                        requests.push(crate::app::RadioTabRequest::Mute {
+                            id: chip.id,
+                            muted: !chip.muted,
+                        });
+                    }
+                }
+                // The switch. A radio that is off keeps everything on this page
+                // — it is simply not opened — so this is where a rig that has
+                // been put away for the season is left, rather than being
+                // deleted and set up again in the spring. Not offered for a
+                // radio lent out as somebody's panadapter (its front end is
+                // theirs to hold), nor for one at the far end of a connection
+                // (it is switched off where it lives).
+                if chip.switchable
+                    && chip.attached_to.is_none()
+                    && self.radio_roster.len() > 1
+                    && crate::chrome::chip(
+                        ui,
+                        !chip.enabled,
+                        RichText::new(if chip.enabled { "ON" } else { "OFF" }).size(11.0),
+                    )
+                    .on_hover_text(if chip.enabled {
+                        "Switch this radio off: its interface is closed, its settings are kept"
+                    } else {
+                        "Switch this radio on"
+                    })
+                    .clicked()
+                {
+                    requests.push(crate::app::RadioTabRequest::Power {
                         id: chip.id,
-                        muted: !chip.muted,
+                        on: !chip.enabled,
                     });
                 }
                 // The first radio is the station: it runs the shared network
