@@ -7,6 +7,8 @@
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
+use crate::entity_flags::flag_for_prefix;
+
 /// The embedded country file. Attribution: cty.dat by Jim Reisert AD1C,
 /// https://www.country-files.com/ (free to redistribute).
 const CTY: &str = include_str!("cty.dat");
@@ -20,6 +22,14 @@ pub struct EntityInfo {
     pub itu_zone: u8,
     /// Continent code (NA/SA/EU/AF/AS/OC/AN).
     pub continent: &'static str,
+    /// The entity's DXCC primary prefix — cty.dat's own identifier for it,
+    /// which unlike the name never gets rewritten.
+    pub primary_prefix: &'static str,
+    /// Flag code for the entity, or `""` if it flies none we ship — an ISO
+    /// 3166-1 alpha-2 code, an ISO 3166-2 subdivision for the entities that
+    /// are part of a country but fly their own (Alaska, Scotland), or one of
+    /// the user-assigned codes the flag set uses for the rest.
+    pub flag: &'static str,
 }
 
 /// A DXCC entity as the country file lists it: its name, and where on the
@@ -32,6 +42,8 @@ pub struct EntityPlace {
     pub lon: f64,
     pub cq_zone: u8,
     pub continent: &'static str,
+    /// Flag code, as on [`EntityInfo`].
+    pub flag: &'static str,
 }
 
 struct Pfx {
@@ -45,6 +57,9 @@ struct Pfx {
 struct Cty {
     /// Entity display names, indexed by `Pfx::ent`.
     entities: Vec<&'static str>,
+    /// Primary prefix and flag code per entity — parallel to `entities`.
+    prefixes: Vec<&'static str>,
+    flags: Vec<&'static str>,
     /// The same entities, placed — parallel to `entities`.
     places: Vec<EntityPlace>,
     /// Prefixes bucketed by first byte, each bucket sorted longest-first.
@@ -60,6 +75,8 @@ fn cty() -> &'static Cty {
 
 fn parse() -> Cty {
     let mut entities: Vec<&'static str> = Vec::new();
+    let mut prefixes: Vec<&'static str> = Vec::new();
+    let mut flags: Vec<&'static str> = Vec::new();
     let mut places: Vec<EntityPlace> = Vec::new();
     let mut by_first: HashMap<u8, Vec<Pfx>> = HashMap::new();
     let mut exact: HashMap<&'static str, Pfx> = HashMap::new();
@@ -86,9 +103,16 @@ fn parse() -> Cty {
         // longitude in this program.
         let lat: f64 = fields[4].trim().parse().unwrap_or(0.0);
         let lon: f64 = fields[5].trim().parse().map(|w: f64| -w).unwrap_or(0.0);
+        // Field 8 is the entity's primary prefix. A leading `*` marks an entity
+        // the country file lists for WAE rather than DXCC (Sicily, Shetland);
+        // it is not part of the prefix, and the flag table is keyed without it.
+        let primary = fields[7].trim().trim_start_matches('*');
+        let flag = flag_for_prefix(primary);
         let ent_idx = entities.len();
         entities.push(name);
-        places.push(EntityPlace { name, lat, lon, cq_zone: cq, continent: cont });
+        prefixes.push(primary);
+        flags.push(flag);
+        places.push(EntityPlace { name, lat, lon, cq_zone: cq, continent: cont, flag });
         // Parse the comma-separated prefix list from the continuation lines
         // in place (each token borrows the 'static file) until one ends ';'.
         i += 1;
@@ -131,7 +155,7 @@ fn parse() -> Cty {
     for v in by_first.values_mut() {
         v.sort_by(|a, b| b.key.len().cmp(&a.key.len()));
     }
-    Cty { entities, places, by_first, exact }
+    Cty { entities, prefixes, flags, places, by_first, exact }
 }
 
 /// Every DXCC entity in the country file, placed. The list a "what have I not
@@ -175,7 +199,14 @@ fn parse_token(
 
 impl Cty {
     fn info(&self, p: &Pfx) -> EntityInfo {
-        EntityInfo { name: self.entities[p.ent], cq_zone: p.cq, itu_zone: p.itu, continent: p.cont }
+        EntityInfo {
+            name: self.entities[p.ent],
+            cq_zone: p.cq,
+            itu_zone: p.itu,
+            continent: p.cont,
+            primary_prefix: self.prefixes[p.ent],
+            flag: self.flags[p.ent],
+        }
     }
 
     fn longest_prefix(&self, key: &str) -> Option<&Pfx> {
@@ -311,6 +342,46 @@ mod tests {
         assert!(de.lat > 45.0 && de.lon > 5.0 && de.lon < 20.0, "Germany at {},{}", de.lat, de.lon);
         let us = find("United States");
         assert!(us.lon < -60.0 && us.lon > -130.0, "the USA at longitude {}", us.lon);
+    }
+
+    /// The flag table is hand-written against the country file, so it goes
+    /// stale silently when cty.dat is updated and gains an entity. Cover every
+    /// entity, deliberately-flagless ones included — a missing row and a row
+    /// that says "this one has no flag" read the same at runtime, and only
+    /// this test can tell them apart.
+    #[test]
+    fn every_entity_has_a_flag_row() {
+        let missing: Vec<&str> = cty()
+            .prefixes
+            .iter()
+            .copied()
+            .filter(|p| !crate::entity_flags::covers_prefix(p))
+            .collect();
+        assert!(missing.is_empty(), "no flag-table row for DXCC prefixes {missing:?}");
+        // And the other way: a row for a prefix no entity claims is a typo.
+        let stale: Vec<&str> = crate::entity_flags::all_prefixes()
+            .iter()
+            .copied()
+            .filter(|p| !cty().prefixes.contains(p))
+            .collect();
+        assert!(stale.is_empty(), "flag-table rows for unknown DXCC prefixes {stale:?}");
+    }
+
+    #[test]
+    fn flags_resolve() {
+        assert_eq!(resolve_callsign("DL1ABC").unwrap().flag, "DE");
+        assert_eq!(resolve_callsign("W1AW").unwrap().flag, "US");
+        // Entities that are a piece of a country get their own flag.
+        assert_eq!(resolve_callsign("KL7ABC").unwrap().flag, "US-AK");
+        assert_eq!(resolve_callsign("GM4ABC").unwrap().flag, "GB-SCT");
+        // A dependency flies the flag of whoever administers it, and a WAE-only
+        // entity (the `*` rows) that of the country it is part of.
+        let ker = resolve_callsign("FT4XA").expect("Kerguelen");
+        assert_eq!((ker.name, ker.flag), ("Kerguelen Islands", "TF"));
+        assert_eq!(resolve_callsign("IT9ABC").unwrap().flag, "IT");
+        // Two entities are deliberately flagless rather than unmapped.
+        let spratly = resolve_callsign("9M0SDX").expect("Spratly");
+        assert_eq!((spratly.name, spratly.flag), ("Spratly Islands", ""));
     }
 
     #[test]

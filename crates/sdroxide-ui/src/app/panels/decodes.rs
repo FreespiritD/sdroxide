@@ -12,7 +12,7 @@ use sdroxide_types::{Command, Decode, Mode};
 use crate::theme::ThemedScroll;
 use crate::time::now_unix;
 
-use crate::app::panels::widgets::{row_cell, snr_color, station_card};
+use crate::app::panels::widgets::{row_cell, row_cell_ui, snr_color, station_card};
 use crate::app::{SdroxideApp, rx_only_hint, tx_gated};
 
 /// How the FT8/FT4 decode list orders the stations within each turn.
@@ -25,6 +25,9 @@ pub(in crate::app) enum DecodeSort {
     Signal,
     /// Farthest (DX) first.
     Distance,
+    /// Grouped by DXCC entity, alphabetically — what a band opening looks like
+    /// when you are counting countries rather than reading callsigns.
+    Country,
 }
 
 /// One decode as the list draws it: the entry itself, plus everything the row
@@ -36,6 +39,10 @@ struct DecodeRow<'a> {
     /// Index into `digi_decodes`, so rows keep their identity after sorting.
     idx: usize,
     d: &'a Decode,
+    /// DXCC entity resolved from the callsign — the country name, its flag and
+    /// its continent. Resolved once here because the row needs it to draw and
+    /// the list needs it to sort.
+    entity: Option<sdroxide_types::EntityInfo>,
     dist_km: Option<f64>,
     cq: bool,
     novelty: sdroxide_types::Novelty,
@@ -86,6 +93,7 @@ impl SdroxideApp {
                 (DecodeSort::None, "None"),
                 (DecodeSort::Signal, "SNR"),
                 (DecodeSort::Distance, "Dist"),
+                (DecodeSort::Country, "Country"),
             ] {
                 let active = self.digi_sort == m;
                 // Active mode shows its direction; re-pressing it flips direction.
@@ -99,7 +107,10 @@ impl SdroxideApp {
                         self.digi_sort_desc = !self.digi_sort_desc;
                     } else {
                         self.digi_sort = m;
-                        self.digi_sort_desc = true; // default: strongest / farthest first
+                        // Strongest and farthest first, but countries A to Z:
+                        // "descending" is the useful end of a number and the
+                        // wrong end of an alphabet.
+                        self.digi_sort_desc = m != DecodeSort::Country;
                     }
                 }
             }
@@ -210,7 +221,8 @@ impl SdroxideApp {
                             .and_then(|g| sdroxide_types::grid_distance_km(&my_grid, g))
                     })
                     .flatten();
-                Some(DecodeRow { idx: i, d, dist_km, cq, novelty, to_me })
+                let entity = d.from.as_deref().and_then(sdroxide_types::resolve_callsign);
+                Some(DecodeRow { idx: i, d, entity, dist_km, cq, novelty, to_me })
             })
             .collect();
         // Whether a row still has the width for the one-line layout. Its fixed
@@ -220,6 +232,15 @@ impl SdroxideApp {
         // Width, not tier: a phone at a larger OS scale factor and a desktop
         // pane dragged narrow are the same problem.
         let narrow = ui.available_width() < 600.0;
+        // The flag fits in any layout — it is twenty points wide and needs no
+        // reading. Spelling the country out as well takes a column the width of
+        // two callsigns, so that one waits until the pane is wide enough to
+        // give it without squeezing the message.
+        let name_country = ui.available_width() >= 820.0;
+        // Borrowed out of `self` up front: the closure below already holds the
+        // decodes and the log index, and taking the whole app into it would
+        // collide with them.
+        let flags = &mut self.flags;
         egui::ScrollArea::vertical().auto_shrink([false, false]).show_themed(ui, |ui| {
             let mut gi = 0;
             while gi < items.len() {
@@ -244,6 +265,22 @@ impl SdroxideApp {
                         let o = ka.partial_cmp(&kb).unwrap_or(std::cmp::Ordering::Equal);
                         if desc { o.reverse() } else { o }
                     }),
+                    DecodeSort::Country => items[gi..end].sort_by(|a, b| {
+                        // Stations whose entity we cannot name stay at the
+                        // bottom in either direction: they are not a country
+                        // that sorts before A or after Z, they are an unknown.
+                        let ka = a.entity.map(|e| e.name);
+                        let kb = b.entity.map(|e| e.name);
+                        match (ka, kb) {
+                            (None, None) => std::cmp::Ordering::Equal,
+                            (None, Some(_)) => std::cmp::Ordering::Greater,
+                            (Some(_), None) => std::cmp::Ordering::Less,
+                            (Some(x), Some(y)) => {
+                                let o = x.cmp(y);
+                                if desc { o.reverse() } else { o }
+                            }
+                        }
+                    }),
                 }
                 // Turn separator: even/odd parity + UTC timestamp.
                 let even = ((slot as f64 / period).round() as i64).rem_euclid(2) == 0;
@@ -267,7 +304,7 @@ impl SdroxideApp {
                 });
                 ui.separator();
                 for k in gi..end {
-                    let DecodeRow { idx: i, d, dist_km, cq, novelty, to_me } = items[k];
+                    let DecodeRow { idx: i, d, entity, dist_km, cq, novelty, to_me } = items[k];
                     // Free text names no sender, and a hashed callsign nobody
                     // has heard yet resolves to none either — say which it is
                     // rather than showing a bare "?".
@@ -293,8 +330,9 @@ impl SdroxideApp {
                     let grid = d.grid.clone().unwrap_or_default();
                     // Where in the world they are, from the callsign alone —
                     // most decodes carry no grid, and the entity always knows.
-                    let entity = d.from.as_deref().and_then(sdroxide_types::resolve_callsign);
                     let continent = entity.map(|e| e.continent).unwrap_or("");
+                    let flag = entity.map(|e| e.flag).unwrap_or("");
+                    let country = entity.map(|e| e.name).unwrap_or("");
                     let is_preview =
                         d.from.is_some() && preview_call.as_deref() == d.from.as_deref();
                     let queued = d
@@ -349,6 +387,13 @@ impl SdroxideApp {
                             crate::theme::continent_color(continent)
                         }),
                     );
+                    // The entity in full. Deliberately plain grey next to the
+                    // colour-coded continent beside it — two coloured columns
+                    // side by side stop either one meaning anything.
+                    let country_col = crate::theme::gray(if dupe { 90 } else { 155 });
+                    let country_lbl =
+                        egui::Label::new(RichText::new(country).size(11.0).color(country_col))
+                            .truncate();
                     let grid_lbl = egui::Label::new(
                         RichText::new(&grid).monospace().size(12.0).color(crate::theme::CYAN_DIM()),
                     );
@@ -449,10 +494,13 @@ impl SdroxideApp {
                                                     // badges leave, and truncates
                                                     // before it pushes them out.
                                                     let call_w = (ui.available_width()
-                                                        - (34.0 + 24.0 + 2.0 * 7.0))
+                                                        - (34.0 + 22.0 + 24.0 + 3.0 * 7.0))
                                                         .max(40.0);
                                                     cell(ui, call_w, false, call_lbl);
                                                     cell(ui, 34.0, false, badge_lbl);
+                                                    row_cell_ui(ui, 22.0, ch, |ui| {
+                                                        flags.show(ui, flag, 12.0);
+                                                    });
                                                     cell(ui, 24.0, false, cont_lbl);
                                                 },
                                             );
@@ -464,7 +512,7 @@ impl SdroxideApp {
                                     ui.with_layout(
                                         egui::Layout::right_to_left(egui::Align::Center),
                                         |ui| {
-                                            let tail = [grid.as_str(), dist_txt.as_str()]
+                                            let tail = [country, grid.as_str(), dist_txt.as_str()]
                                                 .iter()
                                                 .filter(|s| !s.is_empty())
                                                 .copied()
@@ -495,7 +543,13 @@ impl SdroxideApp {
                                     cell(ui, 40.0, true, freq_lbl);
                                     cell(ui, 98.0, false, call_lbl);
                                     cell(ui, 34.0, false, badge_lbl);
+                                    row_cell_ui(ui, 22.0, ch, |ui| {
+                                        flags.show(ui, flag, 12.0);
+                                    });
                                     cell(ui, 24.0, false, cont_lbl);
+                                    if name_country {
+                                        cell(ui, 112.0, false, country_lbl);
+                                    }
                                     cell(ui, 44.0, false, grid_lbl);
                                     cell(ui, 58.0, true, dist_lbl);
                                     // Message fills the remaining width; REPLY and
@@ -552,7 +606,9 @@ impl SdroxideApp {
                     // where there is room to say it: the row itself has to fit
                     // twenty of these on screen.
                     let row = row.on_hover_ui(|ui| {
-                        station_card(ui, d, entity, dist_km, &my_grid, novelty, band, queued, cq);
+                        station_card(
+                            ui, flags, d, entity, dist_km, &my_grid, novelty, band, queued, cq,
+                        );
                     });
                     if is_preview {
                         // Amber outline ties this row to its faint map marker.

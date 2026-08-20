@@ -18,6 +18,7 @@ use sdroxide_types::{Decode, SlotTiming};
 #[allow(clippy::too_many_arguments)]
 pub(in crate::app) fn station_card(
     ui: &mut egui::Ui,
+    flags: &mut crate::flags::Flags,
     d: &Decode,
     entity: Option<sdroxide_types::EntityInfo>,
     dist_km: Option<f64>,
@@ -44,12 +45,18 @@ pub(in crate::app) fn station_card(
 
     match entity {
         Some(e) => {
-            ui.label(
-                RichText::new(e.name)
-                    .size(13.0)
-                    .strong()
-                    .color(crate::theme::continent_color(e.continent)),
-            );
+            // Flag beside the name rather than instead of it: the card is
+            // where there is room to say both, and a flag on its own asks the
+            // operator to recognise 265 of them.
+            ui.horizontal(|ui| {
+                flags.show(ui, e.flag, 13.0);
+                ui.label(
+                    RichText::new(e.name)
+                        .size(13.0)
+                        .strong()
+                        .color(crate::theme::continent_color(e.continent)),
+                );
+            });
             ui.label(
                 RichText::new(format!(
                     "{} · CQ zone {} · ITU zone {}",
@@ -140,6 +147,20 @@ pub(in crate::app) fn row_cell(
         egui::Layout::left_to_right(egui::Align::Center)
     };
     ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(layout)).add(lbl);
+}
+
+/// [`row_cell`] for a column that draws something other than a label — the
+/// flag image, which is a texture rather than text but has to reserve its
+/// width the same way or the columns after it walk about between rows.
+pub(in crate::app) fn row_cell_ui(
+    ui: &mut egui::Ui,
+    w: f32,
+    h: f32,
+    add: impl FnOnce(&mut egui::Ui),
+) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(w, h), egui::Sense::hover());
+    let layout = egui::Layout::left_to_right(egui::Align::Center);
+    add(&mut ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(layout)));
 }
 
 // ── The slot clock ──

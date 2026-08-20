@@ -354,7 +354,11 @@ the **Spots** and **Uploads** tabs of the Settings dialog, and surfaced by the
 - **Award tracking** — the **AWARDS** window tallies **DXCC**, **WAS**, **WAZ**
   and **grid squares**, worked vs confirmed, with a per-band filter. DXCC entity
   and CQ/ITU zones are resolved from the callsign (bundled `cty.dat`), so spots
-  for a **new entity** are flagged in the SPOTS list.
+  for a **new entity** are flagged in the SPOTS list. The same resolution puts a
+  **country flag and name** on every FT8/FT4/FT2 and JS8 decode, and the decode
+  list sorts by country. The flags are compiled into the program (public domain,
+  from [region-flags](https://github.com/fonttools/region-flags)) — nothing is
+  fetched at runtime to draw them.
 
 Credentials are stored in plaintext under `~/.config/sdroxide/net.json` (as with
 other ham software). See the [User Manual](docs/USER_MANUAL.md) for setup steps.

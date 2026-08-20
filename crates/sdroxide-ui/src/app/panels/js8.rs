@@ -12,7 +12,7 @@ use sdroxide_types::{Command, Decode};
 use crate::theme::ThemedScroll;
 use crate::time::now_unix;
 
-use crate::app::panels::widgets::{row_cell, snr_color, station_card};
+use crate::app::panels::widgets::{row_cell, row_cell_ui, snr_color, station_card};
 use crate::app::{SdroxideApp, rx_only_hint, tx_gated};
 
 /// Roughly how many JS8 frames a message will take.
@@ -447,6 +447,11 @@ impl SdroxideApp {
 
         // Staged, because the row closures borrow `self` immutably.
         let mut pick: Option<(String, Option<String>)> = None;
+        // Lifted out and put back below: the row closures hold `self` shared
+        // for the grid and log lookups, and the flag cache has to be written
+        // to as it fills. Moving it costs one map header — the textures in it
+        // are handles, and none of them are re-uploaded.
+        let mut flags = std::mem::take(&mut self.flags);
 
         egui::ScrollArea::vertical()
             .id_salt("js8-heard")
@@ -473,6 +478,7 @@ impl SdroxideApp {
                         .flatten();
                     let entity = sdroxide_types::resolve_callsign(&h.call);
                     let continent = entity.map(|e| e.continent).unwrap_or("");
+                    let flag = entity.map(|e| e.flag).unwrap_or("");
                     let novelty = self.log_index_cache.as_ref().expect("just refreshed").1.novelty(
                         &h.call,
                         grid.as_deref(),
@@ -584,10 +590,13 @@ impl SdroxideApp {
                                                     // badges leave, and truncates
                                                     // before it pushes them out.
                                                     let call_w = (ui.available_width()
-                                                        - (34.0 + 24.0 + 2.0 * 7.0))
+                                                        - (34.0 + 22.0 + 24.0 + 3.0 * 7.0))
                                                         .max(40.0);
                                                     row_cell(ui, call_w, ch, false, call_lbl);
                                                     row_cell(ui, 34.0, ch, false, badge_lbl);
+                                                    row_cell_ui(ui, 22.0, ch, |ui| {
+                                                        flags.show(ui, flag, 12.0);
+                                                    });
                                                     row_cell(ui, 24.0, ch, false, cont_lbl);
                                                 },
                                             );
@@ -648,6 +657,9 @@ impl SdroxideApp {
                                 );
                                 row_cell(ui, 92.0, ch, false, call_lbl);
                                 row_cell(ui, 34.0, ch, false, badge_lbl);
+                                row_cell_ui(ui, 22.0, ch, |ui| {
+                                    flags.show(ui, flag, 12.0);
+                                });
                                 row_cell(ui, 24.0, ch, false, cont_lbl);
                                 row_cell(
                                     ui,
@@ -722,7 +734,8 @@ impl SdroxideApp {
                         .on_hover_ui(|ui| {
                             let d = js8_station_decode(h, grid.clone(), msg);
                             station_card(
-                                ui, &d, entity, dist_km, &my_grid, novelty, band, false, calling,
+                                ui, &mut flags, &d, entity, dist_km, &my_grid, novelty, band,
+                                false, calling,
                             );
                         });
                     if selected {
@@ -756,6 +769,8 @@ impl SdroxideApp {
                     ui.add_space(3.0);
                 }
             });
+
+        self.flags = flags;
 
         if let Some((call, draft)) = pick {
             self.js8_select(&call, draft, &js8.heard);

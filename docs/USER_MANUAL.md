@@ -1418,9 +1418,21 @@ finished yet. WSPR and JS8 have the same bar.
 The panel has two halves:
 
 - **DECODES** (left) — a live list of decoded stations. Each row shows the SNR
-  (colour-coded by strength), the audio frequency, the callsign, the grid, and
-  the full message, with a **REPLY** button on the right. CQ calls are
-  highlighted. Decoded stations are also marked as boxes on the waterfall.
+  (colour-coded by strength), the audio frequency, the callsign, the country's
+  flag, its continent, the grid, the distance, and the full message, with a
+  **REPLY** button on the right. Where the pane is wide enough the country is
+  named in full beside its flag; where it is not, hovering the row says it, and
+  a narrow pane moves it to the dim tail of the message line. The country comes
+  from the callsign rather than the grid, so it is there even for the decodes
+  that carry no locator, and the flags are built into the program — nothing is
+  fetched from the internet to draw them. CQ calls are highlighted. Decoded
+  stations are also marked as boxes on the waterfall.
+  The **Sort** chips order the stations within each turn: **SNR** (strongest
+  first), **Dist** (farthest first) or **Country** (A to Z by DXCC entity, which
+  puts every station from the same country together). Pressing the active chip
+  again reverses it — the arrow on the chip says which way it is running — and
+  **None** returns to the order the decoder found them in. Turns stay in their
+  own blocks whichever sort is chosen; only the rows inside a turn move.
   A **CQ DX** call only counts as a CQ for you when you actually are DX for the
   caller — a different DXCC entity, or (when the prefix can't be resolved)
   3000 km or more away. Otherwise the row stays plain and the **CQ only** filter
@@ -2142,8 +2154,9 @@ SLOW.
 
 Stations heard are listed on the left in the same rows the FT8
 decode list uses — report, frequency, callsign, what they would be worth
-(DXCC / BAND / GRID / NEW / DUPE), continent, grid, distance, and the last thing
-they said — so a band you have learned to read in FT8 reads the same way here.
+(DXCC / BAND / GRID / NEW / DUPE), the country's flag, continent, grid, distance,
+and the last thing they said — so a band you have learned to read in FT8 reads
+the same way here.
 Hovering a row brings up the full station card: entity, zones, bearing, and
 whether you have worked them before. A row addressed to you is boxed in gold; a
 heartbeat or a CQ, which are invitations, get the red CQ background.

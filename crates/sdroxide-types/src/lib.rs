@@ -16,6 +16,7 @@ mod contacts;
 mod controller;
 mod digi;
 mod entity;
+mod entity_flags;
 mod geo;
 mod input;
 mod ism;
