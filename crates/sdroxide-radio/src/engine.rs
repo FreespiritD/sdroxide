@@ -1428,6 +1428,10 @@ struct Engine {
     /// When the last WSJT-X heartbeat went out (clients time a station out
     /// without one).
     wsjtx_beat: Instant,
+    /// The band the last tick saw, so a crossing into another one can be told
+    /// from the tuning about inside a band that goes on all session. See
+    /// [`Engine::poll_band_change`].
+    band_seen: Band,
     /// Built-in TCI server: third-party clients (WSJT-X, JTDX, skimmers)
     /// driving this radio. Present while enabled and successfully bound.
     tci_srv: Option<TciServerController>,
@@ -1847,6 +1851,10 @@ fn engine_thread(
         session.as_ref().map(|s| (s.gains.clone(), s.tx_gains.clone())).unwrap_or_default();
 
     let mut engine = Engine {
+        // Out of declaration order on purpose: literal fields are evaluated
+        // top to bottom and the `state` shorthand below moves it, so the band
+        // has to be copied out of it first.
+        band_seen: state.band,
         source,
         caps,
         state,
@@ -2162,6 +2170,7 @@ fn engine_thread(
         engine.poll_scanner();
         engine.poll_tci_server();
         engine.poll_rigctld();
+        engine.poll_band_change();
         engine.wsjtx_heartbeat();
         engine.poll_spots();
         engine.poll_winlink();
@@ -3170,6 +3179,52 @@ impl Engine {
                 warn!("WSJT-X UDP broadcast: {e}");
                 let _ = self.event_tx.send(RadioEvent::NetStatus(Some(format!("WSJT-X UDP: {e}"))));
             }
+        }
+    }
+
+    /// Notice the dial has crossed into another band, and drop what only meant
+    /// anything on the one it left.
+    ///
+    /// Polled here rather than hooked onto the places that move the dial:
+    /// `state.band` is recomputed at more than a dozen of them — the band
+    /// buttons, a memory recall, the scanner, a satellite lock, and
+    /// [`Engine::apply_control`] for the knob on the radio's own front panel —
+    /// and none of them is a band-change event. This is the one funnel every
+    /// tick goes through whatever moved it, so a QSY made at the rig counts
+    /// exactly as one made in the program.
+    ///
+    /// Band-level rather than a delta on the dial, matching what the clients
+    /// themselves do: tuning about within a band is the same opening and
+    /// invalidates nothing.
+    ///
+    /// WSPR is exempt. Its band hopping crosses an edge every couple of minutes
+    /// on purpose, and a survey of several bands is what the mode is for. The
+    /// band is still recorded, so leaving WSPR on another band is noticed once,
+    /// there and then, rather than being missed.
+    fn poll_band_change(&mut self) {
+        let band = self.state.band;
+        if std::mem::replace(&mut self.band_seen, band) == band {
+            return;
+        }
+        if self.state.rx[0].mode.is_wspr() {
+            return;
+        }
+        // A station marked to be worked carries the audio offset it was heard
+        // at, and that offset is only a frequency at all against the dial it
+        // was heard on. Left in the queue across a QSY it is not a stale row:
+        // the sequencer takes the next one the moment it is free and calls on
+        // exactly that offset — a transmission on the wrong frequency to
+        // somebody who is not there. Inert in every mode without a queue.
+        if let Some(d) = self.digi.as_mut() {
+            d.queue_remove("");
+        }
+        // The clients' decode windows hold what was heard where the dial used
+        // to be, and the protocol has one message for saying so. WSJT-X sends
+        // it on this same occasion; without it a logger on the far end of the
+        // broadcast keeps the mixed list our own window has just been taken
+        // out of.
+        if let Some(w) = &self.wsjtx {
+            w.clear();
         }
     }
 

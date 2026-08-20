@@ -414,27 +414,52 @@ impl SdroxideApp {
     /// callsign boxes, the decode list, the world-map station dots and the
     /// clicked-decode preview. Called on every RX mode change so leaving FT8/FT4
     /// (for SSTV, a keyboard mode, or plain SSB) doesn't carry its labels over.
+    ///
+    /// The transmit buffer is *not* part of this — the one caller that has a
+    /// reason to empty it says so itself.
     pub(in crate::app) fn clear_digi_rx(&mut self) {
-        self.digi_decodes.clear();
-        // The outgoing buffer too: the engine rebuilds its controller for the
-        // new mode and its sent-character count restarts from zero, so text
-        // left over from the last mode would be redrawn as unsent and keyed
-        // again the moment transmit came on.
-        self.text_tx.clear();
-        self.digi_stations = Default::default();
-        self.digi_preview = None;
+        self.clear_digi_band_rx();
         // WSPR receptions belong to the band and the slot they came
         // from; carried into another mode they would be a list of
-        // things the receiver is no longer listening for.
+        // things the receiver is no longer listening for. Not a band question,
+        // though: each spot carries the absolute frequency it was heard on and
+        // the panel prints the band from it, so a hopping beacon's multi-band
+        // list is right as it stands.
         self.wspr_spots.clear();
-        // The Hell raster is a continuous strip with no frame boundary, so
-        // leaving it up across a mode change would splice unrelated text.
-        self.hell.clear();
         // The read-along stream anchors on the buffer it was last reading; a
         // new mode fills that buffer with something unrelated, and without a
         // re-anchor the first snapshot after the change would be read out from
-        // the beginning.
+        // the beginning. On this side of the split with the buffer it is about:
+        // a QSY does not refill it, so re-anchoring would only skip past copy
+        // the operator is part way through hearing.
         self.speech.announcer.reset_text();
+    }
+
+    /// Drop what belongs to the band we have just left: the decode list, the
+    /// waterfall callsign boxes it draws, the world-map station dots, the
+    /// clicked-decode preview and the Hell strip.
+    ///
+    /// A decode records the audio tone it was heard on and nothing about the
+    /// dial, so a row from the previous band is indistinguishable from one on
+    /// this band — and clicking it moves the transmit offset, queues a call, and
+    /// is scored for novelty, all against a dial that has moved out from under
+    /// it. Nothing on screen could tell the operator which rows those are, so
+    /// they go.
+    ///
+    /// Narrower than [`Self::clear_digi_rx`] at both ends. The transmit buffer
+    /// stays: a QSY rebuilds no controller, so a half-typed over is still going
+    /// out exactly as typed and throwing it away would be a surprise. The WSPR
+    /// spots stay too — each carries its own RF frequency and the panel prints
+    /// the band beside it, so unlike a decode it is never ambiguous about where
+    /// it was heard, and WSPR band hopping crosses a band edge every slot on
+    /// purpose.
+    pub(in crate::app) fn clear_digi_band_rx(&mut self) {
+        self.digi_decodes.clear();
+        self.digi_stations = Default::default();
+        self.digi_preview = None;
+        // The Hell raster is a continuous strip with no frame boundary, so
+        // leaving it up across the change would splice unrelated text.
+        self.hell.clear();
     }
 
     /// The chips a phone switches the panel's views with, plus the one reading

@@ -1447,6 +1447,20 @@ The panel has two halves:
   Neither filter ever hides a message addressed to your own station: a station
   calling you is not calling CQ, and may well be a dupe, but it is the one row
   in the list you owe an answer to.
+  **Changing band empties the list**, along with the callsign boxes on the
+  waterfall, the dots on the world map and any stations you had marked to work.
+  A decode records the audio tone it arrived on and nothing about the dial, so
+  once you have moved there is no way to tell a row heard here from one heard on
+  the band you left — and those rows are not just text: clicking one sets your
+  transmit frequency from it and marking one queues a call at that offset. The
+  test is the band, not how far you tuned, so moving between the FT8 and FT4
+  slots, or into a DXpedition window, keeps the list. A QSY made on the radio's
+  own dial counts exactly as one made here. WSPR is the exception — it surveys
+  several bands on purpose and its spots each carry the frequency they were
+  heard on, so its list keeps building across a hop.
+  **CLEAR RX** empties the list by hand, for when the band has gone quiet and
+  what is on screen is a list of stations that *were* there. Nothing on the air
+  stops, and the next slot starts filling it again.
 - **QSO** (right) — a **⇵** frequency button when the band has more than one
   agreed frequency for the mode ([3.1](#31-general-considerations)), a world map
   (your location, the station you are working, and
@@ -6127,6 +6141,12 @@ prefers.
 - **Port** — 2237, the port every client defaults to.
 - **Identify as** — the name clients see. It defaults to `WSJT-X` because some
   loggers accept nothing else.
+
+Changing band tells the clients to empty their decode windows, exactly as
+WSJT-X does on its own band change — otherwise a logger goes on showing the band
+you have left, which is the one list sdroxide's own window has just been taken
+out of. Tuning about within a band sends nothing, and WSPR band hopping is
+exempt.
 
 This one is **output only**: nothing is read from the socket, so no program on
 it can tune or key the radio. Programs that want to *drive* sdroxide use rigctld

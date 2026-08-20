@@ -149,6 +149,17 @@ impl SdroxideApp {
                     cmds.push(Command::SetDigiConfig(self.digi_cfg_edit.clone()));
                 }
             }
+            ui.add_space(8.0);
+            // The same control the keyboard-mode panels carry, but it cannot be
+            // `clear_rx_chip`: that pushes `DigiClearRx`, which reaches the
+            // controller — and the FT8/FT4 decodes are held here in the client,
+            // one copy per attached screen, so the engine has nothing to empty.
+            if crate::chrome::chip(ui, false, RichText::new(" CLEAR RX ").size(10.5))
+                .on_hover_text("Empty the decode list. Nothing that is on the air stops.")
+                .clicked()
+            {
+                self.clear_digi_band_rx();
+            }
         });
         ui.add_space(2.0);
         // Call of the currently previewed decode (cloned so the scroll closure

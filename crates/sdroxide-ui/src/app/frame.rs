@@ -8,7 +8,7 @@
 use std::time::Duration;
 
 use eframe::egui::{self, Color32, RichText};
-use sdroxide_types::{Command, Mode, RadioEvent, SpectrumConfig, Spot};
+use sdroxide_types::{Band, Command, Mode, RadioEvent, SpectrumConfig, Spot};
 
 use crate::time::now_unix;
 use crate::widgets::spectrum_view;
@@ -45,6 +45,29 @@ fn digi_split(total: f32, divider_h: f32, fraction: f32) -> (f32, f32) {
     let min_wf = 80.0_f32.min(usable * 0.5);
     let panel_h = (usable * fraction).clamp(min_panel, (usable - min_wf).max(min_panel));
     (usable - panel_h, panel_h)
+}
+
+/// Whether a state update that kept the mode moved the receiver far enough to
+/// throw the copied decodes away.
+///
+/// Band-level rather than a frequency delta, the way WSJT-X's own
+/// `band_changed()` is: tuning about within a band — the FT8 slot to the FT4
+/// slot, a DXpedition window, the other end of the digital segment — is still
+/// the same band opening, and the list is still about it. Crossing into another
+/// band is a different opening and a different set of stations, and a decode
+/// carries nothing that would say which of the two it came from.
+///
+/// `now`/`prev` come from the engine's own [`sdroxide_types::RadioState::band`]
+/// rather than being derived here, so a QSY made at the radio counts exactly as
+/// one made in the program — the engine sets that field from the dial the CAT
+/// poll reports, and this comparison never has to know where the change came
+/// from.
+///
+/// WSPR is exempt: its band hopping crosses a band edge once a slot on purpose,
+/// and its spots each carry their own RF frequency, so there is nothing
+/// ambiguous to clear away.
+fn qsy_clears_decodes(prev: Band, now: Band, mode: Mode) -> bool {
+    now != prev && !mode.is_wspr()
 }
 
 impl eframe::App for SdroxideApp {
@@ -839,9 +862,20 @@ impl SdroxideApp {
                 RadioEvent::State(s) => {
                     let prev_vfo = self.state.active_freq_hz();
                     let prev_mode = self.state.rx[0].mode;
+                    let prev_band = self.state.band;
                     self.state = s;
                     if self.state.rx[0].mode != prev_mode {
                         self.clear_digi_rx();
+                        // The outgoing buffer too, and only here: the engine
+                        // rebuilds its controller for the new mode and its
+                        // sent-character count restarts from zero, so text left
+                        // over from the last mode would be redrawn as unsent and
+                        // keyed again the moment transmit came on. A QSY rebuilds
+                        // nothing, and takes the half-typed over with it.
+                        self.text_tx.clear();
+                    } else if qsy_clears_decodes(prev_band, self.state.band, self.state.rx[0].mode)
+                    {
+                        self.clear_digi_band_rx();
                     }
                     self.recenter_if_tuned_away(prev_vfo);
                     // The announcer diffs *this* — the engine's own snapshot —
@@ -1336,7 +1370,43 @@ impl SdroxideApp {
 
 #[cfg(test)]
 mod tests {
-    use super::digi_split;
+    use sdroxide_types::{Band, Mode};
+
+    use super::{digi_split, qsy_clears_decodes};
+
+    /// The reported bug: 20 m to 40 m left the previous band's decodes in the
+    /// list, because the only thing that cleared it was a mode change and the
+    /// digital-mode band buttons deliberately keep the mode.
+    #[test]
+    fn crossing_into_another_band_clears_the_decodes() {
+        assert!(qsy_clears_decodes(Band::M20, Band::M40, Mode::Ft8));
+        assert!(qsy_clears_decodes(Band::M40, Band::M20, Mode::Ft4));
+        // Out of the amateur bands entirely is still somewhere else.
+        assert!(qsy_clears_decodes(Band::M20, Band::Gen, Mode::Ft8));
+    }
+
+    /// Band-level, not a delta on the dial. Moving from the FT8 slot to the FT4
+    /// slot, or into a DXpedition window, is the same band opening and the same
+    /// stations — clearing there would empty the list every time the operator
+    /// looked somewhere else in the segment.
+    #[test]
+    fn tuning_about_inside_a_band_clears_nothing() {
+        assert!(!qsy_clears_decodes(Band::M20, Band::M20, Mode::Ft8));
+        // …and the frequencies that motivates: both 20 m slots are one band.
+        assert_eq!(Band::containing(14_074_000.0), Band::containing(14_080_000.0));
+        // The pair that must *not* fold together, from the same reasoning.
+        assert_ne!(Band::containing(14_074_000.0), Band::containing(7_074_000.0));
+    }
+
+    /// WSPR hops bands by itself once a slot when `wspr_hop` is set, and its
+    /// spots each carry the frequency they were heard on, so there is nothing
+    /// ambiguous to throw away. Clearing here would empty the list every two
+    /// minutes.
+    #[test]
+    fn wspr_band_hopping_is_exempt() {
+        assert!(!qsy_clears_decodes(Band::M20, Band::M40, Mode::Wspr));
+        assert!(!qsy_clears_decodes(Band::M40, Band::M30, Mode::Wspr));
+    }
 
     #[test]
     fn the_digi_split_always_fits_the_height_it_was_given() {
