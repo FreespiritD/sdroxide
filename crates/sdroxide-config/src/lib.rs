@@ -497,7 +497,7 @@ impl Store {
     /// The remembered dial and mode, or the defaults on a first run.
     pub fn load_session(&self) -> Session {
         let s: Session = self.load("session.json");
-        if s.is_usable() { s } else { Session::default() }
+        if s.is_usable() { s.sanitized() } else { Session::default() }
     }
 
     pub fn save_session(&self, session: &Session) -> Result<(), ConfigError> {
@@ -829,6 +829,14 @@ impl Settings {
 pub struct Session {
     /// Dial frequency of VFO A, in Hz.
     pub freq_hz: f64,
+    /// Dial frequency of VFO B, in Hz. `None` in a session written before the
+    /// second VFO was remembered, and on a first run — where B comes up on A's
+    /// frequency, exactly as a radio that has never had its B set does.
+    pub vfo_b_hz: Option<f64>,
+    /// Which of the two the operator was working on. Restored along with both
+    /// dials, so a station left listening on B comes back listening on B rather
+    /// than silently on A's frequency.
+    pub active_vfo: sdroxide_types::Vfo,
     /// Mode of the main receiver.
     pub mode: sdroxide_types::Mode,
     /// RX antenna port, as the device names it ("LNAH", "TX/RX"). `None` on a
@@ -900,6 +908,9 @@ impl Default for Session {
         let radio = sdroxide_types::RadioState::default();
         Session {
             freq_hz,
+            // No second dial of its own until one has been used: B mirrors A.
+            vfo_b_hz: None,
+            active_vfo: sdroxide_types::Vfo::A,
             mode,
             antenna_rx: None,
             antenna_tx: None,
@@ -927,7 +938,29 @@ impl Session {
     /// hand-edited or truncated file must not be able to open the receiver on
     /// 0 Hz or NaN — a far worse failure than a forgotten session.
     fn is_usable(&self) -> bool {
-        self.freq_hz.is_finite() && self.freq_hz > 0.0
+        Self::usable_dial(self.freq_hz)
+    }
+
+    fn usable_dial(hz: f64) -> bool {
+        hz.is_finite() && hz > 0.0
+    }
+
+    /// Drop a VFO B that a hand edit left unusable, rather than the whole
+    /// record: A is what the receiver opens on and is checked by
+    /// [`Self::is_usable`], so a nonsense B costs only the second dial.
+    fn sanitized(mut self) -> Session {
+        self.vfo_b_hz = self.vfo_b_hz.filter(|hz| Self::usable_dial(*hz));
+        self
+    }
+
+    /// The dial the radio was actually being worked on — what the front end
+    /// should open on, so the program comes back up hearing what it was
+    /// hearing whichever VFO that was.
+    pub fn active_dial_hz(&self) -> f64 {
+        match self.active_vfo {
+            sdroxide_types::Vfo::A => self.freq_hz,
+            sdroxide_types::Vfo::B => self.vfo_b_hz.unwrap_or(self.freq_hz),
+        }
     }
 }
 
@@ -1484,6 +1517,8 @@ mod tests {
     fn session_roundtrips_via_json() {
         let s = Session {
             freq_hz: 7_074_000.0,
+            vfo_b_hz: Some(7_090_000.0),
+            active_vfo: sdroxide_types::Vfo::B,
             mode: sdroxide_types::Mode::Ft8,
             antenna_rx: Some("LNAW".into()),
             antenna_tx: Some("BAND2".into()),
@@ -1533,6 +1568,41 @@ mod tests {
         assert_eq!(old.noise_reduction, radio.rx[0].noise_reduction);
         assert!(old.gains.is_empty(), "no gain preference until one is expressed");
         assert!(old.tx_gains.is_empty());
+        // And it names one dial, which is the one it was left on: B mirrors it,
+        // the way a radio that has never had its B set comes up.
+        assert_eq!(old.vfo_b_hz, None);
+        assert_eq!(old.active_vfo, sdroxide_types::Vfo::A);
+        assert_eq!(old.active_dial_hz(), 7_074_000.0);
+    }
+
+    /// A hand edit that ruins VFO B costs VFO B, not the whole session: A is
+    /// what the receiver opens on, and it is checked separately.
+    #[test]
+    fn an_unusable_vfo_b_is_dropped_rather_than_restored() {
+        for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            let s = Session { vfo_b_hz: Some(bad), ..Session::default() }.sanitized();
+            assert_eq!(s.vfo_b_hz, None, "{bad} should not be accepted as VFO B");
+            assert!(s.is_usable(), "and it must not take the rest of the session with it");
+        }
+        let good = Session { vfo_b_hz: Some(7_100_000.0), ..Session::default() }.sanitized();
+        assert_eq!(good.vfo_b_hz, Some(7_100_000.0));
+    }
+
+    /// The dial handed to the front end at the next start is the one the
+    /// operator was actually working on.
+    #[test]
+    fn the_restored_dial_is_the_active_vfos() {
+        let s = Session {
+            freq_hz: 14_200_000.0,
+            vfo_b_hz: Some(7_100_000.0),
+            active_vfo: sdroxide_types::Vfo::B,
+            ..Session::default()
+        };
+        assert_eq!(s.active_dial_hz(), 7_100_000.0);
+        assert_eq!(
+            Session { active_vfo: sdroxide_types::Vfo::A, ..s }.active_dial_hz(),
+            14_200_000.0
+        );
     }
 
     /// The first run, and every run before this file existed, has to land where

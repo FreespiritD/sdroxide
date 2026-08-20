@@ -195,8 +195,13 @@ impl Cli {
 
     /// The command line always wins; whatever it left out comes from the
     /// remembered session.
+    ///
+    /// The dial taken from the session is the one the operator was working on,
+    /// which is not always VFO A. Only that one reaches the front end — the
+    /// other VFO never had a centre frequency to ask for — and the engine
+    /// restores the pair once it has read the same session itself.
     fn apply_session(&mut self, session: sdroxide_config::Session) -> Option<sdroxide_types::Mode> {
-        self.freq = Some(self.freq.unwrap_or(session.freq_hz));
+        self.freq = Some(self.freq.unwrap_or_else(|| session.active_dial_hz()));
         self.mode = Some(self.mode.unwrap_or(session.mode));
         self.mode
     }
@@ -2549,6 +2554,20 @@ mod tests {
         assert_eq!(c.center_hz(), 7_074_000.0);
         assert_eq!(mode, Some(sdroxide_types::Mode::Ft8));
         assert_eq!(c.mode, mode, "the engine and the source agree on the mode");
+    }
+
+    /// A radio put down on VFO B has to be picked up on VFO B: the front end is
+    /// opened on the dial that was actually being listened to, not on A's.
+    #[test]
+    fn a_start_on_vfo_b_opens_on_bs_dial() {
+        let left_on_b = sdroxide_config::Session {
+            vfo_b_hz: Some(7_100_000.0),
+            active_vfo: sdroxide_types::Vfo::B,
+            ..session(14_200_000.0, sdroxide_types::Mode::Usb)
+        };
+        let mut c = Cli::parse_from(["sdroxide"]);
+        c.apply_session(left_on_b);
+        assert_eq!(c.center_hz(), 7_100_000.0);
     }
 
     /// The command line is an instruction, not a suggestion: what it names must

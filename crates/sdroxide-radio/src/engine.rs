@@ -1807,6 +1807,20 @@ fn engine_thread(
     // squelch is read straight from the state, and the NR engine is configured
     // the first time the level it holds differs from the one it was built with.
     if let Some(s) = session.as_ref() {
+        // Both VFOs, and which of the two was in use. The front end was opened
+        // on the active one — `apply_session` handed it that dial, unless
+        // `--freq` or a rig reporting its own overrode it — so *that* VFO keeps
+        // what the source actually came up on, and the other one, which has no
+        // centre frequency of its own to be overridden, comes back exactly as
+        // it was left. A remembered B outside what this front end can hear is
+        // left alone here; `keep_vfo_in_span` judges it if and when the
+        // operator switches to it, the same as any other tune.
+        state.active_vfo = s.active_vfo;
+        match s.active_vfo {
+            Vfo::A => state.vfo_b_hz = s.vfo_b_hz.unwrap_or(state.vfo_a_hz),
+            Vfo::B => state.vfo_a_hz = s.freq_hz,
+        }
+        state.band = Band::containing(state.active_freq_hz());
         state.rx[0].volume = s.volume;
         state.rx[0].manual_gain_db = s.rx_gain_db;
         state.rx[0].agc = s.agc;
@@ -6977,11 +6991,13 @@ impl Engine {
         // is empty: a front end with no antenna to choose (a CAT rig, a file)
         // must not erase the port a real radio was left on.
         let keep = |name: &str| (!name.is_empty()).then(|| name.to_string());
-        // The active VFO's dial, not VFO A's: an operator working on B should
-        // come back up on that frequency. It is restored as A — remembering
-        // which of the two was in use is a bigger promise than this makes.
+        // Both dials and which one was in use, so a station left listening on
+        // B — or split, with the other VFO on the DX's transmit frequency —
+        // comes back set up the way it was rather than with B collapsed onto A.
         let now = sdroxide_config::Session {
-            freq_hz: self.state.active_freq_hz(),
+            freq_hz: self.state.vfo_a_hz,
+            vfo_b_hz: Some(self.state.vfo_b_hz),
+            active_vfo: self.state.active_vfo,
             mode: self.state.rx[0].mode,
             antenna_rx: keep(&self.state.antenna_rx).or_else(|| saved.antenna_rx.clone()),
             antenna_tx: keep(&self.state.antenna_tx).or_else(|| saved.antenna_tx.clone()),
