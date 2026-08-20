@@ -26,8 +26,9 @@ use sdroxide_types::HackRfConfig;
 
 use crate::error::Result;
 use crate::protocol::{
-    BoardKind, GainSetter, PartIdSerial, Request, TransceiverMode, auto_filter_bw,
-    compute_filter_bw, encode_sample_rate, encode_set_freq, parse_ascii, rate_params,
+    BoardKind, GainSetter, M0_STATE_LEN, M0State, PartIdSerial, Request, TransceiverMode,
+    auto_filter_bw, compute_filter_bw, encode_sample_rate, encode_set_freq, parse_ascii,
+    rate_params,
 };
 use crate::usb::{Transport, TransportExt};
 
@@ -464,6 +465,20 @@ impl<T: Transport> Device<T> {
         self.mode = TransceiverMode::Off;
         let _ = self.io.out(Request::AmpEnable, 0, 0);
         let _ = self.io.out(Request::AntennaEnable, 0, 0);
+    }
+
+    /// Ask the radio what its own M0 core is doing.
+    ///
+    /// `None` on a firmware too old to have the request, which is the only
+    /// reason this is not simply part of the trace at every key-down. It is
+    /// read when the transmit lane reports that nothing is completing, because
+    /// it is the one question the host cannot answer for itself: a transfer
+    /// that has not come back looks identical whether the radio is ignoring it
+    /// or has merely not reached it yet.
+    pub fn m0_state(&self) -> Option<M0State> {
+        self.io
+            .optional_in(Request::GetM0State, 0, 0, M0_STATE_LEN)
+            .and_then(|b| M0State::parse(&b))
     }
 
     /// Borrow the transport, for the streaming code's endpoint access.

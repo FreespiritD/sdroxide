@@ -115,6 +115,10 @@ struct TxStats {
     moving: bool,
     /// Set once [`TX_STALL_NOTICE`] has been reported, so it is said once.
     notice_given: bool,
+    /// Raised with the notice and cleared by whoever can reach the control
+    /// endpoint: `service_tx` holds the bulk endpoint, but only the pump holds
+    /// the [`Device`], and the radio's own account of itself is a control read.
+    wants_m0: bool,
 }
 
 impl TxStats {
@@ -128,6 +132,7 @@ impl TxStats {
             stalls: 0,
             moving: false,
             notice_given: false,
+            wants_m0: false,
         }
     }
 
@@ -157,6 +162,7 @@ impl TxStats {
             return;
         }
         self.notice_given = true;
+        self.wants_m0 = true;
         let msg = format!(
             "NOT ONE transmit transfer has completed {:.0} ms after key-down: {} submitted              ({} bytes), {} still pending, {} error(s), {} stall(s). The radio is keyed but              is not reading the bulk OUT endpoint.",
             self.keyed.elapsed().as_secs_f64() * 1000.0,
@@ -343,7 +349,7 @@ fn pump(
     let mut stats = RxStats::new(dev.rate_hz());
     let started = Instant::now();
     let mut logged_first = false;
-    let mut lane = open_rx(dev, in_flight, transfer_bytes, trace)?;
+    let mut lane = open_rx(dev, in_flight, transfer_bytes)?;
     let mut carry: Option<u8> = None;
     let mut tx_bytes: Vec<u8> = Vec::with_capacity(transfer_bytes);
 
@@ -380,7 +386,7 @@ fn pump(
                     shared.tx_active.store(false, Ordering::Relaxed);
                     let _ = dev.end_tx();
                     stats.restart_clock();
-                    open_rx(dev, in_flight, transfer_bytes, trace)?
+                    open_rx(dev, in_flight, transfer_bytes)?
                 }
             };
         }
@@ -404,6 +410,18 @@ fn pump(
             }
             Lane::Tx(ep, tx_stats) => {
                 service_tx(ep, tx_stats, tx, &mut tx_bytes, in_flight, transfer_bytes, trace)?;
+                // The one question the host cannot answer about itself. Asked
+                // only when something has already gone wrong, so an over that
+                // works costs nothing.
+                if std::mem::take(&mut tx_stats.wants_m0) {
+                    match dev.m0_state() {
+                        Some(m) => trace.note(format!("the radio's own account: {m}")),
+                        None => trace.note(
+                            "the radio would not report its M0 state (firmware too old, \
+                             or the request was refused)",
+                        ),
+                    }
+                }
             }
         }
     }
@@ -474,10 +492,25 @@ fn transition(
                 return Ok(lane);
             }
             // Give up the receive endpoint *before* the mode changes.
+            let t0 = Instant::now();
             close(lane);
+            let closed = t0.elapsed();
             dev.begin_tx(center_hz)?;
-            let ep = open_tx(dev, trace)?;
+            let keyed = t0.elapsed();
+            let ep = open_tx(dev)?;
+            let opened = t0.elapsed();
             shared.tx_active.store(true, Ordering::Relaxed);
+            // Timed because one of these steps once blocked for five seconds
+            // and nothing in the trace said so — there was a key-down banner, a
+            // silence, and a shutdown. `tx_begin` gives up after two seconds, so
+            // anything here that is not instant is the whole fault.
+            trace.note(format!(
+                "key-down took {:.0} ms: close RX {:.0}, mode and tune {:.0}, endpoint {:.0}",
+                opened.as_secs_f64() * 1000.0,
+                closed.as_secs_f64() * 1000.0,
+                (keyed - closed).as_secs_f64() * 1000.0,
+                (opened - keyed).as_secs_f64() * 1000.0,
+            ));
             Ok(prime_tx(ep, dev.rate_hz(), in_flight, transfer_bytes, trace))
         }
         TxTransition::Freq(hz) => {
@@ -499,70 +532,42 @@ fn transition(
             shared.tx_active.store(false, Ordering::Relaxed);
             dev.end_tx()?;
             trace.note("back to receive");
-            open_rx(dev, in_flight, transfer_bytes, trace)
+            open_rx(dev, in_flight, transfer_bytes)
         }
     }
 }
 
-/// Put the host's idea of an endpoint back in step with the radio's, before
-/// anything is submitted to it.
+/// **Do not add a `clear_halt` here.** It was tried, on both lanes, on the
+/// theory that `SetTransceiverMode` re-initialises the radio's bulk endpoints
+/// and resets the data toggle on its side only, leaving the host's stale.
 ///
-/// **This is not about a halt.** `SetTransceiverMode` makes the firmware
-/// re-initialise both bulk endpoints, and that resets the data toggle on the
-/// *radio's* side. Nothing resets it on the host's — a claim on an interface
-/// that is already claimed leaves whatever the previous program left behind, so
-/// after a direction change the two can disagree about which of DATA0/DATA1
-/// comes next. A host that disagrees does not stall and does not error: the
-/// radio ignores every packet, the host retries forever, and the transfers are
-/// simply never completed. That is indistinguishable from a wedged transmitter,
-/// and it is what a stuck key-down looks like in a trace.
+/// Measured on Windows against firmware `n_260809`: `nusb` maps `clear_halt` to
+/// `WinUsb_ResetPipe`, and on the **transmit** endpoint that call took exactly
+/// **5.000 s** and then reported success. Five seconds inside the key-down path
+/// is three seconds past `HackRfSource::tx_begin`'s patience, so the engine gave
+/// up, unkeyed, and reported that the radio refused to transmit — a working
+/// receiver turned into a radio that would not key at all. It did not fix the
+/// transmit fault either: the transfers still never completed.
 ///
-/// Resetting the pipe is the fix on every host this runs on, which is why it is
-/// worth doing blind: on Linux this is `CLEAR_FEATURE(ENDPOINT_HALT)` through
-/// usbfs, and on Windows `nusb` maps it to `WinUsb_ResetPipe`, whose documented
-/// job is exactly "resets the data toggle and clears the stall condition".
-/// Both are no-ops on a pipe that was not halted, so this is cheap insurance on
-/// both lanes rather than a fix aimed at one.
-fn resync_endpoint(
-    what: &str,
-    r: impl MaybeFuture<Output = std::result::Result<(), nusb::Error>>,
-    trace: &Trace,
-) {
-    if let Err(e) = r.wait() {
-        // Not fatal: a radio whose toggle already matched works regardless, and
-        // one whose does not is about to say so far more loudly.
-        trace.note(format!("could not resynchronise the {what} endpoint: {e}"));
-    }
-}
-
-fn open_rx(
-    dev: &mut Device<UsbDev>,
-    in_flight: usize,
-    transfer_bytes: usize,
-    trace: &Trace,
-) -> Result<Lane> {
+/// A pipe reset belongs where it always was, in the stall handler, where
+/// something has actually gone wrong and the cost is worth paying.
+fn open_rx(dev: &mut Device<UsbDev>, in_flight: usize, transfer_bytes: usize) -> Result<Lane> {
     let mut ep = dev
         .io()
         .interface()
         .endpoint::<Bulk, In>(BULK_IN)
         .map_err(|e| Error::Access(format!("cannot open the HackRF receive endpoint: {e}")))?;
-    resync_endpoint("receive", ep.clear_halt(), trace);
     for _ in 0..in_flight {
         ep.submit(ep.allocate(transfer_bytes));
     }
     Ok(Lane::Rx(ep))
 }
 
-fn open_tx(dev: &mut Device<UsbDev>, trace: &Trace) -> Result<nusb::Endpoint<Bulk, Out>> {
-    let mut ep = dev
-        .io()
+fn open_tx(dev: &mut Device<UsbDev>) -> Result<nusb::Endpoint<Bulk, Out>> {
+    dev.io()
         .interface()
         .endpoint::<Bulk, Out>(BULK_OUT)
-        .map_err(|e| Error::Access(format!("cannot open the HackRF transmit endpoint: {e}")))?;
-    // After the mode change, never before: the re-initialisation this is
-    // resynchronising against is the one `Device::begin_tx` just caused.
-    resync_endpoint("transmit", ep.clear_halt(), trace);
-    Ok(ep)
+        .map_err(|e| Error::Access(format!("cannot open the HackRF transmit endpoint: {e}")))
 }
 
 /// Pre-load the transmit queue with silence.

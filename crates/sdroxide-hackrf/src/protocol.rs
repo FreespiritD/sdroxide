@@ -509,6 +509,103 @@ impl GainSetter {
     }
 }
 
+/// The 40-byte reply to [`Request::GetM0State`], little-endian throughout.
+///
+/// The only thing in this protocol that answers **"is the radio actually
+/// reading what I am sending it?"** A host cannot tell a transfer the radio is
+/// ignoring from one it simply has not reached yet — both look like a transfer
+/// that has not completed. The radio can, and this is how it says so.
+///
+/// Layout and the mode numbering are libhackrf's `hackrf_m0_state`; the modes
+/// are its own comment verbatim, because 3 and 4 being two *different* transmit
+/// states is the distinction the whole thing is worth reading for. A radio
+/// sitting in `TX_START` with `m0_count` at zero has been keyed and has never
+/// been fed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct M0State {
+    pub requested_mode: u16,
+    pub request_flag: u16,
+    pub active_mode: u32,
+    /// Bytes the M0 has moved — the radio's side of the wire.
+    pub m0_count: u32,
+    /// Bytes the M4 has moved — the USB side.
+    pub m4_count: u32,
+    pub num_shortfalls: u32,
+    pub longest_shortfall: u32,
+    pub shortfall_limit: u32,
+    pub threshold: u32,
+    pub next_mode: u32,
+    pub error: u32,
+}
+
+/// The length of the [`M0State`] reply.
+pub const M0_STATE_LEN: u16 = 40;
+
+impl M0State {
+    pub fn parse(b: &[u8]) -> Option<M0State> {
+        if b.len() < M0_STATE_LEN as usize {
+            return None;
+        }
+        let half = |i: usize| u16::from_le_bytes([b[i], b[i + 1]]);
+        let word = |i: usize| u32::from_le_bytes([b[i], b[i + 1], b[i + 2], b[i + 3]]);
+        Some(M0State {
+            requested_mode: half(0),
+            request_flag: half(2),
+            active_mode: word(4),
+            m0_count: word(8),
+            m4_count: word(12),
+            num_shortfalls: word(16),
+            longest_shortfall: word(20),
+            shortfall_limit: word(24),
+            threshold: word(28),
+            next_mode: word(32),
+            error: word(36),
+        })
+    }
+
+    pub fn mode_name(mode: u32) -> &'static str {
+        match mode {
+            0 => "IDLE",
+            1 => "WAIT",
+            2 => "RX",
+            3 => "TX_START",
+            4 => "TX_RUN",
+            _ => "unknown",
+        }
+    }
+
+    /// Why the M0 gave up, if it did. A `TX timeout` here is the radio saying it
+    /// was keyed and starved — which is a different fault from never having been
+    /// keyed at all, and the two are indistinguishable from the host side.
+    pub fn error_name(&self) -> &'static str {
+        match self.error {
+            0 => "none",
+            1 => "RX timeout",
+            2 => "TX timeout",
+            3 => "missed deadline",
+            _ => "unknown",
+        }
+    }
+}
+
+impl std::fmt::Display for M0State {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "mode {} (requested {}), M0 moved {} B, M4 moved {} B, {} shortfall(s) \
+             (longest {} B, limit {}), error {}",
+            M0State::mode_name(self.active_mode),
+            M0State::mode_name(u32::from(self.requested_mode)),
+            self.m0_count,
+            self.m4_count,
+            self.num_shortfalls,
+            self.longest_shortfall,
+            self.shortfall_limit,
+            self.error_name(),
+        )
+    }
+}
+
 /// The 24-byte reply to [`Request::BoardPartidSerialnoRead`]:
 /// `{ u32 part_id[2]; u32 serial_no[4] }`, all little-endian.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -752,6 +849,37 @@ mod tests {
             assert!(r.is_optional(), "{r:?}");
             assert!(r.since_api().unwrap() >= 0x0106);
         }
+    }
+
+    /// The radio's own account of a stuck key-down, as it will arrive in a
+    /// field report: keyed, and never fed.
+    #[test]
+    fn the_m0_state_reply_reads_a_keyed_but_unfed_transmitter() {
+        let mut b = Vec::new();
+        b.extend_from_slice(&3u16.to_le_bytes()); // requested TX_START
+        b.extend_from_slice(&1u16.to_le_bytes()); // request_flag
+        for w in [3u32, 0, 32_768, 0, 0, 0, 0, 0, 0] {
+            b.extend_from_slice(&w.to_le_bytes());
+        }
+        assert_eq!(b.len(), M0_STATE_LEN as usize);
+
+        let m = M0State::parse(&b).expect("a whole reply");
+        assert_eq!(m.active_mode, 3);
+        assert_eq!(m.m0_count, 0, "the radio has moved nothing");
+        assert_eq!(m.m4_count, 32_768, "but USB delivered to it");
+        assert_eq!(m.error_name(), "none");
+        let shown = m.to_string();
+        assert!(shown.contains("mode TX_START"), "{shown}");
+        assert!(shown.contains("M0 moved 0 B"), "{shown}");
+
+        // The distinction the whole read exists for: a radio that was keyed and
+        // starved says so, and it is not the same fault as never being keyed.
+        b[36] = 2;
+        assert_eq!(M0State::parse(&b).unwrap().error_name(), "TX timeout");
+
+        // A short reply is not a half-parsed state.
+        assert_eq!(M0State::parse(&b[..39]), None);
+        assert_eq!(M0State::parse(&[]), None);
     }
 
     #[test]
