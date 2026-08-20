@@ -75,26 +75,48 @@ impl WideWaterfall {
             return;
         }
         // Every row is drawn against the *newest* frame's axis, so history from
-        // before a centre or span change is history at the wrong frequency.
-        // Throw it away rather than smear it.
+        // before a centre change is history at the wrong frequency — but it is
+        // not history of the wrong *band*. A centre that moves is the window
+        // sliding along, and the rows are still good a few columns over, so
+        // they are scrolled rather than discarded.
         //
         // This lane's first backend, the RX-888, has a centre that cannot move
         // — its full band is the whole ADC — so nothing needed this until a
-        // front end whose window slides arrived. An Icom's scope, which follows
-        // the dial, has had the same latent smear all along.
+        // front end whose window slides arrived. An Icom's scope follows the
+        // dial, and clearing on every move meant each small tuning nudge blanked
+        // six seconds of waterfall: at a 200 kHz span one column is under
+        // 200 Hz, so tuning across a single signal wiped the strip repeatedly.
         //
-        // The threshold is one column's worth of the new span: a re-centre of
-        // less than a pixel is not visible, and throwing six seconds of band
-        // away for it would be its own bug.
-        let moved = self.window.is_some_and(|(c, s)| {
-            (frame.span_hz - s).abs() > 1.0
-                || (frame.center_hz - c).abs() > frame.span_hz / COLS as f64
-        });
-        if moved {
-            self.rows.clear();
-            self.tex = None;
+        // Whole columns only, with the remainder carried in `window`: three
+        // nudges of a third of a column each have to add up to one shift rather
+        // than to none at all. What is left is under half a column of skew
+        // against the newest frame's axis, which is the same sub-pixel error the
+        // old threshold tolerated.
+        match self.window {
+            Some((c, s)) if (frame.span_hz - s).abs() <= 1.0 && frame.span_hz > 0.0 => {
+                let bin_hz = frame.span_hz / COLS as f64;
+                let shift = ((frame.center_hz - c) / bin_hz).round();
+                if shift.abs() >= COLS as f64 {
+                    // Moved clean off its own width: nothing would survive the
+                    // scroll, so take the cheap path.
+                    self.rows.clear();
+                    self.window = None;
+                } else if shift != 0.0 {
+                    self.scroll(shift as isize);
+                    self.window = Some((c + shift * bin_hz, s));
+                }
+            }
+            // A different span is a different scale, and no amount of sliding
+            // maps one onto the other.
+            Some(_) => {
+                self.rows.clear();
+                self.window = None;
+            }
+            None => {}
         }
-        self.window = Some((frame.center_hz, frame.span_hz));
+        if self.window.is_none() {
+            self.window = Some((frame.center_hz, frame.span_hz));
+        }
         self.last_seq = frame.seq;
         self.levels = (frame.db_floor, frame.db_ceil);
         self.palette = palette;
@@ -115,6 +137,30 @@ impl WideWaterfall {
         }
         // Rebuilt on the next draw.
         self.tex = None;
+    }
+
+    /// Slide every stored row sideways: left for a positive `by` (the window
+    /// moved up the band, so what was at a column now belongs to a lower one),
+    /// right for a negative one.
+    ///
+    /// The vacated edge is filled with the bottom of the scale rather than
+    /// wrapped: that part of the band genuinely has no history yet, and a floor
+    /// reads as "nothing recorded here" where wrapped rows would read as
+    /// signals that were never there.
+    fn scroll(&mut self, by: isize) {
+        let k = by.unsigned_abs();
+        if k == 0 || k >= COLS {
+            return;
+        }
+        for row in &mut self.rows {
+            if by > 0 {
+                row.copy_within(k.., 0);
+                row[COLS - k..].fill(0);
+            } else {
+                row.copy_within(..COLS - k, k);
+                row[..k].fill(0);
+            }
+        }
     }
 
     /// Drop the history — used when the radio source changes.
@@ -561,31 +607,75 @@ mod tests {
         assert_eq!(wf.rows.len(), 1);
     }
 
-    /// Every row is drawn against the newest frame's axis, so history from
-    /// before the window moved is history at the wrong frequency. A front end
-    /// whose band view slides — a SpyServer's FFT, an Icom's scope following
-    /// the dial — would otherwise smear six seconds of another band across the
-    /// strip, plausibly enough that nobody would question it.
+    /// A window that slides is still looking at the same band a few columns
+    /// over, so the history is scrolled onto the new axis rather than thrown
+    /// away. A front end whose band view moves — a SpyServer's FFT, an Icom's
+    /// scope following the dial — used to blank six seconds of strip on every
+    /// tuning nudge: at a 200 kHz span one column is under 200 Hz, so tuning
+    /// across a single signal wiped it again and again.
     #[test]
-    fn moving_the_window_throws_the_history_away() {
+    fn moving_the_window_scrolls_the_history() {
+        let mut wf = WideWaterfall::default();
+        // One hot column, so where it ends up says how far the rows moved.
+        let mut bins = vec![0u8; COLS];
+        bins[COLS / 2] = 200;
+        wf.push(&frame(1, bins), 0);
+
+        // Re-centre upwards by a hundred columns' worth: the same frequency now
+        // sits a hundred columns further left, and the marker has to be there.
+        const STEP: usize = 100;
+        let mut moved = frame(2, vec![0; COLS]);
+        moved.center_hz += moved.span_hz / COLS as f64 * STEP as f64;
+        wf.push(&moved, 0);
+        assert_eq!(wf.rows.len(), 2, "a slide is not a new band");
+        assert_eq!(wf.rows[0][COLS / 2 - STEP], 200, "the history did not follow the axis");
+        assert_eq!(wf.rows[0][COLS / 2], 0, "the marker was left where it was");
+        assert_eq!(wf.rows[0][COLS - 1], 0, "the vacated edge is not history");
+    }
+
+    /// Two things no amount of sliding can fix: a jump further than the strip is
+    /// wide (nothing of the old band is still on screen) and a span change (the
+    /// axis is stretched, not shifted).
+    #[test]
+    fn a_jump_off_its_own_width_or_a_new_span_throws_the_history_away() {
         let mut wf = WideWaterfall::default();
         for seq in 1..=5 {
             wf.push(&frame(seq, vec![9; 64]), 0);
         }
         assert_eq!(wf.rows.len(), 5);
 
-        // A re-centre by a whole megahertz: the old rows are somewhere else.
-        let mut moved = frame(6, vec![9; 64]);
-        moved.center_hz += 1e6;
-        wf.push(&moved, 0);
-        assert_eq!(wf.rows.len(), 1, "the history was drawn against the old centre");
+        let mut jumped = frame(6, vec![9; 64]);
+        jumped.center_hz += jumped.span_hz * 2.0;
+        wf.push(&jumped, 0);
+        assert_eq!(wf.rows.len(), 1, "nothing of the old band is still in view");
 
-        // A span change does it too — the axis is stretched, not shifted.
         let mut zoomed = frame(7, vec![9; 64]);
-        zoomed.center_hz = moved.center_hz;
+        zoomed.center_hz = jumped.center_hz;
         zoomed.span_hz /= 2.0;
         wf.push(&zoomed, 0);
         assert_eq!(wf.rows.len(), 1);
+    }
+
+    /// Sub-column drift accumulates instead of being discarded: ten nudges of a
+    /// tenth of a column each have to add up to one shift, or a slow tuning
+    /// sweep would leave the history a whole column behind the axis it is drawn
+    /// against and nothing would ever correct it.
+    #[test]
+    fn sub_column_drift_adds_up_to_a_shift() {
+        let mut wf = WideWaterfall::default();
+        let mut bins = vec![0u8; COLS];
+        bins[COLS / 2] = 200;
+        wf.push(&frame(1, bins), 0);
+
+        let bin_hz = 32.4e6 / COLS as f64;
+        let mut center = 16.2e6;
+        for seq in 2..=11 {
+            center += bin_hz / 10.0;
+            let mut f = frame(seq, vec![0; COLS]);
+            f.center_hz = center;
+            wf.push(&f, 0);
+        }
+        assert_eq!(wf.rows[0][COLS / 2 - 1], 200, "ten tenths of a column shifted nothing");
     }
 
     /// ...but not for a wobble smaller than a pixel. Throwing the band away

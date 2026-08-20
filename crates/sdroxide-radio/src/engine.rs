@@ -41,6 +41,15 @@ use crate::{Complex32, ControlUpdate, IqSource};
 /// Number of bins in emitted display frames (matches the waterfall texture width).
 pub const DISPLAY_BINS: usize = 2048;
 
+/// How long the main panadapter keeps drawing a front end's own spectrum after
+/// the last sweep landed.
+///
+/// Long enough to sit through the source's own scope watchdog — an Icom's stops
+/// sweeping for several ordinary reasons and is asked again after three seconds
+/// — and short enough that a scope switched off at the radio for good hands the
+/// lane back to the audio FFT rather than leaving a frozen picture up.
+const SCOPE_MAIN_STALE: Duration = Duration::from_secs(10);
+
 /// How often S-meter / TX telemetry is emitted. 30 Hz matches the default
 /// spectrum rate, so the meter moves as smoothly as the panadapter does; the
 /// payload is a handful of floats, so the extra traffic is immaterial even over
@@ -1206,12 +1215,28 @@ struct Engine {
     state: RadioState,
     cfg: SpectrumConfig,
     analyzer: SpectrumAnalyzer,
-    /// Scratch for the full-band spectrum a direct-sampling source can supply.
-    /// Reused so the 20 Hz poll does not allocate.
-    wide_scratch: Vec<f32>,
+    /// The newest finished sweep from a source that computes its own spectrum.
+    ///
+    /// Cached rather than handed straight to the strip, because two lanes may
+    /// want the same sweep: the full-band strip takes every one, and on a
+    /// receive path with no I/Q at all the *main* panadapter is drawn from
+    /// these bins too — see [`Engine::scope_main_window`]. Reused so the poll
+    /// does not allocate.
+    wide_bins: Vec<f32>,
+    /// Centre and span the cached sweep covers, and when it landed.
+    wide_window: Option<(f64, f64)>,
+    wide_at: Instant,
+    /// Whether the cached sweep is one the full-band lane has not published.
+    /// The main lane has no such flag: it emits at the display rate whether or
+    /// not a new sweep arrived, exactly as the FFT analyser does.
+    wide_fresh: bool,
     /// Sequence number for full-band frames, kept apart from the main
     /// analyser's so a client can tell one lane's frames from the other's.
     wide_seq: u32,
+    /// Sequence number for main-lane frames built from those same bins. A third
+    /// counter because a client de-duplicates each lane by its own sequence,
+    /// and the two lanes emit at different rates.
+    scope_seq: u32,
     /// Auto-ranged dB window for the full-band lane, smoothed across frames.
     wide_levels: Option<(f32, f32)>,
     event_tx: Sender<RadioEvent>,
@@ -1891,8 +1916,12 @@ fn engine_thread(
         swr_settle: 0,
         swr_tuning: false,
         swr_tripped: None,
-        wide_scratch: Vec::new(),
+        wide_bins: Vec::new(),
+        wide_window: None,
+        wide_at: Instant::now(),
+        wide_fresh: false,
         wide_seq: 0,
+        scope_seq: 0,
         wide_levels: None,
         tx_analyzer: SpectrumAnalyzer::new(cfg.fft_size as usize, TX_MONITOR_RATE, cfg.avg_tc),
         tx_mon_buf: Vec::new(),
@@ -2228,12 +2257,14 @@ fn engine_thread(
         }
 
         let now = Instant::now();
+        // Ahead of both lanes: on a front end with no I/Q the main panadapter is
+        // built from the same sweep as the strip, so the sweep has to be in hand
+        // before either frame is made.
+        engine.poll_wide();
         if now >= next_frame {
             next_frame = now + Duration::from_secs_f64(1.0 / engine.cfg.fps.max(1) as f64);
             spec_in.write(engine.make_spectrum_frame());
         }
-        // Polled rather than paced: the source decides its own frame rate, and
-        // asking more often than it produces simply returns `None`.
         if let Some(frame) = engine.make_wide_frame() {
             wide_in.write(frame);
         }
@@ -3067,8 +3098,29 @@ impl Engine {
     /// us audio from wherever its dial is, and with RIT on that dial is the VFO
     /// plus the offset (see [`Self::update_tuning`]). Anchoring on the VFO would
     /// mislabel every bin by the RIT offset.
+    /// The rate `analyzer` is actually running at.
+    ///
+    /// Not [`RadioState::sample_rate`] in audio mode: there the analyser sees
+    /// the sound card's own stream, while `sample_rate` describes the
+    /// *displayed* window — the audio band, or the radio's scope span where
+    /// that is the main panadapter. Rebuilding it against the displayed width
+    /// gave the averaging time constant the wrong clock.
+    fn analyzer_rate(&self) -> f64 {
+        if self.audio_mode { self.radio_fs } else { self.state.sample_rate }
+    }
+
     fn update_display_center(&mut self) {
         if !self.audio_mode {
+            return;
+        }
+        // The radio's own scope decides both ends of the window when it is the
+        // main lane, and `state` has to say so: the client's zoom clamp and the
+        // sub-receiver limits are built on these two numbers, and left
+        // describing the audio band they would pin the view to a few kHz of a
+        // panadapter that is now hundreds wide.
+        if let Some((center, span)) = self.scope_main_window() {
+            self.state.center_hz = center;
+            self.state.sample_rate = span;
             return;
         }
         let dial = self.state.rx_freq_hz();
@@ -3742,34 +3794,112 @@ impl Engine {
     /// high-resolution channel analyzer (VFO-centered) while the requested
     /// viewport fits inside the DDC channel; otherwise from the full-rate
     /// device analyzer.
-    /// Build a full-band frame, if the source has one waiting.
+    /// Take whatever sweep the front end has finished into the cache.
+    ///
+    /// Polled rather than paced: the source decides its own sweep rate, and
+    /// asking more often than it produces simply leaves the cache alone. Every
+    /// `wide_spectrum_db` implementation returns before it touches `out`, so a
+    /// poll that finds nothing keeps the sweep already held.
+    fn poll_wide(&mut self) {
+        let mut bins = std::mem::take(&mut self.wide_bins);
+        let sweep = self.source.wide_spectrum_db(&mut bins).filter(|_| !bins.is_empty());
+        self.wide_bins = bins;
+        if let Some(window) = sweep {
+            self.wide_window = Some(window);
+            self.wide_at = Instant::now();
+            self.wide_fresh = true;
+        }
+        // The scope is the display axis while it is the main lane, so the axis
+        // has to follow it both ways: a sweep on a new centre or span moves the
+        // window, and a scope that stops sweeping — switched off at the radio,
+        // or a session that never had one — hands the window back to the audio
+        // band. Clients are told only when something actually moved: at ten
+        // sweeps a second, a state broadcast per sweep is traffic for nothing.
+        if self.audio_mode {
+            let before = (self.state.center_hz, self.state.sample_rate);
+            self.update_display_center();
+            if (self.state.center_hz, self.state.sample_rate) != before {
+                let _ = self.event_tx.send(RadioEvent::State(self.state.clone()));
+            }
+        }
+    }
+
+    /// Build a full-band frame, if a sweep has arrived since the last one.
     ///
     /// The source hands over dBFS bins covering its whole Nyquist band; the
     /// display policy — pooling down to [`DISPLAY_BINS`] and mapping to the u8
     /// range the client draws — stays here, identical to the main lane, so both
     /// panadapters respond to the same level controls.
     fn make_wide_frame(&mut self) -> Option<SpectrumFrame> {
-        let mut scratch = std::mem::take(&mut self.wide_scratch);
-        let span = self.source.wide_spectrum_db(&mut scratch);
-        let out = span.and_then(|(center_hz, span_hz)| {
-            if scratch.is_empty() {
-                return None;
-            }
-            self.wide_seq = self.wide_seq.wrapping_add(1);
-            let (floor, ceil) = auto_levels(&scratch, self.wide_levels);
-            self.wide_levels = Some((floor, ceil));
-            Some(pool_to_frame(
-                &scratch,
-                self.wide_seq,
-                center_hz,
-                span_hz,
-                floor,
-                ceil,
-                DISPLAY_BINS,
-            ))
-        });
-        self.wide_scratch = scratch;
-        out
+        if !self.wide_fresh {
+            return None;
+        }
+        self.wide_fresh = false;
+        let (center_hz, span_hz) = self.wide_window?;
+        let (floor, ceil) = auto_levels(&self.wide_bins, self.wide_levels);
+        self.wide_levels = Some((floor, ceil));
+        self.wide_seq = self.wide_seq.wrapping_add(1);
+        Some(pool_window_to_frame(
+            &self.wide_bins,
+            self.wide_seq,
+            center_hz,
+            span_hz,
+            floor,
+            ceil,
+            DISPLAY_BINS,
+            None,
+        ))
+    }
+
+    /// The window the radio's own spectrum covers, when that spectrum is what
+    /// the *main* panadapter should be showing.
+    ///
+    /// True for a receive path that carries no I/Q at all but does publish a
+    /// finished spectrum — an Icom's LAN session with its audio set to AF, and
+    /// its `27 00` scope streaming. There the audio FFT is not a picture of the
+    /// band at all: it is a picture of what the radio has already demodulated,
+    /// one-sided by construction (a dial with the whole display bandwidth above
+    /// it and nothing below), and never wider than the rig's own filter however
+    /// wide the display is set. The scope is the only real spectrum such a
+    /// session has, it is centred on the dial, and it is what every other client
+    /// of these radios draws.
+    ///
+    /// Except in the digital modes, whose waterfall *is* the audio band: FT8 and
+    /// the keyboard modes place signals by their audio offset inside the rig's
+    /// passband, and a band-wide scope at a few hundred Hz a bin cannot show one
+    /// at all.
+    fn scope_main_window(&self) -> Option<(f64, f64)> {
+        if !self.audio_mode
+            || self.state.rx[0].mode.is_digital()
+            || self.wide_at.elapsed() >= SCOPE_MAIN_STALE
+        {
+            return None;
+        }
+        self.wide_window
+    }
+
+    /// The main panadapter, drawn from the radio's own finished bins.
+    ///
+    /// Auto-ranged rather than mapped through the operator's dB window: an
+    /// Icom's scope is a 0..=160 scale with no documented dB per step, so the
+    /// numbers reaching here are a linear guess with an uncalibrated slope and a
+    /// fixed floor/ceiling would show either black or white. The levels are the
+    /// full-band lane's own, so two lanes drawing the same sweep cannot disagree
+    /// about it.
+    fn make_scope_frame(&mut self, center_hz: f64, span_hz: f64) -> SpectrumFrame {
+        let (floor, ceil) = auto_levels(&self.wide_bins, self.wide_levels);
+        self.wide_levels = Some((floor, ceil));
+        self.scope_seq = self.scope_seq.wrapping_add(1);
+        pool_window_to_frame(
+            &self.wide_bins,
+            self.scope_seq,
+            center_hz,
+            span_hz,
+            floor,
+            ceil,
+            DISPLAY_BINS,
+            self.cfg.viewport,
+        )
     }
 
     fn make_spectrum_frame(&mut self) -> SpectrumFrame {
@@ -3777,6 +3907,11 @@ impl Engine {
             return self.make_tx_frame();
         }
         if self.audio_mode {
+            // The radio's own scope, where this session has one — the only
+            // spectrum of the *band* a demod-audio path can show.
+            if let Some((center_hz, span_hz)) = self.scope_main_window() {
+                return self.make_scope_frame(center_hz, span_hz);
+            }
             // The real audio's FFT is symmetric; the dial is audio-DC. USB maps
             // audio f → dial+f (show the positive half); LSB → dial-f (negative
             // half). Both give the correct RF window over `audio_bw`.
@@ -4356,20 +4491,18 @@ impl Engine {
             }
             SetSpectrumCfg(new_cfg) => {
                 let rebuild = new_cfg.fft_size != self.cfg.fft_size;
+                let rate = self.analyzer_rate();
                 self.cfg = new_cfg;
                 if rebuild {
-                    self.analyzer = SpectrumAnalyzer::new(
-                        self.cfg.fft_size as usize,
-                        self.state.sample_rate,
-                        self.cfg.avg_tc,
-                    );
+                    self.analyzer =
+                        SpectrumAnalyzer::new(self.cfg.fft_size as usize, rate, self.cfg.avg_tc);
                     self.tx_analyzer = SpectrumAnalyzer::new(
                         self.cfg.fft_size as usize,
                         TX_MONITOR_RATE,
                         self.cfg.avg_tc,
                     );
                 } else {
-                    self.analyzer.set_avg_tc(self.cfg.avg_tc, self.state.sample_rate);
+                    self.analyzer.set_avg_tc(self.cfg.avg_tc, rate);
                     self.tx_analyzer.set_avg_tc(self.cfg.avg_tc, TX_MONITOR_RATE);
                 }
             }
@@ -9148,7 +9281,13 @@ mod stereo_tests {
 /// several thousand must survive being squeezed into one pixel, and averaging
 /// it against its neighbours is exactly how a panadapter loses weak signals as
 /// the operator zooms out.
-fn pool_to_frame(
+///
+/// `viewport` extracts a sub-span, as [`sdroxide_dsp::SpectrumAnalyzer::make_frame`]
+/// does for bins this engine computed itself, and the returned frame's axis then
+/// describes the viewport. The full-band strip never zooms and passes `None`;
+/// the main lane does, and pre-computed bins have to honour it the same way or
+/// zooming a scope-fed panadapter would move the axis without moving the trace.
+fn pool_window_to_frame(
     db: &[f32],
     seq: u32,
     center_hz: f64,
@@ -9156,17 +9295,40 @@ fn pool_to_frame(
     db_floor: f32,
     db_ceil: f32,
     out_bins: usize,
+    viewport: Option<(f64, f64)>,
 ) -> SpectrumFrame {
     let scale = 255.0 / (db_ceil - db_floor).max(1e-6);
     let n = db.len();
+    if n == 0 || out_bins == 0 {
+        return SpectrumFrame {
+            seq,
+            center_hz,
+            span_hz,
+            db_floor,
+            db_ceil,
+            bins: vec![0; out_bins],
+        };
+    }
+    let (frac_lo, frac_hi, out_center, out_span) = match viewport {
+        Some((lo, hi)) if hi > lo && span_hz > 0.0 => {
+            let full_lo = center_hz - span_hz / 2.0;
+            let flo = ((lo - full_lo) / span_hz).clamp(0.0, 0.998);
+            let fhi = ((hi - full_lo) / span_hz).clamp(flo + 0.002, 1.0);
+            (flo, fhi, full_lo + (flo + fhi) / 2.0 * span_hz, (fhi - flo) * span_hz)
+        }
+        _ => (0.0, 1.0, center_hz, span_hz),
+    };
+    let lo_bin = frac_lo * n as f64;
+    let bin_range = (frac_hi - frac_lo) * n as f64;
     let mut bins = Vec::with_capacity(out_bins);
     for i in 0..out_bins {
-        let lo = i * n / out_bins;
-        let hi = (((i + 1) * n / out_bins).max(lo + 1)).min(n);
+        let lo = ((lo_bin + i as f64 * bin_range / out_bins as f64) as usize).min(n - 1);
+        let hi =
+            ((lo_bin + (i + 1) as f64 * bin_range / out_bins as f64) as usize).clamp(lo + 1, n);
         let peak = db[lo..hi].iter().cloned().fold(f32::NEG_INFINITY, f32::max);
         bins.push(((peak - db_floor) * scale).clamp(0.0, 255.0) as u8);
     }
-    SpectrumFrame { seq, center_hz, span_hz, db_floor, db_ceil, bins }
+    SpectrumFrame { seq, center_hz: out_center, span_hz: out_span, db_floor, db_ceil, bins }
 }
 
 #[cfg(test)]
@@ -9179,7 +9341,7 @@ mod wide_frame_tests {
         // into two thousand — this is the whole reason for max-pooling.
         let mut db = vec![-120.0f32; 4096];
         db[1234] = -20.0;
-        let f = pool_to_frame(&db, 1, 16.2e6, 32.4e6, -120.0, -20.0, DISPLAY_BINS);
+        let f = pool_window_to_frame(&db, 1, 16.2e6, 32.4e6, -120.0, -20.0, DISPLAY_BINS, None);
         assert_eq!(f.bins.len(), DISPLAY_BINS);
         assert_eq!(f.bins[1234 * DISPLAY_BINS / 4096], 255);
         assert_eq!(f.bins[0], 0);
@@ -9188,7 +9350,7 @@ mod wide_frame_tests {
     #[test]
     fn the_frame_carries_the_axis_it_was_given() {
         let db = vec![-60.0f32; 1024];
-        let f = pool_to_frame(&db, 7, 16.2e6, 32.4e6, -120.0, -20.0, 256);
+        let f = pool_window_to_frame(&db, 7, 16.2e6, 32.4e6, -120.0, -20.0, 256, None);
         assert_eq!(f.seq, 7);
         assert_eq!(f.center_hz, 16.2e6);
         assert_eq!(f.span_hz, 32.4e6);
@@ -9200,19 +9362,52 @@ mod wide_frame_tests {
     #[test]
     fn levels_outside_the_window_clamp_rather_than_wrap() {
         let db = vec![40.0f32; 64];
-        let hot = pool_to_frame(&db, 1, 0.0, 1.0, -120.0, -20.0, 8);
+        let hot = pool_window_to_frame(&db, 1, 0.0, 1.0, -120.0, -20.0, 8, None);
         assert!(hot.bins.iter().all(|b| *b == 255));
         let db = vec![-400.0f32; 64];
-        let cold = pool_to_frame(&db, 1, 0.0, 1.0, -120.0, -20.0, 8);
+        let cold = pool_window_to_frame(&db, 1, 0.0, 1.0, -120.0, -20.0, 8, None);
         assert!(cold.bins.iter().all(|b| *b == 0));
     }
 
     #[test]
     fn fewer_input_bins_than_output_bins_still_produces_a_full_frame() {
         let db = vec![-50.0f32; 100];
-        let f = pool_to_frame(&db, 1, 0.0, 1.0, -120.0, -20.0, DISPLAY_BINS);
+        let f = pool_window_to_frame(&db, 1, 0.0, 1.0, -120.0, -20.0, DISPLAY_BINS, None);
         assert_eq!(f.bins.len(), DISPLAY_BINS);
         assert!(f.bins.iter().all(|b| *b > 0));
+    }
+
+    /// Zooming a scope-fed panadapter has to move the trace, not just relabel
+    /// the axis: the frame describes the viewport, and the carrier inside it
+    /// lands at the fraction of the *viewport* it occupies.
+    #[test]
+    fn a_viewport_extracts_the_sub_span_it_names() {
+        // 100 kHz across 1000 bins, so 100 Hz a bin, with a carrier at +25 kHz.
+        let mut db = vec![-120.0f32; 1000];
+        db[750] = -20.0;
+        let f = pool_window_to_frame(
+            &db,
+            1,
+            14_000_000.0,
+            100_000.0,
+            -120.0,
+            -20.0,
+            256,
+            Some((14_020_000.0, 14_030_000.0)),
+        );
+        assert!((f.center_hz - 14_025_000.0).abs() < 1.0, "centre: {}", f.center_hz);
+        assert!((f.span_hz - 10_000.0).abs() < 1.0, "span: {}", f.span_hz);
+        // Half way into a viewport running 14.020–14.030 MHz.
+        let peak = f.bins.iter().enumerate().max_by_key(|(_, v)| **v).map(|(i, _)| i).unwrap();
+        assert!(peak.abs_diff(128) <= 4, "carrier at bin {peak} of 256");
+    }
+
+    /// A source that has published no sweep yet must not take the frame builder
+    /// down with it.
+    #[test]
+    fn an_empty_sweep_still_produces_a_frame() {
+        let f = pool_window_to_frame(&[], 1, 0.0, 1.0, -120.0, -20.0, 8, Some((0.0, 0.5)));
+        assert_eq!(f.bins, vec![0u8; 8]);
     }
 }
 

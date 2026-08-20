@@ -78,6 +78,9 @@ pub struct SessionInfo {
     pub model: Model,
     pub rx_sample_rate: u32,
     pub tx_sample_rate: u32,
+    /// Whether this radio has a transmitter — [`RadioCap::has_transmitter`],
+    /// not the raw offer the stream request is built from. An IC-R8600
+    /// advertises a transmit stream and has nothing to transmit with.
     pub can_transmit: bool,
     /// The link description the radio reported at login ("FTTH", …).
     pub connection: String,
@@ -525,7 +528,7 @@ impl SessionThread {
                                 model,
                                 rx_sample_rate: self.opts.rx_sample_rate,
                                 tx_sample_rate: self.opts.tx_sample_rate,
-                                can_transmit: radio.can_transmit(),
+                                can_transmit: radio.has_transmitter(),
                                 connection: self.connection.clone(),
                                 baud_rate: radio.baud_rate,
                                 offered_rx_rates: radio.rx_sample,

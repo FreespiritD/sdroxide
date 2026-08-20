@@ -4535,8 +4535,9 @@ One connection carries three things:
 - **Control** — the whole CI-V command set, tunnelled over the network. Dial,
   mode, PTT, the S-meter, SWR and the radio's own CW keyer.
 - **Audio**, both ways, at up to 48 kHz.
-- **The radio's spectrum scope** — its own 475-point sweep, up to ±500 kHz wide,
-  which sdroxide draws in the full-band waterfall.
+- **The radio's spectrum scope** — its own 475-point sweep, up to ±500 kHz wide.
+  On the AF path this is the *main* panadapter; on the 12 kHz IF it is the
+  full-band waterfall above it.
 
 ##### On the radio, first
 
@@ -4549,7 +4550,12 @@ Three settings, all under **MENU » SET**:
    IC-705, **WLAN**), or transmit audio is not heard. sdroxide writes this for
    you on a model whose menu numbering it knows — currently the **IC-7300MK2**
    and the **IC-705** — and on any other it says so in the status line and
-   leaves the menu alone.
+   leaves the menu alone. Not on a receiver: an **IC-R8600** has no modulation
+   input to set, so neither the write nor the warning appears.
+
+A receiver in the **IC-R** line gets no PTT, drive, tune or SWR controls at all,
+whatever its capability block says — at least one of them advertises a transmit
+stream over this protocol on a set with no transmitter in it.
 
 Note the radio's IP address from its **Network** screen — an Icom does not
 announce itself on the network, so there is no Discover button.
@@ -4559,14 +4565,30 @@ announce itself on the network, so there is no Discover button.
 **No Icom outputs I/Q, over any interface** — not over USB, not over the network.
 That sets a hard ceiling on what any program, sdroxide or RS-BA1 alike, can show:
 
-- The **panadapter** is as wide as the audio stream. On the 12 kHz IF at 48000 Hz
-  that is about **±12 kHz** around the dial, and on AF it is the audio bandwidth.
-  This is real spectrum: it can be demodulated, notched, decoded and skimmed.
+- On **AF** the radio has already demodulated, so the audio stream is not a
+  picture of the band at all — it is a picture of what came through the rig's
+  filter, one-sided and never wider than that filter. The **panadapter is
+  therefore the radio's own scope**: centred on the dial, as wide as **Scope
+  span**, and the same view SDR-Control and RS-BA1 give. It is a picture the
+  radio draws and sends as 475 finished magnitude bins, so clicking it tunes but
+  nothing can be demodulated, notched or skimmed *inside* it without moving the
+  dial.
+- On the **12 kHz IF** the panadapter is real spectrum — about **±12 kHz** around
+  the dial at 48000 Hz — which can be demodulated, notched, decoded and skimmed.
+  The scope then lives in the strip above it instead.
+- The **digital modes** always get the audio band, on either path. FT8 and the
+  keyboard modes place stations by their offset inside the rig's passband, and a
+  band-wide sweep at a few hundred Hz per bin cannot show one, so the panadapter
+  switches back to the audio spectrum for as long as such a mode is selected.
 - The **full-band waterfall** — the strip above the panadapter, switched on with
-  the **WIDE** chip in the Display module — is the radio's own scope, up to
-  **1 MHz** across. It is a picture the radio draws and sends as 475 finished
-  magnitude bins, so nothing can be tuned *inside* it without moving the dial,
-  but it is where you watch a band.
+  the **WIDE** chip in the Display module — carries the scope on both paths, up
+  to **1 MHz** across. On AF that is worth leaving on once you zoom the
+  panadapter into part of the sweep, since the strip keeps the whole of it.
+
+Because the scope is uncalibrated — Icom publishes a 0..160 amplitude scale with
+no dB per step — its levels are ranged automatically rather than from the
+**FIT** / floor-and-ceiling controls, which govern the audio-band panadapter and
+every other front end as before.
 
 The strip appears on its own once the first sweep arrives, and the **WIDE** chip
 appears with it. If neither ever shows up, the radio is not sending its scope:
@@ -4609,8 +4631,8 @@ radio puts in the audio stream (`SET > Connectors > LAN AF/IF Output > Output
 Select`), which decides who does the demodulating:
 
 - **AF — the radio demodulates.** The radio's filters, AGC and detector do the
-  work and sdroxide shows a narrow audio-band panadapter beside the radio's
-  scope. This is the safe default and works on every model at every sample rate.
+  work, and the panadapter is the radio's own scope — see above. This is the safe
+  default and works on every model at every sample rate.
 - **12 kHz IF — sdroxide demodulates.** The radio sends its DRM intermediate
   frequency instead of audio. sdroxide mixes it down to baseband and treats it
   as an ordinary receiver front end, so its own filters, noise reduction,

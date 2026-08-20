@@ -1713,7 +1713,11 @@ pub(in crate::app) fn settings_icomnet_tab(
             ui.add(
                 egui::DragValue::new(&mut net.audio_bw_hz).range(1000.0..=24_000.0).suffix(" Hz"),
             )
-            .on_hover_text("Width of the audio-band panadapter, as for a CAT rig.");
+            .on_hover_text(
+                "Width of the audio-band panadapter, as for a CAT rig. Used in the \
+                 digital modes and where the radio's scope is off; otherwise the \
+                 panadapter is the scope, and Scope span sets its width.",
+            );
             ui.end_row();
         }
 
@@ -1740,9 +1744,11 @@ pub(in crate::app) fn settings_icomnet_tab(
 
         ui.label("");
         ui.checkbox(&mut net.scope, "Show the radio's spectrum scope").on_hover_text(
-            "Streams the radio's own 475-bin sweep into the full-band waterfall. It is \
-             the radio's picture, not sdroxide's DSP — there is no I/Q to compute one \
-             from.",
+            "Streams the radio's own 475-bin sweep. On AF it is the panadapter — the \
+             audio the radio sends is what came through its filter, not a picture of \
+             the band — and on the 12 kHz IF it is the full-band waterfall above one. \
+             Either way it is the radio's picture, not sdroxide's DSP: there is no I/Q \
+             to compute one from.",
         );
         ui.end_row();
 

@@ -1363,6 +1363,10 @@ pub struct IcomNetConfig {
     /// Audio sample rate to ask the radio for.
     pub sample_rate_hz: u32,
     /// Displayed panadapter bandwidth in AF mode (Hz), as for a CAT rig.
+    ///
+    /// Only reaches the display where the audio FFT is the panadapter: the
+    /// digital modes, and a session with no scope. Otherwise the window is the
+    /// radio's own sweep and [`Self::scope_span`] sets its width.
     pub audio_bw_hz: f64,
     /// How much audio the radio should buffer before modulating, in ms. Higher
     /// survives a worse network at the cost of transmit latency.
@@ -1374,8 +1378,11 @@ pub struct IcomNetConfig {
     /// transmit audio is heard. Off for a model whose menu numbering is not in
     /// the table — see `sdroxide_icomnet::protocol::MODELS`.
     pub set_mod_input_on_open: bool,
-    /// Ask the radio to stream its spectrum scope, and show it in the full-band
-    /// panadapter lane.
+    /// Ask the radio to stream its spectrum scope.
+    ///
+    /// Drawn in the full-band strip always, and on the AF path in the main
+    /// panadapter as well — there is no I/Q there for the main lane to show, so
+    /// the scope is the only picture of the band the session has.
     pub scope: bool,
     /// How wide to sweep that scope. The radio's own setting is usually far
     /// narrower than the band view this lane exists to give.

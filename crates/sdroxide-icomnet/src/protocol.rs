@@ -436,9 +436,31 @@ impl RadioCap {
         self.common_cap == RadioCap::CAP_MAC
     }
 
-    /// Can this radio take transmit audio from us?
+    /// Whether the radio offered a transmit stream — the wire fact, verbatim.
+    ///
+    /// What the stream request is built from, and only that: a session has to
+    /// ask for what the radio advertised, whether or not the radio makes sense.
+    /// Whether there is a *transmitter* on the other end is
+    /// [`Self::has_transmitter`], which is a different question.
     pub fn can_transmit(&self) -> bool {
         self.tx_sample > 1
+    }
+
+    /// Whether this radio can actually put something on the air.
+    ///
+    /// Not the same as [`Self::can_transmit`], and the difference is not
+    /// theoretical: a field report from an IC-R8600 came back with the transmit
+    /// controls offered and without the "receive only" note, so its capability
+    /// block advertises a transmit stream on a set that has no transmitter in
+    /// it. The negotiation still asks for exactly what the radio offered — a
+    /// session that works must not be changed over this — but nothing above it
+    /// should show a PTT, an SWR meter or a drive control.
+    ///
+    /// Nothing is guessed about the protocol here. `IC-R…` is Icom's own naming
+    /// for its receivers, and a receiver has nothing to modulate however it
+    /// fills this field.
+    pub fn has_transmitter(&self) -> bool {
+        self.can_transmit() && !is_receiver(&self.name)
     }
 
     fn parse(b: &[u8]) -> Option<RadioCap> {
@@ -855,6 +877,17 @@ pub const MODELS: &[Model] = &[
     },
 ];
 
+/// Whether a model name is one of Icom's receivers.
+///
+/// The `IC-R` prefix is the whole rule and it is Icom's, not ours: IC-R8600,
+/// IC-R30, IC-R6 and the rest of the line receive only, and no transceiver is
+/// named that way. Used to overrule a capability block that offers a transmit
+/// stream a radio cannot possibly honour — see [`RadioCap::can_transmit`].
+pub fn is_receiver(name: &str) -> bool {
+    let name = name.trim().to_ascii_uppercase();
+    name.starts_with("IC-R") || name.starts_with("ICR")
+}
+
 /// Look a radio up by the CI-V address it reported.
 pub fn model_for(civ_address: u8) -> Model {
     MODELS
@@ -976,6 +1009,33 @@ mod tests {
         let mut b = vec![0u8; CAPABILITIES_SIZE];
         b.extend_from_slice(&a_radio_cap(0x96, 0));
         assert!(!parse_capabilities(&b).unwrap()[0].can_transmit());
+    }
+
+    /// The IC-R8600 in the field advertised a transmit stream. The negotiation
+    /// still has to ask for what the radio offered — that session works — but
+    /// nothing above it should put a PTT on a receiver.
+    #[test]
+    fn a_receiver_that_offers_a_transmit_stream_still_has_no_transmitter() {
+        let mut b = vec![0u8; CAPABILITIES_SIZE];
+        put_u16(&mut b, 0x40, 1);
+        let mut cap = a_radio_cap(0x96, 0x0f);
+        cap[0x10..0x1a].copy_from_slice(b"IC-R8600  ");
+        b.extend_from_slice(&cap);
+        let radio = &parse_capabilities(&b).unwrap()[0];
+        assert_eq!(radio.name, "IC-R8600");
+        assert!(radio.can_transmit(), "the wire offer is reported as it stands");
+        assert!(!radio.has_transmitter(), "an IC-R has nothing to modulate");
+    }
+
+    #[test]
+    fn the_receiver_rule_is_the_ic_r_prefix_and_nothing_else() {
+        assert!(is_receiver("IC-R8600"));
+        assert!(is_receiver("IC-R30"));
+        assert!(is_receiver(" ic-r6 "));
+        // Every transceiver, including the ones with an R further along.
+        assert!(!is_receiver("IC-7300MK2"));
+        assert!(!is_receiver("IC-705"));
+        assert!(!is_receiver("IC-9700"));
     }
 
     #[test]

@@ -11,8 +11,12 @@
 //! different things, and the operator picks between them:
 //!
 //! * **AF** — the radio demodulates and we get audio, exactly as with a CAT rig
-//!   and a sound card. `caps.audio_mode` is set and the engine shows a narrow
-//!   audio-band panadapter.
+//!   and a sound card. `caps.audio_mode` is set, and the *main* panadapter is
+//!   the radio's own scope rather than an FFT of that audio: what the rig sends
+//!   here is not a picture of the band, it is a picture of what already came
+//!   through its filter, one-sided by construction and never wider than that
+//!   filter. (The audio FFT comes back for the digital modes, which place
+//!   stations by their offset inside the passband.)
 //! * **12 kHz IF** — Icom's DRM output, a real IF in the audio stream. Mixed to
 //!   baseband and decimated by two here, it becomes a 24 kHz complex stream the
 //!   engine treats like any other front end, so sdroxide's own filters, noise
@@ -290,7 +294,12 @@ impl IcomNetSource {
             None => {}
         }
 
-        if cfg.set_mod_input_on_open {
+        // Only where there is something to modulate. A receive-only radio has no
+        // modulation input to set and no transmit audio that could go unheard,
+        // so both the write and its warning are noise — and an IC-R8600 got the
+        // warning, because the menu numbering of a set that cannot transmit is
+        // naturally not in the table.
+        if cfg.set_mod_input_on_open && self.can_transmit() {
             match model.lan_mod_input {
                 Some((data_off, data_on, lan)) => {
                     self.send(civ::set_menu_frame(self.civ_addr, data_off, &[lan]));
