@@ -3496,6 +3496,12 @@ is recording at all. Raising the rate raises that ceiling with it.
   the knob is then followed *faster* than any poll rate could manage, for none
   of the traffic. Nothing needs setting at this end; with transceive off,
   polling carries on as before.
+
+  It arms on the radio volunteering a broadcast, which is whenever the radio
+  gets round to it, so the log says when it happens: *"the radio reports its own
+  dial and mode (CI-V transceive is on); standing the dial poll down to a safety
+  net"*. If you are measuring control traffic against audio dropouts, that line
+  is what tells you which of the two rates you were measuring.
 - **Send command** (Kenwood only) — which transceiver *generation* keys the rig
   when **PTT method** is `CAT`. The two disagree about what the `TX` parameter
   means, nothing on the wire tells them apart, and there is no value that is

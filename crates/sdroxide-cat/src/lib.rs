@@ -938,6 +938,10 @@ fn serial_thread(
     // the setting says: that reading is the SWR, the protection trip counts on
     // it arriving, and it only runs for the length of an over.
     let rx_meter_period = meter_period(&cfg);
+    // Whether the stand-down below has been said out loud yet. Once per process
+    // rather than once per connection: `protocol` — and so what it has learned
+    // about this rig — outlives a reconnect.
+    let mut announced_push = false;
     // What mode to command the rig into for a given app mode. FT8/FT4 use the
     // separate `digi_mode` setting; every other mode obeys `mode_control`
     // (CAT = mirror the selected mode to the rig; Radio = don't touch it).
@@ -1288,8 +1292,22 @@ fn serial_thread(
             // faster than any poll and free, so the poll drops back to the
             // safety net that catches a broadcast gone missing.
             if Instant::now() >= next_poll {
-                let period =
-                    if protocol.pushes_updates() { PUSHED_POLL_PERIOD } else { poll_period };
+                let pushes = protocol.pushes_updates();
+                // Said out loud because it is otherwise invisible: it arms on
+                // the radio volunteering a broadcast, which happens whenever it
+                // happens, and it changes how much traffic this thread puts on
+                // the wire. Without this line, anyone measuring the control
+                // traffic against audio dropouts cannot tell which of the two
+                // rates they were measuring.
+                if pushes && !announced_push {
+                    announced_push = true;
+                    info!(
+                        poll_s = PUSHED_POLL_PERIOD.as_secs(),
+                        "the radio reports its own dial and mode (CI-V transceive is on); \
+                         standing the dial poll down to a safety net"
+                    );
+                }
+                let period = if pushes { PUSHED_POLL_PERIOD } else { poll_period };
                 next_poll = Instant::now() + period.max(poll_period);
                 for req in protocol.poll_requests() {
                     if write_frame(&mut *port, &req, &mut last_write) {
