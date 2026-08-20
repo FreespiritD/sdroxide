@@ -308,6 +308,10 @@ impl Protocol for Elecraft {
         }
         reqs
     }
+    // `DT` is the DATA sub-mode, which is part of the mode and moves with it.
+    fn dial_requests(&self) -> Vec<Vec<u8>> {
+        vec![b"FA;".to_vec()]
+    }
 
     fn tx_telemetry_requests(&self) -> Vec<Vec<u8>> {
         // `SW` is the one meter on this family that reads a *number* rather

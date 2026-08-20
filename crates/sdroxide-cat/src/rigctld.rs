@@ -240,6 +240,9 @@ impl Protocol for Rigctld {
     fn poll_requests(&self) -> Vec<Vec<u8>> {
         vec![cmd("f"), cmd("m")]
     }
+    fn dial_requests(&self) -> Vec<Vec<u8>> {
+        vec![cmd("f")]
+    }
 
     fn tx_telemetry_requests(&self) -> Vec<Vec<u8>> {
         vec![cmd("l SWR")]

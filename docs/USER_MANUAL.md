@@ -3489,6 +3489,13 @@ is recording at all. Raising the rate raises that ceiling with it.
   meters as well as the dial, so turning it down really does turn all of the
   traffic down.
 
+  The rate is the *dial's*. The mode rides along with only every fourth poll —
+  no faster than once a second and no slower than once every five — because it
+  is a setting somebody changes a few times in an evening, and asking for it at
+  the speed a VFO knob turns spends a frame every time on the same answer.
+  Changing the mode on the radio's front panel therefore shows up a beat behind
+  the dial would, which at the default is within two seconds.
+
   **Icom only:** if **CI-V Transceive** is switched on in the radio's own menu
   (SET → Connectors → CI-V), the rig broadcasts its dial and its mode the
   instant either moves. sdroxide watches for those broadcasts, and the first
@@ -3502,6 +3509,22 @@ is recording at all. Raising the rate raises that ceiling with it.
   dial and mode (CI-V transceive is on); standing the dial poll down to a safety
   net"*. If you are measuring control traffic against audio dropouts, that line
   is what tells you which of the two rates you were measuring.
+
+  It gives the claim up again on evidence, not on a stopwatch. Switch Transceive
+  off mid-session and the next thing to move the radio — the VFO knob, a memory
+  recall, a band button — turns up on the safety-net poll as a change nothing
+  announced, and the full poll rate comes straight back with a matching line in
+  the log: *"the radio moved without reporting it (CI-V transceive is off);
+  polling the dial at the configured rate again"*. A timeout would have been
+  wrong here: at idle nothing changes, so no broadcasts arrive to keep the claim
+  alive, and every rig that simply had nothing to report would be put back on a
+  full poll — which is exactly the case the stand-down exists for.
+
+  What it will not do is give the claim up because a read and a broadcast
+  crossed on the wire. Turning the VFO knob broadcasts every step, so a poll
+  issued in the middle of one comes back describing a dial that has already
+  moved on; an answer that disagrees within a second of a broadcast is put down
+  to that rather than to a silent radio.
 - **Send command** (Kenwood only) — which transceiver *generation* keys the rig
   when **PTT method** is `CAT`. The two disagree about what the `TX` parameter
   means, nothing on the wire tells them apart, and there is no value that is

@@ -287,7 +287,11 @@ pub(in crate::app) fn settings_cat_tab(
              An Icom with CI-V Transceive switched on in its own menu needs \
              none of this for the dial: it reports the knob the instant it \
              moves, and sdroxide stands the dial poll down as soon as it sees \
-             it do so.",
+             it do so — and picks it back up again if the radio ever moves \
+             without saying so.\n\n\
+             The rate is the dial's. The mode rides along with only every \
+             fourth poll, since it is a setting that changes a few times in an \
+             evening rather than one that follows a knob.",
         );
         ui.add(DragValue::new(&mut cfg.cat.poll_hz).speed(0.5).range(0.5..=20.0).suffix(" Hz"));
         ui.end_row();

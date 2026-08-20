@@ -289,6 +289,9 @@ impl Protocol for Elad {
     fn poll_requests(&self) -> Vec<Vec<u8>> {
         vec![b"FA;".to_vec(), b"MD;".to_vec()]
     }
+    fn dial_requests(&self) -> Vec<Vec<u8>> {
+        vec![b"FA;".to_vec()]
+    }
 
     fn tx_telemetry_requests(&self) -> Vec<Vec<u8>> {
         // `WR` only. `FP` reads forward power, but the manual gives its six

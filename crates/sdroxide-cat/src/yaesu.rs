@@ -369,6 +369,9 @@ impl Protocol for Yaesu {
     fn poll_requests(&self) -> Vec<Vec<u8>> {
         vec![b"FA;".to_vec(), b"MD0;".to_vec()]
     }
+    fn dial_requests(&self) -> Vec<Vec<u8>> {
+        vec![b"FA;".to_vec()]
+    }
 
     /// `TX;` read back. The reply's digit distinguishes *who* keyed the rig —
     /// its own PTT/mic from a CAT key-down — but this is only ever asked while

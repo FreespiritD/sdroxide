@@ -460,6 +460,11 @@ impl Protocol for Kenwood {
         }
         reqs
     }
+    // `DA` is the DATA switch beside the mode, so it belongs with the mode
+    // rather than with the dial.
+    fn dial_requests(&self) -> Vec<Vec<u8>> {
+        vec![b"FA;".to_vec()]
+    }
 
     /// `IF;` — the whole-status reply, read for one character of it.
     ///
