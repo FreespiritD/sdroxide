@@ -3366,6 +3366,12 @@ separately from your computer's own speakers and microphone.
   own, so every kind of tuning moves sdroxide's receiver inside it and the
   hardware is only retuned when the frequency would leave the span.
 
+**Transmit is the same on both.** The sound format describes what the radio
+*sends*; what it takes back is always audio into its playback device, which the
+radio modulates itself. So the drive level, the mode and the sideband that goes
+on the air are the radio's own settings, commanded over CAT, on a quadrature rig
+exactly as on a demod-audio one.
+
 The **mode** travels in both directions on either sound format, subject to the
 **Mode control** setting below: change it on the radio and sdroxide follows on
 the next poll, change it in sdroxide and the radio follows. On a quadrature rig
@@ -7357,7 +7363,7 @@ row of menu buttons:
 
 | Button | What it holds |
 | --- | --- |
-| **PTT** | Keys the transmitter. Hold it down; letting go unkeys. |
+| **PTT** | Keys the transmitter. Hold it down to talk, or click it with a mouse to latch it on. |
 | **RX** | Volume, front-end gain, AGC, squelch, NB, ANC, NR |
 | **VFO** | A↔B, A→B, SPLIT, SUB, and the RIT/XIT offsets |
 | **SUB** | The second receiver's frequency, mode, filter and level (only while it is running) |
@@ -7373,10 +7379,18 @@ there is no hovering pointer to hold them open.
 frequency move into the **VFO** menu; a small `A` or `B` before the digits says
 which one you are tuning. 
 
-**PTT is press-and-hold on both**, unlike the desktop's latching button: a
-latching control an inch from a waterfall you pan with your thumb is one mis-tap
-away from a transmitter left on. Lifting your finger always drops it, including
-when the browser takes the touch away because you switched tabs.
+**PTT is press-and-hold on both**, and **a finger never latches it**: a latching
+control an inch from a waterfall you pan with your thumb is one mis-tap away
+from a transmitter left on. Lifting your finger always drops it, including when
+the browser takes the touch away because you switched tabs.
+
+A **mouse** gets the latch back, because a mouse is not the thing that rule
+guards against — and these layouts are not only touch screens, since **Auto**
+picks the tablet strip for any window under 1400 points wide and you can force
+either one outright. Press and hold to talk, exactly as a finger does, or click
+the button to leave it keyed; the next press lets go. Dragging off the button
+before releasing cancels the latch, so an accidental press ends the over rather
+than leaving it on the air.
 
 #### The digital-mode panels
 

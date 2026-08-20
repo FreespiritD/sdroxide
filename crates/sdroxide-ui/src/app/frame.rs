@@ -172,8 +172,11 @@ impl eframe::App for SdroxideApp {
             if self.input.any_held() {
                 self.release_held_controls(&mut cmds);
             }
-            if self.ptt_held {
-                self.ptt_held = false;
+            // Latched as well as held: the chip keeps the transmitter on
+            // after the pointer has lifted, and a window closing on a latch is
+            // exactly the over nobody is watching.
+            if self.ptt.keying() {
+                self.ptt = Default::default();
                 cmds.push(Command::SetPtt(false));
             }
         }

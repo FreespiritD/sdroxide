@@ -290,9 +290,9 @@ pub struct SdroxideApp {
     /// The layout in force last frame, so a change can re-apply the style
     /// metrics (chip padding, text sizes) exactly once instead of every frame.
     tier: crate::layout::Tier,
-    /// Whether the compact layout's press-and-hold PTT is being held, so it
-    /// sends one command per edge rather than one per frame.
-    ptt_held: bool,
+    /// What the compact layout's PTT chip is doing — pressed, latched, or
+    /// nothing — so it sends one command per edge rather than one per frame.
+    ptt: self::top_bar::PttPress,
     mem_name: String,
     /// Name being typed into the memories window's "new folder" field.
     mem_folder_name: String,
@@ -887,7 +887,7 @@ impl SdroxideApp {
             nr_popup_since: None,
             // Corrected on the first frame, once the viewport size is known.
             tier: crate::layout::Tier::Desktop,
-            ptt_held: false,
+            ptt: Default::default(),
             mem_name: String::new(),
             mem_folder_name: String::new(),
             mem_folder_edit: None,

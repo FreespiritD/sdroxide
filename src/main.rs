@@ -2436,6 +2436,15 @@ fn cat_caps(radio: &RadioConfig) -> DeviceCaps {
         rx_channels: 1,
         tx_channels: 1,
         audio_mode: demod,
+        // Set whatever the receive stream carries, the same as the Icom LAN and
+        // ELAD backends: a CAT rig modulates the audio we put into its sound
+        // card, and there is no transmit path here that does anything else.
+        // `audio_mode` covers only the demod-audio half of that, so a rig
+        // sending quadrature keyed up, reached `tx_write` — which this source
+        // does not implement, because it has no I/Q transmitter — and failed
+        // the over with "device is not transmit capable" on a radio that plainly
+        // can.
+        tx_audio: true,
         freq_ranges_rx: vec![(10_000.0, 10_500_000_000.0)],
         freq_ranges_tx: vec![(1_800_000.0, 10_500_000_000.0)],
         ..DeviceCaps::default()
@@ -2524,6 +2533,30 @@ mod tests {
         assert!(caps.may_rx_hz(60_000.0), "LF time signals stay reachable");
         assert!(!caps.may_tx_hz(500_000.0));
         assert!(!caps.may_tx_hz(24_000_000_000.0));
+    }
+
+    /// A CAT rig transmits by feeding its sound card, whichever way its receive
+    /// stream comes back. The demod-audio half of that rides on `audio_mode`,
+    /// which is why the quadrature half went unnoticed: PTT on an I/Q rig sent
+    /// the engine down the modulated-I/Q path to an `IqSource` that has no
+    /// `tx_write`, and the over died with "device is not transmit capable".
+    #[test]
+    fn a_cat_rig_transmits_audio_in_either_sound_format() {
+        use sdroxide_types::SoundFormat;
+        for format in [SoundFormat::DemodAudio, SoundFormat::Iq] {
+            let mut radio = RadioConfig::default();
+            radio.cat.format = format;
+            let caps = cat_caps(&radio);
+            assert!(caps.is_transmit_capable(), "{format:?}");
+            assert!(caps.tx_audio, "the rig modulates the audio we send it ({format:?})");
+        }
+        // And the receive path still follows the format, since that is the one
+        // thing the two halves genuinely differ about.
+        let mut radio = RadioConfig::default();
+        radio.cat.format = SoundFormat::DemodAudio;
+        assert!(cat_caps(&radio).audio_mode);
+        radio.cat.format = SoundFormat::Iq;
+        assert!(!cat_caps(&radio).audio_mode, "quadrature is ordinary wideband I/Q");
     }
 
     /// A FLEX with a VHF section may be showing a 2 m transverter's output on

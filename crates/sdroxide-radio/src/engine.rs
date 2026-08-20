@@ -2216,6 +2216,18 @@ fn engine_thread(
             // Blocking TX write paces this loop at ~10 ms per block.
             if let Err(e) = engine.tx_block() {
                 let _ = engine.event_tx.send(RadioEvent::ConnectionLost(e.to_string()));
+                // Unkey on the way out. This thread is the only thing that ever
+                // calls `tx_end`, so returning without it leaves the
+                // transmitter exactly as the failed block found it: keyed. On
+                // a CAT rig that is a PTT command sent and never taken back —
+                // the radio stays on the air with nothing left running to stop
+                // it, which is how a mis-declared transmit path (a source with
+                // no `tx_write`) turned a refused over into a stuck one.
+                // Best-effort by necessity: the failure being reported may well
+                // be the same link this has to travel over.
+                if let Err(e) = engine.source.tx_end() {
+                    warn!("could not unkey after a transmit failure: {e}");
+                }
                 // Same as the controller-gone exit: a dead engine must not
                 // keep the station interlock.
                 engine.release_tx_gate();

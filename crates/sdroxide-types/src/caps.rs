@@ -33,8 +33,17 @@ pub struct DeviceCaps {
     /// runs the normal wideband path.
     pub audio_mode: bool,
     /// Transmit by sending raw 48 kHz audio (`IqSource::tx_write_audio`) — the
-    /// device modulates it — instead of modulated IQ, even when RX is wideband
-    /// IQ (`audio_mode = false`). Used by the TCI backend (IQ RX, audio TX).
+    /// device modulates it — instead of modulated IQ.
+    ///
+    /// Set by every backend that transmits this way, whatever its *receive*
+    /// stream is carrying: a CAT rig on a sound card, an Icom over LAN, an
+    /// ELAD, a FLEX over DAX, and TCI. [`Self::audio_mode`] is not a substitute
+    /// for it — that flag is about the receive path, and a backend which sets
+    /// it happens to satisfy the engine's `audio_mode || tx_audio` test by
+    /// accident. A rig whose receive stream is wideband I/Q while its
+    /// transmitter still takes audio has nothing but this flag standing between
+    /// it and the modulated-I/Q path, where the first block asks an `IqSource`
+    /// with no I/Q transmitter to write one.
     pub tx_audio: bool,
 
     /// Tunable ranges in Hz: (min, max).

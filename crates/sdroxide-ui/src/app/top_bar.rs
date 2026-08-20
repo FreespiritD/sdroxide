@@ -131,6 +131,10 @@ const MENU_TEXT_MIN: f32 = 11.0;
 /// it is the one chip on the row worth more of a target than its label needs.
 const PTT_LABEL: &str = " PTT ";
 const PTT_TEXT: f32 = 15.0;
+/// What the compact PTT chip says on hover. Hover is a pointing device's
+/// affordance — a finger never sees this — so it leads with the half that
+/// only a mouse has. See [`SdroxideApp::held_ptt`].
+const PTT_HOLD_HINT: &str = "Hold to transmit — a click latches it on, and the next press lets go";
 /// Digit sizes of the single-row strip's readout. It is a type-in field — tap
 /// and type, no per-digit targets — so the floor is about reading the
 /// frequency, not hitting one digit of it.
@@ -884,7 +888,7 @@ impl SdroxideApp {
                 Color32::WHITE,
                 egui::vec2(ptt_w, plan.box_h),
             )
-            .on_hover_text("Hold to transmit");
+            .on_hover_text(PTT_HOLD_HINT);
             self.apply_held_ptt(&resp, cmds);
         }
 
@@ -1102,14 +1106,26 @@ impl SdroxideApp {
         });
     }
 
-    /// PTT on a compact layout: held rather than latched.
+    /// PTT on a compact layout: pressed to talk, clicked to latch.
     ///
-    /// A finger down keys the transmitter and lifting it unkeys it. A latching
-    /// chip an inch from a pannable waterfall is one mis-tap away from a
-    /// transmitter left on with nobody watching; held, letting go always drops
-    /// it — including when the browser takes the touch away because the tab
-    /// went to the background, which arrives here as the pointer simply no
-    /// longer being down on the chip.
+    /// A press keys the transmitter either way, and what happens when it is let
+    /// go depends on what did the letting go. A **finger** always unkeys:
+    /// a latching chip an inch from a pannable waterfall is one mis-tap away
+    /// from a transmitter left on with nobody watching, and letting go always
+    /// dropping it is also what covers the browser taking the touch away
+    /// because the tab went to the background — which arrives here as the
+    /// pointer simply no longer being down on the chip. A **mouse click**
+    /// latches it on, and the next press lets go, exactly as the desktop
+    /// strip's chip does.
+    ///
+    /// The mouse half is not a softening of the rule above; it is the rule
+    /// applied to the thing it was aimed at. The compact tiers are not only
+    /// touchscreens — `Auto` picks Tablet for any window under 1400 pt wide,
+    /// and an operator may force one outright — so hold-to-talk keyed off the
+    /// tier alone took the latching PTT away from a mouse on a 1280-wide
+    /// desktop that the same mouse has at 1440, and left no way at all to hold
+    /// a long over without holding the button down for it.
+    ///
     /// `extra` widens it past its label — its share of what the S-meter beside
     /// it could not take of the row.
     fn held_ptt(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>, extra: f32) {
@@ -1123,19 +1139,30 @@ impl SdroxideApp {
         } else {
             crate::chrome::chip_hold(ui, self.state.tx.ptt, label, fill, ink)
         }
-        .on_hover_text("Hold to transmit");
+        .on_hover_text(PTT_HOLD_HINT);
         self.apply_held_ptt(&resp, cmds);
     }
 
-    /// Key or unkey from a held PTT chip's response.
+    /// Key or unkey from the compact PTT chip's response — see [`PttPress`],
+    /// which is where the decision itself lives.
     fn apply_held_ptt(&mut self, resp: &egui::Response, cmds: &mut Vec<Command>) {
-        let down = resp.is_pointer_button_down_on();
+        let down = self.ptt.still_down(
+            resp.is_pointer_button_down_on(),
+            resp.ctx.input(|i| i.pointer.primary_down()),
+        );
         // Against our own last edge, not the engine's echo: the echo lags a
         // round trip, and comparing to it would re-send the same command every
         // frame until it caught up.
-        if down != self.ptt_held {
-            self.ptt_held = down;
-            cmds.push(Command::SetPtt(down));
+        if down == self.ptt.pressed() {
+            return;
+        }
+        // Asked at the press and remembered by `PttPress::Keying`: by the time
+        // the finger lifts there are no touches left to ask about.
+        let touch = down && resp.ctx.input(|i| i.any_touches());
+        let (next, cmd) = self.ptt.on_pointer(down, touch, resp.clicked());
+        self.ptt = next;
+        if let Some(on) = cmd {
+            cmds.push(Command::SetPtt(on));
         }
     }
 
@@ -3003,6 +3030,93 @@ impl SdroxideApp {
     }
 }
 
+/// What the compact layout's PTT chip is doing between frames.
+///
+/// Push-to-talk and a latch on one control, told apart by what the operator
+/// did with it rather than by the tier the window is wearing — see
+/// [`SdroxideApp::held_ptt`] for why the tier is the wrong thing to ask.
+/// The state is here rather than in a pair of bools so that the one rule that
+/// matters — a finger's release always unkeys — is a single `match` arm
+/// somebody can check, and so [`Self::on_pointer`] can be tested without an
+/// egui context.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(in crate::app) enum PttPress {
+    /// Nothing on the chip and nothing on the air.
+    #[default]
+    Idle,
+    /// Pressed, and keying for as long as it stays pressed. `touch` is whether
+    /// a finger started it, captured at the press because a release has no
+    /// touches left to report.
+    Keying { touch: bool },
+    /// Left keyed by a mouse click; the next press lets go.
+    Latched,
+    /// The press that is letting go of a latch. Its release owes no command —
+    /// without this state it would read as the end of an over that had already
+    /// ended, and unkey a transmitter somebody had keyed again in between.
+    Unlatching,
+}
+
+impl PttPress {
+    /// Whether a pointer is on the chip right now. This is what an incoming
+    /// pointer state is compared against to find an edge, so a latch — held
+    /// with nothing pressing it — has to read as *not* pressed.
+    pub(in crate::app) fn pressed(self) -> bool {
+        matches!(self, Self::Keying { .. } | Self::Unlatching)
+    }
+
+    /// Whether the chip is holding the transmitter keyed, pressed or latched.
+    /// Read where an over has to be ended by something other than the chip
+    /// itself — closing the window, for one.
+    pub(in crate::app) fn keying(self) -> bool {
+        matches!(self, Self::Keying { .. } | Self::Latched)
+    }
+
+    /// Whether the chip counts as pressed this frame: egui's own flag for it,
+    /// `down_on`, with one gap patched from the pointer button itself.
+    ///
+    /// A still finger held past egui's click window is read as the
+    /// press-and-hold that opens a context menu, and egui implements that by
+    /// taking the press off the widget — from here indistinguishable from the
+    /// finger having lifted. So hold-to-talk on a touch screen cut every over
+    /// at 0.8 s, and it cut them silently: a finger that jitters more than the
+    /// drag threshold is a drag instead and holds fine, so the same gesture
+    /// works or does not depending on how steady a hand is on it.
+    ///
+    /// The button is not part of that gesture, so while this chip already owns
+    /// a press it is the honest answer. `pressed()` is what keeps it honest in
+    /// the other direction: this can only ever *extend* a press the chip
+    /// started, never begin one from a pointer that went down somewhere else.
+    pub(in crate::app) fn still_down(self, down_on: bool, primary_down: bool) -> bool {
+        down_on || (self.pressed() && primary_down)
+    }
+
+    /// The next state and the PTT command it owes, from one pointer edge.
+    ///
+    /// `down` is the new pointer state, `touch` whether a finger caused a
+    /// press (meaningless on a release, and ignored there), and `click`
+    /// whether egui called this release a click — short enough and still on
+    /// the chip. A drag off the chip is deliberately not a click, so pressing
+    /// it by accident and sliding away ends the over rather than latching it.
+    pub(in crate::app) fn on_pointer(
+        self,
+        down: bool,
+        touch: bool,
+        click: bool,
+    ) -> (Self, Option<bool>) {
+        match (self, down) {
+            // A press on a latched chip is the operator taking it back off.
+            (Self::Latched, true) => (Self::Unlatching, Some(false)),
+            (_, true) => (Self::Keying { touch }, Some(true)),
+            // A mouse click stays on the air; a finger, and a press held too
+            // long or dragged away to count as a click, does not.
+            (Self::Keying { touch: false }, false) if click => (Self::Latched, None),
+            (Self::Keying { .. }, false) => (Self::Idle, Some(false)),
+            // The release of an unlatching press, or a stray edge.
+            (_, false) => (Self::Idle, None),
+        }
+    }
+}
+
 /// The System box's chips, in the order they are drawn.
 ///
 /// One list, read by both the box that reserves the width and the rows that
@@ -3418,6 +3532,96 @@ fn sub_mode_picker(ui: &mut egui::Ui, cur: Mode, narrow: bool) -> Option<Mode> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Walk a chip through a sequence of pointer edges, collecting the PTT
+    /// commands it asks for. `(down, touch, click)` per edge, as
+    /// [`PttPress::on_pointer`] takes them.
+    fn drive(edges: &[(bool, bool, bool)]) -> (PttPress, Vec<bool>) {
+        let mut state = PttPress::default();
+        let mut cmds = Vec::new();
+        for &(down, touch, click) in edges {
+            let (next, cmd) = state.on_pointer(down, touch, click);
+            state = next;
+            cmds.extend(cmd);
+        }
+        (state, cmds)
+    }
+
+    /// The rule the hold exists for, and the one thing that may not change:
+    /// letting go of a finger always drops the transmitter. Not "usually" and
+    /// not "unless it was quick" — a tap on a phone is a click by egui's
+    /// reckoning too, and if that latched, the mis-tap this chip is guarded
+    /// against would leave a radio transmitting into a pocket.
+    #[test]
+    fn a_finger_never_latches_the_transmitter() {
+        // A tap: press and release, both inside egui's click window.
+        let (state, cmds) = drive(&[(true, true, false), (false, true, true)]);
+        assert_eq!(cmds, vec![true, false], "a tap keys and unkeys");
+        assert_eq!(state, PttPress::Idle);
+        assert!(!state.keying());
+
+        // And a hold, which is what it is meant to be used as.
+        let (state, cmds) = drive(&[(true, true, false), (false, false, false)]);
+        assert_eq!(cmds, vec![true, false]);
+        assert_eq!(state, PttPress::Idle);
+    }
+
+    /// A mouse gets the desktop chip's latch back: click on, click off. The
+    /// second press is what ends the over — its release owes nothing, or it
+    /// would unkey an over the operator had already started again.
+    #[test]
+    fn a_mouse_click_latches_and_the_next_press_lets_go() {
+        let mut state = PttPress::default();
+        let mut cmds = Vec::new();
+        for &(down, click) in &[(true, false), (false, true), (true, false), (false, true)] {
+            let (next, cmd) = state.on_pointer(down, false, click);
+            state = next;
+            cmds.extend(cmd);
+        }
+        assert_eq!(cmds, vec![true, false], "keyed on the first click, dropped on the second");
+        assert_eq!(state, PttPress::Idle);
+
+        // Mid-latch it is keying with nothing pressing it — which is what the
+        // window-close backstop reads, and what the edge test must not mistake
+        // for a pointer still being down.
+        let (mid, _) = drive(&[(true, false, false), (false, false, true)]);
+        assert_eq!(mid, PttPress::Latched);
+        assert!(mid.keying() && !mid.pressed());
+    }
+
+    /// A hold outlasts egui's context-menu gesture. The finger is still on
+    /// the chip, so the over is still on the air — the widget losing the press
+    /// to a gesture nothing here uses may not be read as the finger lifting.
+    #[test]
+    fn a_long_touch_does_not_cut_the_over() {
+        let (state, _) = drive(&[(true, true, false)]);
+        assert_eq!(state, PttPress::Keying { touch: true });
+        // The long-press frame: egui has taken the press off the widget, but
+        // the button is still down.
+        assert!(state.still_down(false, true), "the finger has not lifted");
+        // And when it really does lift, both agree and the over ends.
+        assert!(!state.still_down(false, false));
+
+        // Never the other way round: a pointer pressed elsewhere while this
+        // chip is idle or latched must not start or extend an over here.
+        for idle in [PttPress::Idle, PttPress::Latched] {
+            assert!(!idle.still_down(false, true), "{idle:?}");
+        }
+    }
+
+    /// Push-to-talk still works with a mouse, and that is the case a latch
+    /// must not steal: a press held past egui's click window is no longer a
+    /// click, so the release ends the over instead of leaving it on the air.
+    /// Same for a press dragged off the chip, which is how an accidental one
+    /// is taken back.
+    #[test]
+    fn a_mouse_press_held_or_dragged_away_ends_the_over() {
+        for release in [(false, false, false), (false, true, false)] {
+            let (state, cmds) = drive(&[(true, false, false), release]);
+            assert_eq!(cmds, vec![true, false], "{release:?}");
+            assert_eq!(state, PttPress::Idle);
+        }
+    }
 
     /// Share Tech Mono advances 0.540 em and Chakra's " Hz" 1.392 em, so the
     /// readout costs 7.438 pt of width per point of digit size. Measured from
