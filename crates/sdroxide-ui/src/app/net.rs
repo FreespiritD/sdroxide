@@ -5,6 +5,9 @@
 //! back is applied to the in-progress QSO and appended to the rolling log the
 //! SPOTS window shows.
 
+use std::collections::HashMap;
+use std::panic::{AssertUnwindSafe, catch_unwind};
+
 use sdroxide_types::{
     CallsignInfo, LookupProvider, NetworkConfig, QsoRecord, UploadResult, UploadTarget,
 };
@@ -204,26 +207,47 @@ impl SdroxideApp {
 
     /// Drain a pending ADIF import: parse, lightly de-dup against the current
     /// log (same call+band within 2 minutes), append with fresh ids, persist.
+    ///
+    /// The parse runs under [`catch_unwind`] because this is the frame loop
+    /// handing an operator-supplied file to a parser: a file it cannot make
+    /// sense of has to cost the import, not the application. Nothing touches
+    /// the log until the parse has returned, so a failed one leaves it as it
+    /// was.
     pub(in crate::app) fn poll_adif_import(&mut self) {
         let text = self.adif_import_inbox.lock().ok().and_then(|mut g| g.take());
         let Some(text) = text else { return };
-        let records = sdroxide_types::adif_to_qso_log(&text);
+        let parsed = catch_unwind(AssertUnwindSafe(|| sdroxide_types::adif_to_qso_log(&text)));
+        let Ok(records) = parsed else {
+            self.push_net_log("ADIF import failed: the file could not be parsed".to_string());
+            return;
+        };
+        // One pass to index the existing log by call and band, so the duplicate
+        // check only looks at the QSOs that could match rather than at all of
+        // them. A full logbook is tens of thousands of records and this runs
+        // inside a single frame.
+        let mut by_call_band: HashMap<(String, String), Vec<i64>> = HashMap::new();
+        for q in &self.qso_log {
+            by_call_band
+                .entry((q.call.to_ascii_uppercase(), q.band.to_ascii_uppercase()))
+                .or_default()
+                .push(q.start_utc);
+        }
+        let mut next_id = self.next_log_id();
         let mut added = 0usize;
         let mut skipped = 0usize;
         for mut r in records {
             if r.call.trim().is_empty() {
                 continue;
             }
-            let dup = self.qso_log.iter().any(|q| {
-                q.call.eq_ignore_ascii_case(&r.call)
-                    && q.band.eq_ignore_ascii_case(&r.band)
-                    && (q.start_utc - r.start_utc).abs() < 120
-            });
-            if dup {
+            let key = (r.call.to_ascii_uppercase(), r.band.to_ascii_uppercase());
+            let starts = by_call_band.entry(key).or_default();
+            if starts.iter().any(|&t| (t - r.start_utc).abs() < 120) {
                 skipped += 1;
                 continue;
             }
-            r.id = self.next_log_id();
+            starts.push(r.start_utc);
+            r.id = next_id;
+            next_id += 1;
             self.qso_log.push(r);
             added += 1;
         }

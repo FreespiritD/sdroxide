@@ -1462,6 +1462,54 @@ pub fn qso_log_to_adif(records: &[QsoRecord]) -> String {
     out
 }
 
+/// Byte offset just past the `len`th character of `s`, or `None` when it holds
+/// fewer characters than that.
+fn char_end(s: &str, len: usize) -> Option<usize> {
+    let mut chars = s.char_indices();
+    for _ in 0..len {
+        chars.next()?;
+    }
+    Some(chars.next().map_or(s.len(), |(off, _)| off))
+}
+
+/// Read one field value out of `adif` at `start`, given the length its tag
+/// declared, and report where parsing resumes.
+///
+/// ADIF counts that length in bytes, which is what [`qso_log_to_adif`] emits,
+/// but some exporters (QRZ's logbook among them) count characters instead. The
+/// two readings agree on plain ASCII and part company on the first accented
+/// value, so the declared length is a hint to be checked rather than an offset
+/// to slice at — slicing blind lands inside a multi-byte character and panics,
+/// or, where it happens to land on a boundary, truncates the value in silence.
+///
+/// Where the readings agree there is nothing to disambiguate and the spec's
+/// reading stands. Where they differ, a candidate end is accepted only if it
+/// opens the next tag: values run straight up against the following `<`, which
+/// is what makes a miscount detectable at all. Bytes are tried first, then
+/// characters; if neither fits, re-sync on the next `<` so a bad count costs
+/// its own field instead of every field after it in the record.
+fn adif_value(adif: &str, start: usize, len: usize) -> (String, usize) {
+    let rest = &adif[start..];
+    let as_bytes = rest.is_char_boundary(len).then_some(len);
+    let as_chars = char_end(rest, len);
+    if as_bytes.is_some() && as_bytes == as_chars {
+        return (rest[..len].to_string(), start + len);
+    }
+    // Exporters break lines between fields, so allow whitespace before the '<'.
+    let opens_a_tag = |end: &usize| {
+        let after = rest[*end..].trim_start();
+        after.is_empty() || after.starts_with('<')
+    };
+    if let Some(end) = as_bytes.filter(opens_a_tag).or_else(|| as_chars.filter(opens_a_tag)) {
+        return (rest[..end].to_string(), start + end);
+    }
+    // Neither count lands anywhere a value can end. A value may legitimately
+    // contain '<' — carrying a length is the whole reason ADIF can afford that
+    // — so scanning for one is the last resort and never the first reading.
+    let end = rest.find('<').unwrap_or(rest.len());
+    (rest[..end].trim_end().to_string(), start + end)
+}
+
 /// Parse an ADIF (.adi) document into QSO records. Tolerant of unknown fields
 /// (ignored) and of a missing/short header. Used both for importing external
 /// logs and for ingesting downloaded QSL confirmations. The inverse of
@@ -1496,9 +1544,9 @@ pub fn adif_to_qso_log(adif: &str) -> Vec<QsoRecord> {
         }
         let len: usize = parts.next().and_then(|l| l.trim().parse().ok()).unwrap_or(0);
         // A field with no length (or a header tag) has no value payload.
-        let value = if len > 0 && i + len <= bytes.len() {
-            let v = adif[i..i + len].to_string();
-            i += len;
+        let value = if len > 0 {
+            let (v, next) = adif_value(adif, i, len);
+            i = next;
             v
         } else {
             String::new()
@@ -1865,6 +1913,69 @@ mod tests {
         assert_eq!(b.start_utc, 1_609_459_200);
         assert_eq!(b.my_call, "AB1CD");
         assert_eq!(b.my_grid, "FN42");
+    }
+
+    #[test]
+    fn adif_import_reads_character_counted_lengths() {
+        // QRZ's logbook counts the length in characters rather than the bytes
+        // the spec asks for: "Amaro José" is ten characters and eleven bytes.
+        let recs = adif_to_qso_log("<call:5>EA1AB <name:10>Amaro José <band:3>20m <eor>");
+        assert_eq!(recs.len(), 1);
+        assert_eq!(recs[0].call, "EA1AB");
+        assert_eq!(recs[0].name, "Amaro José");
+        assert_eq!(recs[0].band, "20m");
+    }
+
+    #[test]
+    fn adif_import_reads_byte_counted_lengths() {
+        // The same value written the way the spec — and qso_log_to_adif — has it.
+        let recs = adif_to_qso_log("<call:5>EA1AB <name:11>Amaro José <band:3>20m <eor>");
+        assert_eq!(recs.len(), 1);
+        assert_eq!(recs[0].name, "Amaro José");
+        assert_eq!(recs[0].band, "20m");
+    }
+
+    #[test]
+    fn adif_import_does_not_truncate_on_a_short_count() {
+        // The half of a miscount that never announces itself: ten bytes into
+        // "José Amaro" is a character boundary, so there is nothing to panic
+        // on and the value is simply clipped to "José Amar".
+        let recs = adif_to_qso_log("<call:5>EA1AB <name:10>José Amaro <band:3>20m <eor>");
+        assert_eq!(recs.len(), 1);
+        assert_eq!(recs[0].name, "José Amaro");
+        assert_eq!(recs[0].band, "20m");
+    }
+
+    #[test]
+    fn adif_import_keeps_a_value_holding_a_bracket() {
+        // Carrying a length is what lets an ADIF value contain '<', so a
+        // correct count must never be second-guessed by scanning for one.
+        let recs = adif_to_qso_log("<call:5>W1AW <qth:7>a<b>c<d <band:3>20m <eor>");
+        assert_eq!(recs.len(), 1);
+        assert_eq!(recs[0].qth, "a<b>c<d");
+        assert_eq!(recs[0].band, "20m");
+    }
+
+    #[test]
+    fn adif_import_resyncs_past_an_impossible_count() {
+        // A count that fits no reading costs its own field and nothing after it.
+        let recs = adif_to_qso_log("<call:5>W1AW <qth:99>Anywhere <band:3>20m <eor>");
+        assert_eq!(recs.len(), 1);
+        assert_eq!(recs[0].call, "W1AW");
+        assert_eq!(recs[0].qth, "Anywhere");
+        assert_eq!(recs[0].band, "20m");
+    }
+
+    #[test]
+    fn adif_import_survives_a_truncated_document() {
+        // Every prefix of a miscounted record, so a declared length running
+        // off the end or into the middle of a character is hit at each offset.
+        let doc = "<call:5>EA1AB <name:10>Amaro José <band:3>20m <eor>";
+        for end in 0..=doc.len() {
+            if doc.is_char_boundary(end) {
+                let _ = adif_to_qso_log(&doc[..end]);
+            }
+        }
     }
 
     #[test]

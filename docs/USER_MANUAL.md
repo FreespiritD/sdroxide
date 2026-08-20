@@ -1655,6 +1655,9 @@ manual entries. You can:
   doesn't show (resolved DXCC/zones, QSL status).
 - **IMPORT** — load QSOs from an ADIF (`.adi`) file. Imported records are
   de-duplicated against the log (same call + band within two minutes are skipped).
+  Field lengths are read as the byte counts ADIF specifies, but exporters that
+  count characters instead (QRZ's logbook among them) are handled too, so
+  accented names and QTHs survive the import intact.
 - **ADIF** — export the whole log to `sdroxide-log.adi` (also the file you sign
   with TQSL for LoTW).
 - **TXT** — export the whole log to `sdroxide-log.txt`.
